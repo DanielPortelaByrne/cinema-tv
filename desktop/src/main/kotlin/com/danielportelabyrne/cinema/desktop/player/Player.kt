@@ -106,6 +106,7 @@ class Player(
             if (!ensureMpv()) return@execute
             item = null; next = null; loaded = false; triedConverted = true; streamTitle = title
             positionMs = 0; durationMs = 0; paused = false
+            sendChromeMeta(null, title)
             ipc?.apply {
                 send("set_property", "http-header-fields", org.json.JSONArray())
                 send("set_property", "force-media-title", title)
@@ -120,6 +121,7 @@ class Player(
     fun handle(action: NavAction) {
         if (!active) return
         worker.execute {
+            ipc?.send("script-message", "cinema-activity")
             if (action == NavAction.BACK) { ipc?.send("stop"); return@execute }
             PlayerControls.commands[action]?.let { ipc?.send(*it.toTypedArray()) }
         }
@@ -133,10 +135,23 @@ class Player(
 
     // --- mpv -------------------------------------------------------------------------------------
 
+    private fun themeScriptPath(): String? {
+        val resource = javaClass.getResourceAsStream("/mpv/cinema-osc.lua") ?: return null
+        val script = File(AppDirs.cache, "mpv/cinema-osc.lua")
+        return try {
+            script.parentFile?.mkdirs()
+            resource.use { input -> script.outputStream().use(input::copyTo) }
+            script.absolutePath
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not install Cinema's mpv theme: ${e.javaClass.simpleName}")
+            null
+        }
+    }
+
     private fun ensureMpv(): Boolean {
         if (process?.isAlive == true && ipc != null) return true
         val socket = File(AppDirs.runtime, "mpv-${ProcessHandle.current().pid()}.sock").apply { delete() }
-        val args = MpvLaunch.args(mpvPath, socket.path, System.getenv())
+        val args = MpvLaunch.args(mpvPath, socket.path, System.getenv(), themeScriptPath())
         val p = try {
             ProcessBuilder(args).redirectErrorStream(true).redirectOutput(File(AppDirs.cache, "mpv.log")).start()
         } catch (e: Exception) {
@@ -160,6 +175,7 @@ class Player(
         session = JellyfinPlaybackSession()
         val title = MpvLaunch.title(target)
         val url = if (converted) client.transcodeUrl(target) else client.streamUrl(target)
+        sendChromeMeta(target, title)
         ipc?.apply {
             send("set_property", "http-header-fields", org.json.JSONArray(client.playbackHeaders().map { (k, v) -> "$k: $v" }))
             send("set_property", "force-media-title", title)
@@ -168,6 +184,20 @@ class Player(
             send("loadfile", url, "replace")
         }
         onState(PlayerState.Starting(title))
+    }
+
+    /** Give the Lua chrome the same library metadata that Android's PlayerChrome displays. */
+    private fun sendChromeMeta(target: JellyfinItem?, title: String) {
+        val metadata = org.json.JSONObject().put("title", title)
+        target?.year?.let { metadata.put("year", it) }
+        target?.runtimeMin?.let { metadata.put("runtimeMin", it) }
+        target?.officialRating?.let { metadata.put("certificate", it) }
+        target?.communityRating?.let { metadata.put("rating", it) }
+        target?.overview?.takeIf { it.isNotBlank() }?.let { metadata.put("overview", it) }
+        target?.genres?.takeIf { it.isNotEmpty() }?.let { metadata.put("genres", org.json.JSONArray(it)) }
+        target?.sizeBytes?.let { metadata.put("sizeBytes", it) }
+        target?.audioCodec?.let { metadata.put("audioCodec", it) }
+        ipc?.send("script-message", "cinema-meta", metadata.toString())
     }
 
     private fun message(m: MpvMessage) {
@@ -283,7 +313,7 @@ class Player(
 
 /** How mpv is started. Pure, so the choices can be tested. */
 object MpvLaunch {
-    fun args(mpv: String, socket: String, env: Map<String, String>): List<String> {
+    fun args(mpv: String, socket: String, env: Map<String, String>, themeScript: String? = null): List<String> {
         val args = mutableListOf(
             mpv,
             "--no-config",                    // the viewer's own mpv setup must not change how Cinema behaves
@@ -302,6 +332,12 @@ object MpvLaunch {
             "--background-color=#1A140E",
             "--cursor-autohide=1000",
         )
+        if (!themeScript.isNullOrBlank()) {
+            args.remove("--osc=yes")
+            args.remove("--script-opts=osc-visibility=always")
+            args += "--osc=no"
+            args += "--script=$themeScript"
+        }
         // Steam's Game Mode (gamescope) shows X11 windows; a Wayland window from mpv would never be shown there.
         if (isGamescope(env)) args += "--gpu-context=x11egl"
         return args

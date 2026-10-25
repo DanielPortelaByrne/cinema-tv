@@ -36,7 +36,10 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.cinema-tv ];
-          packages = [ pkgs.android-tools pkgs.gh ];
+          packages = [ pkgs.android-tools pkgs.gh pkgs.libglvnd ];
+          shellHook = ''
+            export LD_LIBRARY_PATH="${pkgs.libglvnd}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          '';
         };
 
         flatpak = pkgs.mkShell {
@@ -53,10 +56,13 @@
             coreutils
             sshpass
             gh
+            lua
+            libglvnd
           ];
 
           shellHook = ''
             export JAVA_HOME="${pkgs.jdk17}"
+            export LD_LIBRARY_PATH="${pkgs.libglvnd}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             export FUSERMOUNT_DIR="${pkgs.fuse}/bin"
             export XDG_DATA_DIRS="/var/lib/flatpak/exports/share:/usr/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
             export STEAM_DECK_HOST="''${STEAM_DECK_HOST:-deck@steamdeck.local}"
