@@ -132,7 +132,7 @@ modules:
       - install -Dm755 cinema.sh /app/bin/cinema
       - install -Dm644 io.github.danielportelabyrne.Cinema.desktop -t /app/share/applications
       - install -Dm644 io.github.danielportelabyrne.Cinema.metainfo.xml -t /app/share/metainfo
-      - install -Dm644 icon.svg /app/share/icons/hicolor/scalable/apps/io.github.danielportelabyrne.Cinema.svg
+      - install -Dm644 icon.png /app/share/icons/hicolor/128x128/apps/io.github.danielportelabyrne.Cinema.png
     sources:
       - type: dir
         path: ../desktop/build/linux
@@ -143,4 +143,4 @@ modules:
       - type: file
         path: io.github.danielportelabyrne.Cinema.metainfo.xml
       - type: file
-        path: icon.svg
+        path: icon.png
