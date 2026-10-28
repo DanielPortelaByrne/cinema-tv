@@ -21,6 +21,10 @@ import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinDiscovery
 import com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository
 import com.danielportelabyrne.cinema.data.movies.ArrSetup
+import com.danielportelabyrne.cinema.data.music.SignIn
+import com.danielportelabyrne.cinema.data.music.SubsonicApi
+import com.danielportelabyrne.cinema.data.music.SubsonicClient
+import com.danielportelabyrne.cinema.data.music.SubsonicConfig
 import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.QueueClient
 import com.danielportelabyrne.cinema.data.movies.SeerrClient
@@ -101,7 +105,7 @@ class SetupFlow(
         when (name) {
             "welcome" -> welcome(); "jellyfin" -> jellyfinServer(); "signin" -> jellyfinSignIn(); "seerr" -> seerrStep()
             "arr" -> arrStep(); "client" -> clientStep(); "region" -> regionStep(); "advanced" -> advancedStep(); "order" -> libraryOrderStep()
-            "integrations" -> integrationsStep()
+            "integrations" -> integrationsStep(); "music" -> musicStep()
             else -> overview()
         }
     }
@@ -335,6 +339,39 @@ class SetupFlow(
         p.secondary("Cancel") { overview() }
     }
 
+    private fun musicStep() {
+        val p = page("MUSIC", "Music server", "A Subsonic server (Navidrome, Gonic, Airsonic) adds Music to the menu.")
+        backTo = ::integrationsStep
+        val current = settings.subsonic
+        val address = p.field("Music server address", current?.baseUrl)
+        val user = p.field("Username", current?.username)
+        val password = p.field("Password", null, password = true)
+        val key = p.field("API key (instead of a password)", null, password = true)
+        p.note("Leave the password blank to keep the saved one. Your password never leaves this TV.")
+        val token = pageToken
+        p.primary("Connect", R.drawable.ic_cin_check) {
+            val a = address.text.toString().trim(); val u = user.text.toString().trim()
+            val pw = password.text.toString().ifEmpty { if (key.text.isEmpty()) current?.password.orEmpty() else "" }
+            val k = key.text.toString().ifEmpty { if (password.text.isEmpty()) current?.apiKey.orEmpty() else "" }
+            if (a.isEmpty()) { p.status("Enter the music server's address."); return@primary }
+            if (k.isEmpty() && (u.isEmpty() || pw.isEmpty())) { p.status("Enter a username and password, or an API key."); return@primary }
+            val config = SubsonicConfig(SubsonicApi.normalize(a), u, pw, k)
+            p.busy("Connecting…")
+            bg({ SubsonicClient(config).signIn() }) { result ->
+                if (token != pageToken) return@bg
+                when (result) {
+                    SignIn.OK -> { settings.subsonic = config; settings.setOn(Integration.MUSIC, true); changed = true; integrationsStep() }
+                    SignIn.WRONG_CREDENTIALS -> p.done("The server turned down that sign-in.")
+                    SignIn.NEEDS_API_KEY -> p.done("This server needs an API key. Make one in its settings.")
+                    SignIn.NOT_SUBSONIC -> p.done("That address is not a Subsonic server.")
+                    else -> p.done("Couldn't reach $a. Check the address.")
+                }
+            }
+        }
+        if (current != null) p.secondary("Forget server") { settings.subsonic = null; changed = true; integrationsStep() }
+        p.secondary("Cancel") { integrationsStep() }
+    }
+
     private fun libraryOrderStep() {
         val p = page("SETTINGS", "Library order", "How My library lists your films and series.")
         backTo = ::overview
@@ -353,6 +390,7 @@ class SetupFlow(
         backTo = ::overview
         Integration.entries.forEach { integration ->
             val row = p.row(integration.label, integrationDetail(integration))
+            if (integration == Integration.MUSIC) row.button(if (settings.subsonic == null) "Set up" else "Server") { musicStep() }
             row.button(toggleLabel(integration)) {
                 settings.setOn(integration, !settings.isOn(integration)); changed = true
                 row.detail.text = integrationDetail(integration)
@@ -370,6 +408,8 @@ class SetupFlow(
             Integration.LETTERBOXD -> LetterboxdRepository.followingCount(activity).let { n ->
                 if (n == 0) "On · follow people from the Letterboxd page" else "On · following $n, managed from the Letterboxd page"
             }
+            Integration.MUSIC -> settings.subsonic?.let { "On · ${it.baseUrl}" + if (it.username.isNotBlank()) " · ${it.username}" else "" }
+                ?: "On · set up a server to add Music to the menu"
         }
     }
 

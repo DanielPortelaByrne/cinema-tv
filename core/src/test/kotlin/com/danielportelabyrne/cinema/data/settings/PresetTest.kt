@@ -1,6 +1,7 @@
 package com.danielportelabyrne.cinema.data.settings
 
 import com.danielportelabyrne.cinema.data.movies.ClientKind
+import com.danielportelabyrne.cinema.data.music.SubsonicConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -46,6 +47,15 @@ class PresetTest {
         assertNull(p.jellyfin?.login)
         assertFalse(p.seerrLocal)
         assertTrue(p.needsSignIn)
+    }
+
+    @Test fun readsTheMusicServer() {
+        assertEquals(SubsonicConfig("http://192.168.1.20:4533", "someone", "pw"),
+            Preset.parse("""{ "music": { "url": "192.168.1.20:4533", "username": "someone", "password": "pw" } }""").music)
+        assertEquals(SubsonicConfig("https://music.home", "", "", "k"),
+            Preset.parse("""{ "music": { "url": "https://music.home", "apiKey": "k" } }""").music)
+        assertNull(Preset.parse("""{ "music": { "url": "https://music.home", "username": "someone" } }""").music)
+        assertNull(Preset.parse("""{ "music": { "username": "someone", "password": "pw" } }""").music)
     }
 
     @Test fun fingerprintFollowsContent() {

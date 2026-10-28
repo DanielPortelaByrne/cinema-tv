@@ -70,7 +70,8 @@ class CinemaActivity : AppCompatActivity() {
             infoSheet = infoSheet,
             libraryOrder = { settings.libraryOrder },
             onOpenSettings = { moviesPanel.hide(); setup.openSettings() },
-            integrationOn = { settings.isOn(it) }
+            integrationOn = { settings.isOn(it) },
+            music = { settings.subsonic }
         )
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

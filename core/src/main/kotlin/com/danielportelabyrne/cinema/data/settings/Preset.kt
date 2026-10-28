@@ -5,6 +5,7 @@ import com.danielportelabyrne.cinema.platform.Platform
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.movies.ClientKind
 import com.danielportelabyrne.cinema.data.movies.SeerrClient
+import com.danielportelabyrne.cinema.data.music.SubsonicConfig
 import org.json.JSONObject
 
 /** A username and password from the preset. */
@@ -27,6 +28,7 @@ data class Preset(
     val region: String?,
     val requestHelperUrl: String?,
     val streamServiceUrl: String?,
+    val music: SubsonicConfig? = null,
     val fingerprint: String,
 ) {
     /** Writes the addresses and keys, once per preset. Cheap; safe on the main thread. */
@@ -40,6 +42,7 @@ data class Preset(
         region?.let { settings.region = it }
         requestHelperUrl?.let { settings.requestHelperUrl = it }
         streamServiceUrl?.let { settings.streamServiceUrl = it }
+        music?.let { settings.subsonic = it; settings.setOn(Integration.MUSIC, true) }
         if (jellyfin != null) settings.setupDone = true
         prefs.edit().putString(APPLIED_KEY, fingerprint).apply()
     }
@@ -96,6 +99,16 @@ data class Preset(
                 val url = CinemaSettings.cleanUrl(s.str("url")) ?: return null
                 return ManualArr(url, s.str("apiKey") ?: return null)
             }
+            /** A Subsonic server: an API key, or a username and password. */
+            fun music(): SubsonicConfig? {
+                val s = o.optJSONObject("music") ?: return null
+                val url = CinemaSettings.cleanUrl(s.str("url")) ?: return null
+                val key = s.str("apiKey").orEmpty()
+                val user = s.str("username").orEmpty()
+                val password = s.str("password").orEmpty()
+                if (key.isEmpty() && (user.isEmpty() || password.isEmpty())) return null
+                return SubsonicConfig(url, user, password, key)
+            }
             val clients = ClientKind.entries.mapNotNull { kind ->
                 val s = o.optJSONObject(kind.label.lowercase()) ?: return@mapNotNull null
                 kind to PresetLogin(s.str("username").orEmpty(), s.str("password") ?: return@mapNotNull null)
@@ -110,6 +123,7 @@ data class Preset(
                 region = o.str("region")?.takeIf { it.length == 2 },
                 requestHelperUrl = o.str("requestHelperUrl"),
                 streamServiceUrl = o.str("streamServiceUrl"),
+                music = music(),
                 fingerprint = Integer.toHexString(json.hashCode()),
             )
         }

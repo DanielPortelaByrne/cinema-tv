@@ -41,6 +41,13 @@
             android:theme="@style/Theme.Cinema" />
 
         <activity
+            android:name=".ui.music.MusicPlayerActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|screenLayout"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Cinema" />
+
+        <activity
             android:name=".CinemaActivity"
             android:exported="true"
             android:windowSoftInputMode="stateAlwaysHidden|adjustPan"

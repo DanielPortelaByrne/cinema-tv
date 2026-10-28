@@ -86,8 +86,17 @@ class RemoteImages private constructor(context: Context) {
             shared ?: RemoteImages(context.applicationContext).also { shared = it }
         }
 
+        /**
+         * Turns a `scheme:path` key into the address to fetch, signed at the last moment, so no cache or log holds a
+         * credential. Keyed by scheme, e.g. [MUSIC].
+         */
+        val signers = java.util.concurrent.ConcurrentHashMap<String, (String) -> String?>()
+        const val MUSIC = "subsonic"
+
         private fun download(url: String, headers: Map<String, String>): ByteArray? = try {
-            val c = URL(url).openConnection() as HttpURLConnection
+            val signer = signers[url.substringBefore(':')]
+            val real = if (signer != null) signer(url.substringAfter(':')) ?: return null else url
+            val c = URL(real).openConnection() as HttpURLConnection
             c.connectTimeout = 8000; c.readTimeout = 12000
             headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
             c.exchange {

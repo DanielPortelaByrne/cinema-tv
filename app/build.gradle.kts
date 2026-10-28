@@ -30,7 +30,7 @@ abstract class PresetAsset : DefaultTask() {
 
     private companion object {
         val KNOWN_KEYS = setOf("jellyfin", "seerr", "sonarr", "radarr", "qbittorrent", "transmission", "deluge",
-            "region", "requestHelperUrl", "streamServiceUrl")
+            "region", "requestHelperUrl", "streamServiceUrl", "music")
     }
 }
 

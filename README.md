@@ -123,13 +123,15 @@ A preset bakes your setup into the APK, so the TV skips setup and signs in by it
   "qbittorrent": { "username": "admin", "password": "..." },
   "region": "IE",
   "requestHelperUrl": "http://192.168.1.5:8787",
-  "streamServiceUrl": "http://192.168.1.5:9000"
+  "streamServiceUrl": "http://192.168.1.5:9000",
+  "music": { "url": "http://192.168.1.5:4533", "username": "you", "password": "..." }
 }
 ```
 
 - Seerr signs in with the Jellyfin login unless it has its own `username` and `password`. For a local Seerr account, add `"signIn": "local"` and an `email`.
 - `qbittorrent`, `transmission` and `deluge` logins are used when Sonarr or Radarr hide the client's password. The address still comes from Sonarr and Radarr.
 - Jellyfin needs a username and password, not an API key: watch progress belongs to a user.
+- `music` is a Subsonic server (Navidrome, Gonic, Airsonic). Use `username` and `password`, or an OpenSubsonic `apiKey` instead.
 
 Pass the file to Gradle, or set `CINEMA_PRESET`:
 
