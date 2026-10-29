@@ -1,0 +1,110 @@
+name: Deploy to the TVs
+
+# Keeps the TVs on the newest main of Cinema and of the launcher (mcm-launcher), so the two never drift. A merge here
+# builds a signed release and installs it on each TV in the quiet hours
+# (01:00 to 06:00 London time). A TV that is offline or playing is retried by the hourly schedule.
+# The deploy runs on the home-network runner because the TVs are only reachable from the home network.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 0-5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tv-deploy-cinema
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Release signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CINEMA_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.CINEMA_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CINEMA_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CINEMA_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > release.jks
+          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
+      - name: Build the release APK
+        run: ./gradlew --no-daemon :app:assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cinema-tv-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 7
+
+  build-launcher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: DanielPortelaByrne/mcm-launcher
+          ref: main
+          path: launcher
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Signing key shared with the TVs
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.LAUNCHER_DEBUG_KEYSTORE_B64 }}
+        run: |
+          # Gradle looks for the debug key under ANDROID_USER_HOME, which can differ from $HOME/.android on the runner.
+          android_home="${ANDROID_USER_HOME:-$HOME/.android}"
+          mkdir -p "$android_home"
+          echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$android_home/debug.keystore"
+          echo "Debug key written to $android_home/debug.keystore"
+      - name: Build the launcher
+        working-directory: launcher
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+      - name: Record which launcher commit this is
+        run: git -C launcher rev-parse HEAD > launcher/app/build/outputs/apk/debug/launcher.sha
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-apk
+          path: |
+            launcher/app/build/outputs/apk/debug/app-debug.apk
+            launcher/app/build/outputs/apk/debug/launcher.sha
+          retention-days: 7
+
+  deploy:
+    needs: [build, build-launcher]
+    runs-on: [self-hosted, cinema-devices, steamdeck]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cinema-tv-release-apk
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher-apk
+          path: artifacts-launcher
+      - name: Install on the TVs in the quiet hours
+        env:
+          TV_ADDRESSES: ${{ vars.TV_ADDRESSES }}
+        run: scripts/ci/deploy-tvs.sh artifacts/app-release.apk cinema "$GITHUB_EVENT_NAME"
+      - name: Install the launcher on the TVs in the quiet hours
+        env:
+          TV_ADDRESSES: ${{ vars.TV_ADDRESSES }}
+        run: |
+          GITHUB_SHA=$(cat artifacts-launcher/launcher.sha)             scripts/ci/deploy-tvs.sh artifacts-launcher/app-debug.apk launcher "$GITHUB_EVENT_NAME"
