@@ -3,7 +3,7 @@ package com.danielportelabyrne.cinema.data.pairing
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Test
-import java.net.ConnectException
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -47,6 +47,19 @@ class PairingServerTest {
 
     private fun get(port: Int, path: String) = send(port, "GET $path HTTP/1.1\r\nHost: tv\r\n\r\n")
 
+    /**
+     * After close, a page must not be served. The listening socket can take a connection for a moment after close(), so
+     * "refused" means the connection is refused or dropped, never a page.
+     */
+    private fun assertRefused(port: Int, path: String) {
+        try {
+            val status = get(port, path).first
+            fail("expected no page after close, got HTTP $status")
+        } catch (_: IOException) {
+            // Refused or dropped: nothing is being served.
+        }
+    }
+
     private fun post(port: Int, path: String, body: String) = send(
         port,
         "POST $path HTTP/1.1\r\nHost: tv\r\nContent-Type: application/x-www-form-urlencoded\r\n" +
@@ -73,7 +86,7 @@ class PairingServerTest {
         assertEquals("Dan Smith", seen.single().form["name"])
         waitUntilClosed(s)
         assertFalse(s.isOpen)
-        assertThrows(ConnectException::class.java) { get(s.localPort, "/setup/$code") }
+        assertRefused(s.localPort, "/setup/$code")
     }
 
     @Test fun a_failed_submission_leaves_the_code_usable() {
@@ -96,7 +109,7 @@ class PairingServerTest {
         clock.now += Pairing.TEN_MINUTES
         waitUntilClosed(s)
         assertFalse(s.isOpen)
-        assertThrows(ConnectException::class.java) { get(s.localPort, "/setup/$code") }
+        assertRefused(s.localPort, "/setup/$code")
     }
 
     /** Phone browsers open spare connections that send nothing; they must not hold up the page that is really asked for. */
@@ -116,7 +129,7 @@ class PairingServerTest {
         assertEquals(200, get(s.localPort, "/setup/$code").first)
         s.close()
         assertFalse(s.isOpen)
-        assertThrows(ConnectException::class.java) { get(s.localPort, "/setup/$code") }
+        assertRefused(s.localPort, "/setup/$code")
     }
 
     @Test fun the_url_for_a_page_carries_the_code() {

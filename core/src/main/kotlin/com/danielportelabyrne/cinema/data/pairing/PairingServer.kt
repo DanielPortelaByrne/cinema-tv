@@ -93,6 +93,8 @@ class PairingServer(
             while (open) {
                 if (pairing.isSpent) break
                 val client = try { socket.accept() } catch (_: SocketTimeoutException) { continue }
+                // Closed while this connection was being accepted: it is refused, not answered.
+                if (!open) { client.close(); break }
                 // One thread per connection: a phone's idle spare connection must not hold up the page it really wants.
                 connections.execute { client.use { handle(it) } }
             }
