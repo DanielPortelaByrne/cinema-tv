@@ -1,6 +1,7 @@
 package com.danielportelabyrne.cinema.design.cinema
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Outline
 import android.graphics.Paint
@@ -95,6 +96,25 @@ class PosterCard(context: Context, posterW: Int, posterH: Int, titled: Boolean =
         pill.addView(Cinema.icon(context, R.drawable.ic_cin_check, Cinema.SAFFRON), LayoutParams(Cinema.px(context, 15), Cinema.px(context, 15)).apply { marginEnd = Cinema.px(context, 7) })
         pill.addView(Cinema.text(context, "IN LIBRARY", 14, Cinema.SAFFRON, weight = 700, tracking = 0.14f))
         poster.addView(pill, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(Cinema.px(context, 12), 0, 0, Cinema.px(context, 12)) })
+    }
+
+    private var watcherRow: LinearLayout? = null
+
+    /**
+     * Little round badges, one per member who has watched the film, overlapping in the bottom right corner (at most four).
+     * Each is the member's picture, or their initial until the picture comes. Calling again replaces them.
+     */
+    fun watchers(people: List<Pair<String, Bitmap?>>) {
+        watcherRow?.let { poster.removeView(it) }
+        watcherRow = null
+        if (people.isEmpty()) return
+        val row = LinearLayout(context).apply { orientation = HORIZONTAL; clipChildren = false }
+        people.take(4).forEachIndexed { i, (name, picture) ->
+            row.addView(AvatarView(context, 44).apply { set(name, picture) },
+                LinearLayout.LayoutParams(Cinema.px(context, 44), Cinema.px(context, 44)).apply { if (i > 0) marginStart = Cinema.px(context, -12) })
+        }
+        poster.addView(row, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, Cinema.px(context, 12), Cinema.px(context, 12)) })
+        watcherRow = row
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {

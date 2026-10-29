@@ -17,12 +17,23 @@ import java.util.concurrent.Executors
  */
 /** [allowBrowser] false (the player) never starts the hidden browser: plain requests and the saved copies only. */
 class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
-    val web = LetterboxdWeb(activity, allowBrowser)
+    /** Two browsers for the pages: a fetch takes whichever is free, so one slow page does not hold up the next. */
+    private val pageLanes = java.util.concurrent.LinkedBlockingQueue<LetterboxdWeb>().apply { repeat(2) { add(LetterboxdWeb(activity, allowBrowser)) } }
+    /** Poster lookups have a browser of their own, so the pages are not queued behind a rail of posters. */
+    private val posterWeb = LetterboxdWeb(activity, allowBrowser)
     private val dir = File(activity.cacheDir, "letterboxd").apply { mkdirs() }
     private val prefs = activity.getSharedPreferences(LetterboxdPages.PREFS, Activity.MODE_PRIVATE)
     private val main = Handler(Looper.getMainLooper())
     private val pool = Executors.newFixedThreadPool(2)
-    private val pages = PageCache(dir, { path -> web.page(path)?.let { slim(it) } })
+    /** The last [load] of each path that said when it was no longer wanted: a page no one wants is not fetched. */
+    private val wanted = ConcurrentHashMap<String, () -> Boolean>()
+    private val pages = PageCache(dir, { path ->
+        val cancelled = { wanted[path]?.let { !it() } == true }
+        if (cancelled()) null else {
+            val lane = pageLanes.take()
+            try { lane.page(path, cancelled)?.let { slim(it) } } finally { pageLanes.put(lane) }
+        }
+    })
     private data class Parsed(val html: String, val value: Any)
     private data class Snapshot(val digest: String, val value: Any) : java.io.Serializable
     private val parsed = LinkedHashMap<String, Parsed>(32, 0.75f, true)
@@ -42,9 +53,11 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
     /**
      * Calls [done] on the main thread with what [parse] makes of [path]: first from the saved copy, if there is one,
      * then again from a fresh copy when the saved one is older than [maxAgeMs] (only if it changed). Null means the
-     * page could not be had at all.
+     * page could not be had at all. [stillWanted] (a search typed past, a list left) lets a fetch that nobody wants any more
+     * be dropped; [done] then hears null, which its caller can ignore.
      */
-    fun <T> load(path: String, maxAgeMs: Long, parse: (String) -> T?, done: (T?) -> Unit) {
+    fun <T> load(path: String, maxAgeMs: Long, parse: (String) -> T?, stillWanted: (() -> Boolean)? = null, done: (T?) -> Unit) {
+        if (stillWanted != null) wanted[path] = stillWanted else wanted.remove(path)
         val started = android.os.SystemClock.elapsedRealtime()
         // Each public URL has one model shape. Lambda class names contain runtime identities and cannot be disk keys.
         val key = path
@@ -98,8 +111,11 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
     fun posterUrl(slug: String): String? {
         if (!postersLoaded) loadPosters()
         posters[slug]?.let { return it }
-        val json = web.json("/film/$slug/poster/std/230/") ?: return null
-        val url = runCatching { JSONObject(json).optString("url2x").ifBlank { null } }.getOrNull() ?: return null
+        val json = posterWeb.json("/film/$slug/poster/std/230/") ?: return null
+        // Plain JSON, or (through the browser) the same JSON shown as text inside a page.
+        val url = runCatching { JSONObject(json).optString("url2x").ifBlank { null } }.getOrNull()
+            ?: Regex("\"url2x\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.get(1)?.replace("\\/", "/")
+            ?: return null
         posters[slug] = url
         savePostersSoon()
         return url
@@ -114,7 +130,7 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
     private val saveTask = Runnable { pool.execute { runCatching { File(dir, "posters.tmp").also { it.writeText(JSONObject(posters as Map<*, *>).toString()) }.renameTo(posterFile) } } }
     private fun savePostersSoon() { main.removeCallbacks(saveTask); main.postDelayed(saveTask, 2000) }
 
-    fun close() { main.removeCallbacks(saveTask); pages.close(); pool.shutdownNow(); web.close() }
+    fun close() { main.removeCallbacks(saveTask); pages.close(); pool.shutdownNow(); pageLanes.forEach { it.close() }; posterWeb.close() }
 
     companion object {
         val DEFAULT get() = LetterboxdPages.DEFAULT

@@ -105,4 +105,19 @@ class LbParseTest {
         assertEquals(LbMemberFilm("sam", 9, true, "Tunnels."), Lb.memberFilm(html, "sam"))
         assertNull(Lb.memberFilm("<title>Letterboxd - Not Found</title>", "sam"))
     }
+
+    @Test fun a_members_film_says_whether_they_watched_it() {
+        assertEquals(LbMemberFilm("sam", null, false, null, watched = false), Lb.member("<title>Letterboxd - Not Found</title>", "sam"))
+        // A page that is neither their film nor Not Found (a browser check, say) is no answer at all.
+        assertNull(Lb.member("<title>Just a moment...</title>", "sam"))
+        val watchedNoRating = """<meta property="og:url" content="https://letterboxd.com/film/heat-1995/"><p>Logged, unrated.</p>"""
+        assertEquals(LbMemberFilm("sam", null, false, null, watched = true), Lb.member(watchedNoRating, "sam"))
+    }
+
+    @Test fun a_films_average_is_worked_out_from_its_rating_chart() {
+        // One ½ and one ★★★★★ rating: (0.5 + 5) / 2.
+        assertEquals(2.75, Lb.average(listOf(1L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 1L))!!, 0.0001)
+        assertNull(Lb.average(listOf(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L)))
+        assertNull(Lb.average(emptyList()))
+    }
 }

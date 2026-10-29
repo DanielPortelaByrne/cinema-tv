@@ -3,6 +3,7 @@ package com.danielportelabyrne.cinema.ui
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.app.Activity
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -13,6 +14,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -27,6 +29,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -36,6 +39,9 @@ import com.danielportelabyrne.cinema.data.ContinueWatching
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
+import com.danielportelabyrne.cinema.data.letterboxd.Lb
+import com.danielportelabyrne.cinema.data.letterboxd.LbFilm
+import com.danielportelabyrne.cinema.data.letterboxd.LbList
 import com.danielportelabyrne.cinema.data.movies.Availability
 import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.CatalogRepository
@@ -1115,7 +1121,8 @@ class MoviesPanel(
     private fun lbFilmRow(
         heading: String, caption: String?, films: List<com.danielportelabyrne.cinema.data.letterboxd.LbFilm>, gen: Int,
         into: LinearLayout = content, line: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> String? = { it.stars },
-        chip: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> String? = { null }, empty: String = "Nothing here yet"
+        chip: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> String? = { null }, empty: String = "Nothing here yet",
+        badges: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> List<Pair<String, Bitmap?>> = { emptyList() }
     ): Row {
         val row = row(heading, caption, into = into)
         row.inner.minimumHeight = Cinema.px(activity, 488)
@@ -1132,6 +1139,8 @@ class MoviesPanel(
                 val f = shown[i]
                 val v = card(Entry(lbTitle(f, null), null, emptyMap()), emptyList(), badge = false, note = line(f), chip = chip(f)) { lbOpen(f, posters[f.slug]) } as PosterCard
                 row.inner.addView(v, cardParams(i))
+                v.tag = f.slug
+                v.watchers(badges(f))
                 val load = {
                     lbPosterPool.execute {
                         if (gen == generation) lb.posterUrl(f.slug)?.let { url ->
@@ -1457,7 +1466,35 @@ class MoviesPanel(
             row.inner.getChildAt(0)?.takeIf { it.isFocusable }?.let { requestFocusRobust(overlay as ViewGroup, it) }
     }
 
-    /** A list: its name, owner and description, a fan of its first posters, then its films in order. */
+    /** How a list's films are put in order: as the list has them, or by their average rating on Letterboxd, highest first. */
+    private enum class LbOrder { LIST, RATED }
+
+    /** What a list hides: nothing, the films any picked member has watched, or only those they have all watched. */
+    private enum class LbHide { NONE, ANY, ALL }
+
+    /** A choice on a Letterboxd list page: glass, saffron when it is the one in force, cream when focused. */
+    private fun lbChip(label: String): TextView {
+        val r = Cinema.pxf(activity, 200)
+        fun pillOf(color: Int) = GradientDrawable().apply { cornerRadius = r; setColor(color) }
+        return Cinema.text(activity, label, 23, Cinema.CREAM, weight = 600).apply {
+            gravity = Gravity.CENTER; isFocusable = true; isClickable = true; maxLines = 1
+            setPadding(Cinema.px(activity, 30), 0, Cinema.px(activity, 30), 0)
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused), pillOf(Cinema.CREAM))
+                addState(intArrayOf(android.R.attr.state_selected), pillOf(Cinema.SAFFRON))
+                addState(intArrayOf(), pillOf(Cinema.GLASS_STRONG))
+            }
+            setTextColor(ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf(android.R.attr.state_selected), intArrayOf()),
+                intArrayOf(Cinema.INK, Cinema.INK, Cinema.CREAM)))
+        }
+    }
+
+    /**
+     * A list: its name, owner and description, a fan of its first posters, then its films. Above the films: an order
+     * (as listed, or highest average rating first) and a filter on what the followed members have watched. Each film
+     * shows a badge for every followed member who has watched it.
+     */
     private fun buildLbList(path: String, gen: Int) {
         val head = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false }
         val text = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false }
@@ -1472,26 +1509,203 @@ class MoviesPanel(
         val fan = ListCard(activity, posterW = 200, step = 96, widthMock = 600).apply { isFocusable = false; name.visibility = View.GONE; by.visibility = View.GONE }
         head.addView(fan, FrameLayout.LayoutParams(-2, -2, Gravity.END).apply { rightMargin = pageEnd })
         content.addView(head, LinearLayout.LayoutParams(-1, -2))
+        val H = com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR
+        val stillHere = { gen == generation }
+        val members = lb.following
+
+        // What the page shows: the films as the list has them, and how they are ordered and filtered.
+        var films = emptyList<LbFilm>()
+        var listCount: Int? = null
+        var loaded = false
+        var order = LbOrder.LIST
+        var hide = LbHide.NONE
+        // The accounts a filter counts: all the followed ones to begin with.
+        val picked = LinkedHashSet(members)
+        // What has arrived so far: each film's average rating, and which members have watched which films.
+        val ratings = HashMap<String, Double>()
+        var ratingsStarted = false
+        var ratingsDone = 0
+        val watched = HashMap<String, HashMap<String, Boolean>>()
+        var watchesDone = 0
+        val pictures = HashMap<String, Bitmap>()
+        val accountChips = HashMap<String, TextView>()
+        val refreshers = ArrayList<() -> Unit>()
+        var renderQueued = false
+
+        val controls = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        content.addView(controls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 10); marginStart = pageStart })
         val rows = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(rows, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 10) })
         rows.addView(note("Loading the list…").apply { setPadding(pageStart, Cinema.px(activity, 40), 0, 0) })
-        lb.load(path, com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.listPage(it, path) }) { l ->
-            if (gen != generation) return@load
+
+        fun membersWhoWatched(slug: String) = members.filter { watched[it]?.get(slug) == true }
+
+        /** Whether the filter hides [slug]: any picked member has watched it, or (ALL) every picked member has. */
+        fun hidden(slug: String): Boolean {
+            if (hide == LbHide.NONE || picked.isEmpty()) return false
+            val seen = picked.map { watched[it]?.get(slug) == true }
+            return if (hide == LbHide.ANY) seen.any { it } else seen.all { it }
+        }
+
+        /** The films to show, in the order chosen. A film whose ratings or watchers have not arrived yet stays in. */
+        fun shown(): List<LbFilm> {
+            val kept = films.filterNot { hidden(it.slug) }
+            return if (order == LbOrder.RATED) kept.sortedByDescending { ratings[it.slug] ?: -1.0 } else kept
+        }
+
+        fun noteFor(f: LbFilm): String? {
+            val who = membersWhoWatched(f.slug).map { lbName(it) }
+            return listOfNotNull(
+                ratings[f.slug]?.let { String.format(Locale.UK, "★ %.1f", it) },
+                who.takeIf { it.isNotEmpty() }?.let { "watched by ${it.joinToString(", ")}" }
+            ).joinToString("  ·  ").ifBlank { null }
+        }
+
+        fun badgesFor(f: LbFilm): List<Pair<String, Bitmap?>> = membersWhoWatched(f.slug).map { lbName(it) to pictures[it] }
+
+        /** Puts focus back on [slug] once it is drawn again: a row's cards are built a few at a time, so this tries a while. */
+        fun refocus(slug: String, attempt: Int) {
+            if (gen != generation) return
+            rows.findViewWithTag<View>(slug)?.let { requestFocusRobust(overlay as ViewGroup, it); return }
+            if (attempt < 20) ui.postDelayed({ refocus(slug, attempt + 1) }, 100)
+        }
+
+        /** Draws the list, twelve films to a row, under the order and filter chosen. */
+        fun render() {
+            if (!loaded || gen != generation) return
+            val keepFocus = overlay.findFocus()?.takeIf { rows.hasFocus() }?.tag as? String
             rows.removeAllViews()
-            if (l == null) { rows.addView(note("Couldn't load this list just now").apply { setPadding(pageStart, Cinema.px(activity, 40), 0, 0) }); return@load }
-            ((header.getChildAt(1) as? TextView))?.let { t -> t.text = l.name; Cinema.style(t, when { l.name.length > 30 -> 64; l.name.length > 16 -> 84; else -> 104 }, Cinema.CREAM, serif = true, tracking = -0.02f) }
-            meta.text = listOfNotNull(l.count?.let { "$it films" }, if (l.films().size < (l.count ?: 0)) "first ${l.films().size} shown" else null).joinToString("  ·  ")
-            l.description?.let { desc.text = it; desc.visibility = View.VISIBLE }
-            val films = l.films()
+            val visible = shown()
+            meta.text = listOfNotNull(
+                listCount?.let { "$it films" },
+                if (films.size < (listCount ?: 0)) "first ${films.size} shown" else null,
+                if (visible.size != films.size) "${visible.size} after the filter" else null,
+                if (order == LbOrder.RATED && ratingsDone < films.size) "ratings $ratingsDone of ${films.size}" else null,
+                if (watchesDone < members.size * films.size) "checking who watched" else null
+            ).joinToString("  ·  ")
+            if (visible.isEmpty()) { rows.addView(note("Every film here is hidden by the filter.").apply { setPadding(pageStart, Cinema.px(activity, 40), 0, 0) }); return }
+            // Each film's place in the order shown, so a sorted list counts from one as it is seen.
+            val place = visible.withIndex().associate { it.value.slug to it.index + 1 }
             // Twelve to a row, each row headed by its places ("1–12"), so a long list stays easy to move through.
-            films.chunked(12).forEachIndexed { r, chunk ->
+            visible.chunked(12).forEachIndexed { r, chunk ->
                 val from = r * 12 + 1
-                lbFilmRow(if (films.size > 12) "$from–${from + chunk.size - 1}" else "In order", null, chunk, gen, into = rows, line = { null }, chip = { f -> "${films.indexOf(f) + 1}" })
+                lbFilmRow(if (visible.size > 12) "$from–${from + chunk.size - 1}" else "In order", null, chunk, gen, into = rows,
+                    line = { f -> noteFor(f) }, chip = { f -> place[f.slug]?.toString() }, badges = { f -> badgesFor(f) })
             }
+            keepFocus?.let { refocus(it, 0) }
+        }
+
+        /** Redraws soon, so a burst of results that arrive together makes one redraw, not one each. */
+        fun renderSoon() {
+            if (renderQueued) return
+            renderQueued = true
+            ui.postDelayed({ renderQueued = false; render() }, 800)
+        }
+
+        /** A control has changed: every control shows its state again, and the list is drawn to match. */
+        fun change() {
+            refreshers.forEach { it() }
+            render()
+        }
+
+        /** Names and pictures of the followed members, for the account chips and the badges. */
+        fun loadProfiles() {
+            members.forEach { u ->
+                lb.load("/$u/", 2 * H, { Lb.profile(it, u) }, stillHere) { p ->
+                    if (gen != generation || p == null) return@load
+                    lbNames[u.lowercase()] = p.name.substringBefore(' ').ifBlank { u }
+                    accountChips[u]?.text = lbName(u)
+                    p.avatar?.let { a -> images.loadPriority(a, maxWidth = Cinema.px(activity, 96), tag = pageTag) { b -> if (gen == generation) { pictures[u] = b; renderSoon() } } }
+                }
+            }
+        }
+
+        /** Whether each followed member has watched each film, from their own page for it (Not Found means not). */
+        fun loadWatches() {
+            members.forEach { u ->
+                films.forEach { f ->
+                    lb.load("/$u/film/${f.slug}/", 6 * H, { Lb.member(it, u) }, stillHere) { m ->
+                        if (gen != generation) return@load
+                        watchesDone++
+                        if (m != null) watched.getOrPut(u) { HashMap() }[f.slug] = m.watched
+                        renderSoon()
+                    }
+                }
+            }
+        }
+
+        /** Each film's average rating, from its rating chart (a small page): what the list is put in order by. */
+        fun loadRatings() {
+            if (ratingsStarted || !loaded) return
+            ratingsStarted = true
+            films.forEach { f ->
+                lb.load("/csi/film/${f.slug}/rating-histogram/", 7 * 24 * H, { Lb.histogram(it) }, stillHere) { counts ->
+                    if (gen != generation) return@load
+                    ratingsDone++
+                    val average = counts?.let { Lb.average(it) }
+                    if (average != null) ratings[f.slug] = average
+                    renderSoon()
+                }
+            }
+        }
+
+        fun chipStrip() = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
+        fun chipAt(strip: LinearLayout) = LinearLayout.LayoutParams(-2, Cinema.px(activity, 60)).apply { if (strip.childCount > 0) marginStart = Cinema.px(activity, 14) }
+
+        /** A labelled row of controls: [label] at its left, then the chips in [strip], which scrolls if they run out. */
+        fun addControlRow(label: String, strip: LinearLayout): LinearLayout {
+            val line = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            line.addView(Cinema.text(activity, label, 17, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(Cinema.px(activity, 360), -2))
+            line.addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(strip) },
+                LinearLayout.LayoutParams(0, -2, 1f))
+            controls.addView(line, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 16) })
+            return line
+        }
+
+        /** A row of choices, one in force at a time: [current] says which, and [pick] takes a choice (then the list is drawn). */
+        fun <T> choiceRow(label: String, options: List<Pair<String, T>>, current: () -> T, pick: (T) -> Unit) {
+            val strip = chipStrip()
+            options.forEach { (text, value) ->
+                val chip = lbChip(text).apply { setOnClickListener { pick(value); change() } }
+                refreshers += { chip.isSelected = current() == value }
+                strip.addView(chip, chipAt(strip))
+            }
+            addControlRow(label, strip)
+        }
+
+        choiceRow("Order", listOf("List order" to LbOrder.LIST, "Highest rated" to LbOrder.RATED), { order }) { order = it; loadRatings() }
+        if (members.isNotEmpty()) {
+            choiceRow("Hide films watched by", listOf("Nobody" to LbHide.NONE, "Any of these" to LbHide.ANY, "All of these" to LbHide.ALL), { hide }) { hide = it }
+            // The accounts a filter counts, shown only while a filter is on.
+            val strip = chipStrip()
+            members.forEach { u ->
+                val chip = lbChip(lbName(u)).apply { setOnClickListener { if (!picked.add(u)) picked.remove(u); change() } }
+                accountChips[u] = chip
+                refreshers += { chip.isSelected = u in picked }
+                strip.addView(chip, chipAt(strip))
+            }
+            val accounts = addControlRow("Accounts", strip)
+            refreshers += { accounts.visibility = if (hide == LbHide.NONE) View.GONE else View.VISIBLE }
+        }
+        refreshers.forEach { it() }
+
+        loadProfiles()
+        lb.load(path, H, { Lb.listPage(it, path) }, stillHere) { l ->
+            if (gen != generation) return@load
+            if (l == null) { rows.removeAllViews(); rows.addView(note("Couldn't load this list just now").apply { setPadding(pageStart, Cinema.px(activity, 40), 0, 0) }); return@load }
+            ((header.getChildAt(1) as? TextView))?.let { t -> t.text = l.name; Cinema.style(t, when { l.name.length > 30 -> 64; l.name.length > 16 -> 84; else -> 104 }, Cinema.CREAM, serif = true, tracking = -0.02f) }
+            listCount = l.count
+            l.description?.let { desc.text = it; desc.visibility = View.VISIBLE }
+            films = l.films()
+            loaded = true
+            render()
+            loadWatches()
+            if (order == LbOrder.RATED) loadRatings()
             // The fan's five first, ahead of the rows' posters, which queue on the shelf workers.
+            val first = films.take(5)
             slowPool.execute {
-                val posters = lbPosters(films.take(5))
-                activity.runOnUiThread { if (gen == generation) films.take(5).forEachIndexed { k, f -> posters[f.slug]?.let { u -> images.load(u, maxWidth = 400, tag = pageTag) { b -> fan.posters[k].setImageBitmap(b) } } } }
+                val posters = lbPosters(first)
+                activity.runOnUiThread { if (gen == generation) first.forEachIndexed { k, f -> posters[f.slug]?.let { u -> images.load(u, maxWidth = 400, tag = pageTag) { b -> fan.posters[k].setImageBitmap(b) } } } }
             }
         }
     }
@@ -1569,15 +1783,18 @@ class MoviesPanel(
         fun runQuery(q: String) {
             if (q.length < 2) { showIdle(); return }
             showResults(q, null)
+            // A query the owner has typed past is dropped: its page is not fetched, or its browser load stops, so the latest one is not held up.
             lb.load("/search/lists/${java.net.URLEncoder.encode(q, "UTF-8").replace("+", "%20")}/", 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR,
-                { com.danielportelabyrne.cinema.data.letterboxd.Lb.lists(it) }) { l -> if (gen == generation && lbTyped.trim() == q) showResults(q, l.orEmpty()) }
+                { Lb.lists(it) }, stillWanted = { gen == generation && lbTyped.trim() == q }) { l ->
+                if (gen == generation && lbTyped.trim() == q) showResults(q, l.orEmpty())
+            }
         }
         lbSearchRunner = { q -> runQuery(q) }
         val keyboard = QwertyKeyboard(activity) { key ->
             lbTyped = Qwerty.type(lbTyped, key)
             query.text = lbTyped.ifEmpty { "Search Letterboxd lists" }; query.setTextColor(if (lbTyped.isEmpty()) 0xFF8F8272.toInt() else Cinema.CREAM)
             pending?.let { ui.removeCallbacks(it) }
-            pending = Runnable { runQuery(lbTyped.trim()) }.also { ui.postDelayed(it, 700) }
+            pending = Runnable { runQuery(lbTyped.trim()) }.also { ui.postDelayed(it, 450) }
         }
         place(keyboard, left, Cinema.px(activity, 240), Cinema.px(activity, 980), Cinema.px(activity, 476))
         showIdle()
@@ -1615,7 +1832,8 @@ class MoviesPanel(
         fun showPreview(user: String) {
             preview.visibility = View.VISIBLE; preview.removeAllViews()
             preview.addView(Cinema.text(activity, "Looking for @$user…", 17, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true))
-            lb.load("/$user/", 2 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { html -> if (lb.missing(html)) null else com.danielportelabyrne.cinema.data.letterboxd.Lb.profile(html, user) }) { p ->
+            lb.load("/$user/", 2 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { html -> if (lb.missing(html)) null else com.danielportelabyrne.cinema.data.letterboxd.Lb.profile(html, user) },
+                stillWanted = { gen == generation && lbTyped == user }) { p ->
                 if (gen != generation || lbTyped != user) return@load
                 preview.removeAllViews()
                 if (p == null) { preview.addView(Cinema.text(activity, "No member called @$user", 24, Cinema.MUTED)); return@load }
@@ -1760,7 +1978,7 @@ class MoviesPanel(
                         lbNames[u.lowercase()] = p.name.substringBefore(' ').ifBlank { u }; nameView.text = lbName(u); av.set(lbName(u), null)
                         p.avatar?.let { a -> images.load(a, maxWidth = 168, tag = pageTag) { b -> av.set(lbName(u), b) } }
                     }
-                    lb.load("/$u/film/${info.slug}/", 6 * H, { h -> if (lb.missing(h)) com.danielportelabyrne.cinema.data.letterboxd.LbMemberFilm(u, null, false, null) else com.danielportelabyrne.cinema.data.letterboxd.Lb.memberFilm(h, u) }) { m ->
+                    lb.load("/$u/film/${info.slug}/", 6 * H, { h -> Lb.member(h, u) }) { m ->
                         if (m == null || (m.rating == null && m.review == null && !m.liked)) { starsView.text = "Not logged yet"; starsView.setTextColor(Cinema.MUTED); Cinema.style(starsView, 22, Cinema.MUTED); return@load }
                         starsView.text = android.text.SpannableStringBuilder(m.rating?.let { com.danielportelabyrne.cinema.data.letterboxd.Lb.stars(it) } ?: "Watched").apply {
                             if (m.liked) { val at = length; append("  ♥"); setSpan(android.text.style.ForegroundColorSpan(0xFFFF6F61.toInt()), at, length, 0) }
