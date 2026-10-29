@@ -37,8 +37,8 @@ data class LbFilmInfo(
     val backdrop: String?, val page: FilmPage, val histogram: List<Long> = emptyList()
 )
 
-/** What one member has logged for one film: their rating, whether they liked it, and their review. */
-data class LbMemberFilm(val user: String, val rating: Int?, val liked: Boolean, val review: String?) : java.io.Serializable
+/** What one member has logged for one film: their rating, whether they liked it, their review, and whether they watched it at all. */
+data class LbMemberFilm(val user: String, val rating: Int?, val liked: Boolean, val review: String?, val watched: Boolean = true) : java.io.Serializable
 
 /** Someone a member follows, for suggestions on the "follow someone" page. */
 data class LbMember(val user: String, val name: String, val avatar: String?, val films: String?) : java.io.Serializable
@@ -177,6 +177,16 @@ object Lb {
         )
     }
 
+    /**
+     * A film's average rating, out of five, worked out from its rating chart: [histogram] counts the ratings from ½ to
+     * ★★★★★. The chart is a small page, so this is far quicker to fetch than the film's own page. Null with no ratings.
+     */
+    fun average(histogram: List<Long>): Double? {
+        val total = histogram.sum()
+        if (histogram.size != 10 || total == 0L) return null
+        return histogram.withIndex().sumOf { (i, n) -> (i + 1) / 2.0 * n } / total
+    }
+
     /** The rating chart fragment: how many gave each of the ten ratings, from ½ up. */
     fun histogram(html: String): List<Long> {
         val bars = regex("""class="barcolumn[^"]*"\s+title="([\d,]+)\s""").findAll(html)
@@ -193,6 +203,16 @@ object Lb {
         val review = regex("""js-review-body[^>]*>(.*?)</div>""", dot).find(html)?.groupValues?.get(1)
             ?.let { b -> regex("<p[^>]*>(.*?)</p>", dot).findAll(b).map { text(it.groupValues[1]) }.joinToString("\n\n") }?.ifBlank { null }
         return LbMemberFilm(user, rating, own?.contains("Liked") == true, review)
+    }
+
+    /**
+     * A member's page for one film, as the film and list pages read it, with whether they have watched it. Not Found
+     * means they never logged it. A page that is neither (a browser check, say) gives null rather than a guess.
+     */
+    fun member(html: String, user: String): LbMemberFilm? = when {
+        html.contains("<title>Letterboxd - Not Found</title>") -> LbMemberFilm(user, null, false, null, watched = false)
+        !html.contains("og:url") -> null
+        else -> memberFilm(html, user)
     }
 
     /** People a member follows: username, display name, picture and films watched. */
