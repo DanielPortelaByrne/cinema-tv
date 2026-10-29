@@ -65,8 +65,11 @@ jobs:
         env:
           DEBUG_KEYSTORE_B64: ${{ secrets.LAUNCHER_DEBUG_KEYSTORE_B64 }}
         run: |
-          mkdir -p "$HOME/.android"
-          echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
+          # Gradle looks for the debug key under ANDROID_USER_HOME, which can differ from $HOME/.android on the runner.
+          android_home="${ANDROID_USER_HOME:-$HOME/.android}"
+          mkdir -p "$android_home"
+          echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$android_home/debug.keystore"
+          echo "Debug key written to $android_home/debug.keystore"
       - name: Build the launcher
         working-directory: launcher
         run: |
