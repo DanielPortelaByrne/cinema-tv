@@ -88,7 +88,12 @@ class CinemaActivity : AppCompatActivity() {
 
         val start = {
             // Nothing to show until there is a Jellyfin server: first run, or after Reset everything.
-            if (!settings.setupDone || !jellyfin.hasServer) setup.startFirstRun() else moviesPanel.show()
+            when {
+                !settings.setupDone || !jellyfin.hasServer -> setup.startFirstRun()
+                // The server is known but the sign-in was lost (a token rejected, or the app data partly wiped): say so.
+                !jellyfin.isConnected -> setup.startSignBackIn()
+                else -> moviesPanel.show()
+            }
             handleDebugIntent(intent)
             handleResumeIntent(intent)
         }

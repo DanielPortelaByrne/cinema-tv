@@ -17,6 +17,9 @@ private const val TAG = "Jellyfin"
 /** A Quick Connect attempt in progress: [code] is what to type into an already signed-in Jellyfin. */
 data class QuickConnectTicket(val secret: String, val code: String)
 
+/** A Jellyfin sign-in as a restore file keeps it: where the server is, and the access token for this TV's user. */
+data class JellyfinSession(val server: String, val token: String, val userId: String)
+
 /**
  * Talks to the owner's Jellyfin server, at the address they gave during setup. Signed in once, either with Quick Connect
  * (a short code approved from a phone or browser) or with a username and password; either way only the access token is
@@ -75,6 +78,18 @@ class JellyfinClient(platform: Platform) {
 
     /** Forgets the server as well as the sign-in (Settings, Reset everything). */
     fun forget() { prefs.edit().remove("server").remove("token").remove("userId").apply(); invalidateLibrary() }
+
+    /** The server and token a restore file carries, or null when not signed in. The password is never here. */
+    fun savedSession(): JellyfinSession? {
+        val session = JellyfinSession(server, token.orEmpty(), userId.orEmpty())
+        return session.takeIf { it.server.isNotBlank() && it.token.isNotBlank() && it.userId.isNotBlank() }
+    }
+
+    /** Puts back a sign-in from a restore file, as a normal sign-in would keep it: the token only. */
+    fun restoreSession(session: JellyfinSession) {
+        prefs.edit().putString("server", session.server).putString("token", session.token).putString("userId", session.userId).apply()
+        invalidateLibrary()
+    }
 
     // --- Sign in ---------------------------------------------------------------------------------
 

@@ -111,6 +111,9 @@ enum class StreamStatus { READY, NOT_SIGNED_IN, NOT_FOUND, CONNECTING, UNAVAILAB
 /** [url] is set only when [status] is READY: the film's bytes, which the player reads as they download. */
 data class StreamStart(val status: StreamStatus, val url: String?, val label: String?)
 
+/** A Seerr sign-in as a restore file keeps it: where Seerr is, and its session cookie. */
+data class SeerrSession(val server: String, val cookie: String)
+
 class SeerrClient(platform: Platform) {
     private val prefs = platform.preferences("seerr")
     private val settings = com.danielportelabyrne.cinema.data.settings.CinemaSettings(platform)
@@ -121,6 +124,17 @@ class SeerrClient(platform: Platform) {
     val isSignedIn: Boolean get() = hasServer && !prefs.getString("cookie", null).isNullOrBlank()
 
     fun signOut() { prefs.edit().remove("cookie").apply() }
+
+    /** The address and session cookie a restore file carries, or null when not signed in. */
+    fun savedSession(): SeerrSession? {
+        val cookie = prefs.getString("cookie", null)
+        return if (isSignedIn && !cookie.isNullOrBlank()) SeerrSession(base, cookie) else null
+    }
+
+    /** Puts back a sign-in from a restore file. */
+    fun restoreSession(session: SeerrSession) {
+        prefs.edit().putString("server", session.server).putString("cookie", session.cookie).apply()
+    }
 
     /** Points this TV at a (possibly different) Seerr; the old sign-in is dropped. Blank forgets Seerr altogether. */
     fun setServer(address: String?) {

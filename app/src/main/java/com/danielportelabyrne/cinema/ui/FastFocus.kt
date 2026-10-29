@@ -85,8 +85,11 @@ object FastFocus {
             r.bottom + bottomInset > bottom -> r.bottom + bottomInset - page.height
             else -> return
         }.coerceAtLeast(0)
-        // Close to the top, go all the way up: otherwise the page can stop short of its first row and look stuck.
-        val snapped = if (target < 160 * page.resources.displayMetrics.density) 0 else target
+        // Moving up to a row near the top, go all the way up: otherwise the page can stop short of its first row and look
+        // stuck. A row further down that only needs its bottom shown must not snap to the top, so this is checked on where
+        // the item is now, not on the scroll target alone.
+        val nearTop = 160 * page.resources.displayMetrics.density
+        val snapped = if (target < nearTop && r.top - topInset < nearTop) 0 else target
         page.smoothScrollTo(0, snapped)
     }
 

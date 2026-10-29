@@ -13,6 +13,7 @@ import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -37,6 +38,7 @@ import com.danielportelabyrne.cinema.design.Cinema
 import com.danielportelabyrne.cinema.design.cinema.CinemaButton
 import com.danielportelabyrne.cinema.ui.room.DownloadClientSignInSheet
 import com.danielportelabyrne.cinema.ui.room.InfoSheet
+import com.danielportelabyrne.cinema.ui.CinemaContentScrollView
 import com.danielportelabyrne.cinema.ui.room.JellyfinConnectSheet
 import com.danielportelabyrne.cinema.ui.room.SheetAction
 import java.util.Locale
@@ -62,6 +64,10 @@ class SetupFlow(
     private val ui = Handler(Looper.getMainLooper())
     private val pool = Executors.newCachedThreadPool()
     private val queue by lazy { QueueClient(seerr, AndroidPlatform(activity)) }
+    /** The phone pairing on screen, if any: its QR page is the only thing that keeps its server open. */
+    private val phone = PhonePairing(jellyfin, seerr, settings, ui, ::phoneFinished) { queue }
+    /** The page showing a QR for saving the sign-in, so its confirmation can be written onto it. */
+    private var savePage: Page? = null
     private var settingsMode = false
     private var changed = false
     /** Bumped every time a page is drawn, so a late network answer never paints over the page that replaced it. */
@@ -92,12 +98,13 @@ class SetupFlow(
     }
 
     fun close() {
+        phone.close()
         host.removeAllViews(); host.visibility = View.GONE; pageToken++
         if (!settingsMode) settings.setupDone = true
         onClosed(changed)
     }
 
-    fun shutdown() = pool.shutdownNow()
+    fun shutdown() { phone.close(); pool.shutdownNow() }
 
     /** Debug builds only: opens one page by name, for screenshots without signing in. */
     fun debugOpen(name: String) {
@@ -129,7 +136,59 @@ class SetupFlow(
         val p = page(null, "Cinema", "Your Jellyfin library, and what is streaming everywhere else, in one place. " +
             "Setting up takes a couple of minutes: you will need your Jellyfin address and sign-in, and optionally your Seerr.")
         backTo = null
-        p.primary("Set up", R.drawable.ic_cin_chev) { jellyfinServer() }
+        p.secondary("Set up from my phone") { phoneStep(PhoneKind.SETUP, back = ::welcome) }
+        p.secondary("Restore from my phone") { phoneStep(PhoneKind.RESTORE, back = ::welcome) }
+        p.primary("Set up with the remote", R.drawable.ic_cin_chev) { jellyfinServer() }
+    }
+
+    /**
+     * A page with a QR code: the phone scans it and does the step there, and the TV waits. Leaving the page stops the
+     * pairing, so nothing stays listening on the network.
+     */
+    private fun phoneStep(kind: PhoneKind, back: () -> Unit) {
+        val (title, lead) = when (kind) {
+            PhoneKind.SETUP -> "Set up from your phone" to "Scan this with your phone's camera. Your phone opens a page where you " +
+                "type your Jellyfin address and sign-in. The TV signs in itself and keeps only the sign-in token."
+            PhoneKind.RESTORE -> "Restore from your phone" to "Scan this, choose the cinema-restore.json file you saved, and enter its PIN."
+            PhoneKind.SAVE -> "Save sign-in to your phone" to "Scan this to download cinema-restore.json to your phone. " +
+                "Keep it and its PIN somewhere safe. The file holds your sign-ins."
+        }
+        val p = page(if (settingsMode) "SETTINGS" else null, title, lead)
+        backTo = back
+        if (kind == PhoneKind.SAVE) savePage = p
+        val address = phone.start(kind)
+        if (address == null) {
+            p.done("Couldn't find this TV's network address. Check the TV is on Wi-Fi, then try again.")
+        } else {
+            p.qr(address.url)
+            p.note("Or type ${address.url} into your phone's browser.")
+            p.status("Waiting for your phone…")
+        }
+        p.secondary("Back") { back() }
+    }
+
+    /** A phone finished its step. Setup carries on as if typed on the remote; a restore reopens Cinema with it. */
+    private fun phoneFinished(kind: PhoneKind) {
+        phone.close()
+        when (kind) {
+            PhoneKind.SETUP -> { changed = true; ArrSetup.forget(); advance(if (seerr.hasServer) ::arrStep else ::regionStep) }
+            PhoneKind.RESTORE -> { changed = true; close() }
+            PhoneKind.SAVE -> savePage?.status("Saved to your phone. You can close this page there.")
+        }
+    }
+
+    /**
+     * Cinema opened signed out, because its Jellyfin sign-in was lost or rejected. Offers a restore from the phone, the
+     * remote, or carrying on without signing in.
+     */
+    fun startSignBackIn() {
+        settingsMode = true; changed = false; afterStep = null
+        val p = page(null, "Sign back in", "Cinema lost its Jellyfin sign-in, so your films can't load. Restore it from your phone, " +
+            "or sign in with the remote.")
+        backTo = null
+        p.secondary("Restore from my phone") { phoneStep(PhoneKind.RESTORE, back = ::startSignBackIn) }
+        p.secondary("Sign in with the remote") { signInToJellyfin {} }
+        p.primary("Later", R.drawable.ic_cin_chev) { close() }
     }
 
     private fun jellyfinServer() {
@@ -553,21 +612,24 @@ class SetupFlow(
         p.row("Helper services", if (extras.isEmpty()) "None" else extras.joinToString(" and ").replaceFirstChar { it.uppercase() })
             .button("Change") { advancedStep() }
 
+        p.row("Save sign-in", "Download your settings and sign-ins to your phone, to restore after an update or reinstall")
+            .button("Save to phone") { phoneStep(PhoneKind.SAVE, back = ::overview) }
+
         p.row("Reset", "Forget every server, sign-in and setting on this TV").button("Reset everything", danger = true) { confirmReset() }
         p.primary("Done", R.drawable.ic_cin_check) { close() }
     }
 
+    /** Reset is a page like the rest of setup: the owner confirms it, or goes back to Settings. */
     private fun confirmReset() {
-        infoSheet.show("RESET", "Reset everything?", "This TV forgets Jellyfin, Seerr, Sonarr, Radarr, download-client logins and the country. " +
-            "Your servers are not changed.", emptyList(), null, listOf(
-            SheetAction("Reset", "Start setup again", primary = true) {
-                jellyfin.forget(); seerr.setServer(null); settings.reset(); ArrSetup.forget()
-                LetterboxdRepository.forgetFollowing(activity)
-                infoSheet.hide()
-                startFirstRun()
-            },
-            SheetAction("Cancel") { infoSheet.hide() }
-        ))
+        val p = page("SETTINGS", "Reset everything?", "This TV forgets Jellyfin, Seerr, Sonarr, Radarr, download-client logins and the " +
+            "country. Your servers are not changed. If you saved a file with Save sign-in, you can restore from it afterwards.")
+        backTo = ::overview
+        p.primary("Reset", R.drawable.ic_cin_check) {
+            jellyfin.forget(); seerr.setServer(null); settings.reset(); ArrSetup.forget()
+            LetterboxdRepository.forgetFollowing(activity)
+            startFirstRun()
+        }
+        p.secondary("Cancel") { overview() }
     }
 
     private fun step(n: Int) = if (settingsMode) "SETTINGS" else "STEP $n OF 6"
@@ -583,10 +645,13 @@ class SetupFlow(
 
     private fun page(eyebrow: String?, title: String, body: String?): Page {
         pageToken++
+        // Any page leaves the QR of the page before it, so that pairing stops answering.
+        phone.close()
         host.removeAllViews()
         host.visibility = View.VISIBLE
         host.setBackgroundColor(Cinema.BG)
-        val scroll = ScrollView(activity).apply { isFillViewport = true; isFocusable = false; isVerticalScrollBarEnabled = false; clipChildren = false }
+        // The same page rules as the home screen: whatever takes focus is brought in view, and the top is reachable again.
+        val scroll = CinemaContentScrollView(activity).apply { isFillViewport = true; isFocusable = false; isVerticalScrollBarEnabled = false; clipChildren = false }
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false
             setPadding(px(200), px(110), px(200), px(110))
@@ -686,6 +751,12 @@ class SetupFlow(
                 lastButton = b
                 return this
             }
+        }
+
+        /** A QR code large enough to scan from across the room. */
+        fun qr(text: String) {
+            val image = ImageView(activity).apply { setImageBitmap(PhoneQr.bitmap(text)); contentDescription = "QR code for your phone" }
+            column.addView(image, insertAt(), LinearLayout.LayoutParams(px(380), px(380)).apply { topMargin = px(16) })
         }
 
         fun status(text: String) {
