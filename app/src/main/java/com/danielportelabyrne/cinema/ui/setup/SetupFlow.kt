@@ -391,6 +391,7 @@ class SetupFlow(
         Integration.entries.forEach { integration ->
             val row = p.row(integration.label, integrationDetail(integration))
             if (integration == Integration.MUSIC) row.button(if (settings.subsonic == null) "Set up" else "Server") { musicStep() }
+            if (integration == Integration.STREMIO) row.button(if (settings.stremioKey == null) "Link" else "Open") { stremioStep() }
             row.button(toggleLabel(integration)) {
                 settings.setOn(integration, !settings.isOn(integration)); changed = true
                 row.detail.text = integrationDetail(integration)
@@ -398,6 +399,112 @@ class SetupFlow(
             }
         }
         p.primary("Done", R.drawable.ic_cin_check) { overview() }
+    }
+
+    // --- Stremio -------------------------------------------------------------------------------------
+
+    private val STREMIO_LIST_LIMIT = 150
+    private val stremio = com.danielportelabyrne.cinema.data.stremio.StremioClient()
+
+    private fun filmCount(n: Int) = if (n == 1) "1 film" else "$n films"
+
+    private fun stremioStep() {
+        val key = settings.stremioKey
+        if (key == null) stremioIntroStep() else stremioLibraryStep(key)
+    }
+
+    private fun stremioIntroStep() {
+        val p = page("STREMIO", "Stremio library", "Bring the films you saved in Stremio over to Cinema. You approve it once on your phone, so there is no typing on the TV.")
+        backTo = ::integrationsStep
+        p.primary("Port library from Stremio?", R.drawable.ic_cin_check) { stremioLinkStep() }
+        p.secondary("Back") { integrationsStep() }
+    }
+
+    /** A code and QR picture; the phone approves it, and this page is waiting (up to ten minutes) for that. */
+    private fun stremioLinkStep() {
+        val p = page("STREMIO", "Link your account", null)
+        backTo = ::stremioStep
+        val token = pageToken
+        p.status("Getting a code from Stremio…")
+        bg({ stremio.createLink() }) { link ->
+            if (token != pageToken) return@bg
+            if (link == null) {
+                p.status("Couldn't reach Stremio. Check the internet and try again.")
+                p.primary("Try again", null) { stremioLinkStep() }
+                p.secondary("Cancel") { stremioStep() }
+                return@bg
+            }
+            p.status("Waiting for your phone…")
+            p.body("Point your phone's camera at the picture and sign in to Stremio on the page that opens. No camera? Go to link.stremio.com and type this code:")
+            p.column.addView(Cinema.text(activity, link.code, 72, Cinema.TERRA, serif = true, weight = 600))
+            val qr = android.widget.ImageView(activity).apply {
+                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER; setBackgroundColor(android.graphics.Color.WHITE)
+                setPadding(px(16), px(16), px(16), px(16))
+            }
+            p.column.addView(qr, LinearLayout.LayoutParams(px(320), px(320)).apply { topMargin = px(24) })
+            com.danielportelabyrne.cinema.ui.RemoteImages.shared(activity).load(link.qr, maxWidth = px(640), tag = this) { b -> if (token == pageToken) qr.setImageBitmap(b) }
+            p.secondary("Cancel") { stremioStep() }
+            pool.execute {
+                val deadline = System.currentTimeMillis() + 10 * 60_000L
+                while (System.currentTimeMillis() < deadline && token == pageToken) {
+                    val key = stremio.readLink(link.code)
+                    if (key != null) {
+                        ui.post { if (token == pageToken) { settings.stremioKey = key; changed = true; stremioStep() } }
+                        return@execute
+                    }
+                    try { Thread.sleep(3000) } catch (_: InterruptedException) { return@execute }
+                }
+                ui.post { if (token == pageToken) p.status("That code timed out. Press Cancel and try again.") }
+            }
+        }
+    }
+
+    /** Linked: the saved films as a list, with the button that copies the unwatched ones into the Watchlist. */
+    private fun stremioLibraryStep(key: String) {
+        val p = page("STREMIO", "Stremio library", null)
+        backTo = ::integrationsStep
+        val token = pageToken
+        p.status("Loading your Stremio library…")
+        bg({ stremio.films(key).let { it to (it == null && stremio.keyRejected(key)) } }) { (films, rejected) ->
+            if (token != pageToken) return@bg
+            if (rejected) { settings.stremioKey = null; changed = true; stremioIntroStep(); return@bg }
+            if (films == null) {
+                p.status("Couldn't reach Stremio just now.")
+                p.primary("Try again", null) { stremioStep() }
+                p.secondary("Back") { integrationsStep() }
+                return@bg
+            }
+            val toWatch = films.filter { !it.watched }
+            p.status("")
+            p.body("${filmCount(films.size)} saved in Stremio, ${toWatch.size} not watched yet. Importing adds the ones you haven't watched to Watchlist, a row in My library.")
+            p.primary("Import to my watchlist", R.drawable.ic_cin_check) {
+                val added = settings.addToWatchlist(toWatch.map { com.danielportelabyrne.cinema.data.movies.WatchlistFilm(it.imdbId, it.name, it.year, it.poster) })
+                if (added > 0) changed = true
+                p.done(if (added > 0) "Added ${filmCount(added)} to your Watchlist. Find it in My library." else "Your Watchlist already has all of them.")
+            }
+            p.secondary("Refresh") { stremioStep() }
+            p.secondary("Disconnect Stremio") { settings.stremioKey = null; changed = true; integrationsStep() }
+            p.secondary("Back") { integrationsStep() }
+            films.take(STREMIO_LIST_LIMIT).forEach { stremioFilmLine(p, it) }
+            if (films.size > STREMIO_LIST_LIMIT) {
+                p.column.addView(Cinema.text(activity, "…and ${films.size - STREMIO_LIST_LIMIT} more", 22, Cinema.DIM), LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(14) })
+            }
+        }
+    }
+
+    private fun stremioFilmLine(p: Page, film: com.danielportelabyrne.cinema.data.stremio.StremioFilm) {
+        val rest = Cinema.glass(activity, 30f)
+        val line = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; isFocusable = true; clipChildren = false; clipToPadding = false
+            setPadding(px(36), px(18), px(28), px(18)); background = rest
+        }
+        line.addView(Cinema.text(activity, film.name, 30, Cinema.CREAM, weight = 600).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+        line.addView(Cinema.text(activity, listOfNotNull(film.year?.toString(), if (film.watched) "Watched" else "Not watched yet").joinToString("  ·  "), 22, Cinema.MUTED),
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(2) })
+        line.setOnFocusChangeListener { v, focused ->
+            v.background = if (focused) GradientDrawable().apply { cornerRadius = px(30).toFloat(); setColor(0xFF7A5C42.toInt()) } else rest
+        }
+        p.column.addView(line, LinearLayout.LayoutParams(px(1500), -2).apply { topMargin = px(12) })
     }
 
     private fun toggleLabel(integration: Integration) = if (settings.isOn(integration)) "Turn off" else "Turn on"
@@ -410,6 +517,7 @@ class SetupFlow(
             }
             Integration.MUSIC -> settings.subsonic?.let { "On · ${it.baseUrl}" + if (it.username.isNotBlank()) " · ${it.username}" else "" }
                 ?: "On · set up a server to add Music to the menu"
+            Integration.STREMIO -> if (settings.stremioKey != null) "On · linked, open it to see and import your saved films" else "On · press Link to port your Stremio library"
         }
     }
 

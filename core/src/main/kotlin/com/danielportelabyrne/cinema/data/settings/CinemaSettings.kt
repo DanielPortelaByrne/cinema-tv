@@ -1,5 +1,7 @@
 package com.danielportelabyrne.cinema.data.settings
 
+import com.danielportelabyrne.cinema.data.movies.Watchlist
+import com.danielportelabyrne.cinema.data.movies.WatchlistFilm
 import com.danielportelabyrne.cinema.data.music.SubsonicConfig
 import com.danielportelabyrne.cinema.platform.Platform
 import com.danielportelabyrne.cinema.platform.SecretStore
@@ -74,6 +76,24 @@ class CinemaSettings(platform: Platform) {
             secrets.put("subsonic_password", v?.password?.takeIf { it.isNotEmpty() })
             secrets.put("subsonic_key", v?.apiKey?.takeIf { it.isNotEmpty() })
         }
+
+    /** The key that lets Cinema read the owner's Stremio library, or null when not linked. It only ever goes to Stremio. */
+    var stremioKey: String?
+        get() = secrets.get("stremio_key")?.takeIf { it.isNotBlank() }
+        set(v) = secrets.put("stremio_key", v)
+
+    /** Films the owner means to watch, shown as the Watchlist row in My library. */
+    var watchlist: List<WatchlistFilm>
+        get() = Watchlist.parse(prefs.getString("watchlist_films", null))
+        set(v) { prefs.edit().putString("watchlist_films", Watchlist.toJson(v)).apply() }
+
+    /** Puts [films] at the front of the watchlist, skipping any already there. Returns how many were new. */
+    fun addToWatchlist(films: List<WatchlistFilm>): Int {
+        val have = watchlist
+        val merged = Watchlist.merge(have, films)
+        watchlist = merged
+        return merged.size - have.size
+    }
 
     fun isOn(integration: Integration): Boolean = prefs.getBoolean(integration.key, integration.onByDefault)
 
