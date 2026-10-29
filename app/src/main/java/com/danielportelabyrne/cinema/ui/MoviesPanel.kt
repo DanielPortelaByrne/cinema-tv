@@ -125,7 +125,9 @@ class MoviesPanel(
     /** Whether an integration is switched on in Settings; one that is off has no rail item or title page section. */
     private val integrationOn: (Integration) -> Boolean = { true },
     /** The music server, when one is set up. */
-    private val music: () -> com.danielportelabyrne.cinema.data.music.SubsonicConfig? = { null }
+    private val music: () -> com.danielportelabyrne.cinema.data.music.SubsonicConfig? = { null },
+    /** Films the owner means to watch: shown as the Watchlist row in My library. */
+    private val watchlist: () -> List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm> = { emptyList() }
 ) {
     /** Where the page is: one of the tabs, or a service or genre opened from Home, or search. */
     private sealed class Dest {
@@ -833,6 +835,34 @@ class MoviesPanel(
     private fun libraryEntries(items: List<JellyfinItem>): List<Entry> = items.map { Entry(libraryTitle(it), it, jellyfin.playbackHeaders()) }
 
     /** A row of the owner's own titles, or the offer to connect Jellyfin. */
+    // --- Watchlist ----------------------------------------------------------------------------------
+
+    private val stremio = com.danielportelabyrne.cinema.data.stremio.StremioClient()
+
+    /** The Watchlist row at the top of My library: films the owner meant to watch, imported from Stremio. */
+    private fun watchlistRow() {
+        val films = watchlist()
+        if (films.isEmpty()) return
+        val titles = films.map { watchlistTitle(it) }
+        val r = row("Watchlist", "${films.size}")
+        films.forEachIndexed { i, f ->
+            r.inner.addView(card(Entry(titles[i], null, emptyMap()), titles, defer = r, onSelect = { openWatchlistFilm(f) }), cardParams(i))
+        }
+        r.scroller.post { r.loadNear() }
+    }
+
+    private fun watchlistTitle(f: com.danielportelabyrne.cinema.data.movies.WatchlistFilm) =
+        com.danielportelabyrne.cinema.data.stremio.StremioApi.bare(com.danielportelabyrne.cinema.data.stremio.StremioFilm(f.imdbId, f.name, f.poster, f.year, false, ""))
+
+    /** Fetches the film's full details, finds its copy in Jellyfin if there is one, and opens its page. */
+    private fun openWatchlistFilm(f: com.danielportelabyrne.cinema.data.movies.WatchlistFilm) {
+        slowPool.execute {
+            val title = stremio.filmPage(com.danielportelabyrne.cinema.data.stremio.StremioFilm(f.imdbId, f.name, f.poster, f.year, false, ""))
+            val copy = jellyfin.takeIf { it.isConnected }?.find(title.imdbId, title.tmdbId, false)
+            ui.post { openDetail(Entry(title, copy, if (copy != null) jellyfin.playbackHeaders() else emptyMap()), listOf(title)) }
+        }
+    }
+
     // --- Music --------------------------------------------------------------------------------------
 
     private var musicClient: com.danielportelabyrne.cinema.data.music.SubsonicClient? = null
@@ -1887,10 +1917,12 @@ class MoviesPanel(
         if (!jellyfin.isConnected) {
             pageTitle("My library")
             content.addView(actionCard("Connect Jellyfin", "Sign in to see your own films and series") { jellyfinSheet.show(jellyfin) { if (isVisible) build() } }, LinearLayout.LayoutParams(dp(380), dp(64)).apply { marginStart = margin; topMargin = dp(10) })
+            watchlistRow()
             return
         }
         buildHero()
         val holder = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        watchlistRow()
         content.addView(holder, LinearLayout.LayoutParams(-1, -2))
         holder.addView(note("Loading your library…").apply { setPadding(margin, dp(10), 0, dp(10)) })
         worker.execute {

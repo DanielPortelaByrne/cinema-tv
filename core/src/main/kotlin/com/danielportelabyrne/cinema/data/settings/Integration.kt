@@ -8,7 +8,10 @@ enum class Integration(val label: String, val summary: String, val onByDefault: 
     LETTERBOXD("Letterboxd", "Friends' diaries, lists and stars on film pages", onByDefault = true),
 
     /** On by default, but Music only appears once a server is set up. */
-    MUSIC("Music", "Your music from a Subsonic server such as Navidrome", onByDefault = true);
+    MUSIC("Music", "Your music from a Subsonic server such as Navidrome", onByDefault = true),
+
+    /** On by default; its menu item offers to link the owner's Stremio account and then lists their saved films. */
+    STREMIO("Stremio", "Your saved films from Stremio, as a section in the menu", onByDefault = true);
 
     /** The preferences key; stable, so a rename of the entry does not lose the setting. */
     val key: String get() = "integration_" + name.lowercase()
