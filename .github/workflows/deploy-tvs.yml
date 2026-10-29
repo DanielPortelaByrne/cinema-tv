@@ -1,6 +1,7 @@
 name: Deploy to the TVs
 
-# Keeps the TVs on the newest main. A merge builds a signed release and installs it on each TV in the quiet hours
+# Keeps the TVs on the newest main of Cinema and of the launcher (mcm-launcher), so the two never drift. A merge here
+# builds a signed release and installs it on each TV in the quiet hours
 # (01:00 to 06:00 London time). A TV that is offline or playing is retried by the hourly schedule.
 # The deploy runs on the home-network runner because the TVs are only reachable from the home network.
 on:
@@ -46,8 +47,43 @@ jobs:
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 7
 
+  build-launcher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: DanielPortelaByrne/mcm-launcher
+          ref: main
+          path: launcher
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Signing key shared with the TVs
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.LAUNCHER_DEBUG_KEYSTORE_B64 }}
+        run: |
+          mkdir -p "$HOME/.android"
+          echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
+      - name: Build the launcher
+        working-directory: launcher
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+      - name: Record which launcher commit this is
+        run: git -C launcher rev-parse HEAD > launcher/app/build/outputs/apk/debug/launcher.sha
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-apk
+          path: |
+            launcher/app/build/outputs/apk/debug/app-debug.apk
+            launcher/app/build/outputs/apk/debug/launcher.sha
+          retention-days: 7
+
   deploy:
-    needs: build
+    needs: [build, build-launcher]
     runs-on: [self-hosted, cinema-devices, steamdeck]
     timeout-minutes: 60
     steps:
@@ -56,7 +92,16 @@ jobs:
         with:
           name: cinema-tv-release-apk
           path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher-apk
+          path: artifacts-launcher
       - name: Install on the TVs in the quiet hours
         env:
           TV_ADDRESSES: ${{ vars.TV_ADDRESSES }}
         run: scripts/ci/deploy-tvs.sh artifacts/app-release.apk cinema "$GITHUB_EVENT_NAME"
+      - name: Install the launcher on the TVs in the quiet hours
+        env:
+          TV_ADDRESSES: ${{ vars.TV_ADDRESSES }}
+        run: |
+          GITHUB_SHA=$(cat artifacts-launcher/launcher.sha)             scripts/ci/deploy-tvs.sh artifacts-launcher/app-debug.apk launcher "$GITHUB_EVENT_NAME"
