@@ -75,6 +75,12 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon :app:assembleDebug
+      - name: Sign the launcher with the key the TVs have
+        # Gradle picks its own debug key on the runner, which is not the one on the TVs, so sign again with the stored key.
+        run: |
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-key-alias androiddebugkey             --ks-pass pass:android --key-pass pass:android launcher/app/build/outputs/apk/debug/app-debug.apk
+          "$apksigner" verify --print-certs launcher/app/build/outputs/apk/debug/app-debug.apk | grep "SHA-256"
       - name: Record which launcher commit this is
         run: git -C launcher rev-parse HEAD > launcher/app/build/outputs/apk/debug/launcher.sha
       - uses: actions/upload-artifact@v4
