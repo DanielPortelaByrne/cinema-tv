@@ -1,5 +1,6 @@
 package com.danielportelabyrne.cinema.ui
 
+import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.app.Activity
 import android.content.Context
@@ -79,6 +80,11 @@ import com.danielportelabyrne.cinema.design.AppTheme
 import com.danielportelabyrne.cinema.design.SectionHeader
 import com.danielportelabyrne.cinema.design.cinema.AmbientBackground
 import com.danielportelabyrne.cinema.design.cinema.CinemaButton
+import com.danielportelabyrne.cinema.design.cinema.CinemaConfirm
+import com.danielportelabyrne.cinema.data.search.RecentSearches
+import com.danielportelabyrne.cinema.data.movies.Watchlist
+import com.danielportelabyrne.cinema.data.movies.WatchlistFilm
+import com.danielportelabyrne.cinema.data.search.SearchKeyboard
 import com.danielportelabyrne.cinema.design.cinema.FrostView
 import com.danielportelabyrne.cinema.design.cinema.HeroBackdrop
 import com.danielportelabyrne.cinema.design.cinema.PosterCard
@@ -96,6 +102,8 @@ import com.danielportelabyrne.cinema.design.cinema.VoiceListeningView
 import com.danielportelabyrne.cinema.data.search.Qwerty
 import com.danielportelabyrne.cinema.data.search.VoiceState
 import com.danielportelabyrne.cinema.data.settings.Integration
+import com.danielportelabyrne.cinema.design.cinema.MicButton
+import com.danielportelabyrne.cinema.design.cinema.SearchField
 import com.danielportelabyrne.cinema.data.settings.LibraryOrder
 import com.danielportelabyrne.cinema.design.cinema.RibbonView
 import com.danielportelabyrne.cinema.design.cinema.StripeDrawable
@@ -132,8 +140,17 @@ class MoviesPanel(
     private val integrationOn: (Integration) -> Boolean = { true },
     /** The music server, when one is set up. */
     private val music: () -> com.danielportelabyrne.cinema.data.music.SubsonicConfig? = { null },
+    /** The Stremio add-ons the owner ported; the ones that stream are asked for copies when something is played. */
+    private val stremioAddons: () -> List<com.danielportelabyrne.cinema.data.stremio.StremioAddon> = { emptyList() },
+    /** How far each episode got in a stream played here (see StreamProgress), as saved. */
+    private val streamProgress: () -> String? = { null },
+    /** The searches run lately on each search keyboard, most recent first, and the way to keep them (see RecentSearches). */
+    private val recentSearches: (SearchKeyboard) -> List<String> = { emptyList() },
+    private val saveRecentSearches: (SearchKeyboard, List<String>) -> Unit = { _, _ -> },
     /** Films the owner means to watch: shown as the Watchlist row in My library. */
-    private val watchlist: () -> List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm> = { emptyList() }
+    private val watchlist: () -> List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm> = { emptyList() },
+    /** Keeps the watchlist after a title is added to it or taken off it. */
+    private val saveWatchlist: (List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm>) -> Unit = {}
 ) {
     /** Where the page is: one of the tabs, or a service or genre opened from Home, or search. */
     private sealed class Dest {
@@ -300,6 +317,7 @@ class MoviesPanel(
     }
 
     fun hide() {
+        closePhoneTyping()
         if (voiceActive) voice?.cancel(); closeStreamLoading(); closeDetail(restoreFocus = false); overlay.visibility = View.GONE; ui.removeCallbacks(heroTick)
         // Home is kept for a quick reopen, so its rows keep loading; any other page is dropped.
         if (current !== Dest.Home || trail.isNotEmpty()) { generation++; builtAt = 0L }
@@ -336,6 +354,7 @@ class MoviesPanel(
 
     /** Back closes a title's page, then steps back through where the viewer has been, then lets the panel close. */
     fun back(): Boolean {
+        if (phonePanel != null) { closePhoneTyping(); return true }
         if (voiceActive) { voice?.cancel(); return true }
         if (streamLoading != null) { closeStreamLoading(); return true }
         if (detailOpen) { closeDetail(restoreFocus = true); return true }
@@ -421,6 +440,8 @@ class MoviesPanel(
     }
 
     private fun go(dest: Dest, remember: Boolean = false) {
+        // Leaving a page ends its phone typing: the search that asked for it is no longer on screen.
+        closePhoneTyping()
         if (remember) trail.addLast(current) else trail.clear()
         current = dest; styleTabs(); build()
     }
@@ -844,6 +865,11 @@ class MoviesPanel(
     // --- Watchlist ----------------------------------------------------------------------------------
 
     private val stremio = com.danielportelabyrne.cinema.data.stremio.StremioClient()
+    /** Most torrents from the add-ons passed on to the stream service, best seeded first. */
+    private val STREAM_CANDIDATES = 60
+
+    /** Results in the search preview, beside the keyboard: films and series in turn. */
+    private val PREVIEW_ROWS = 6
 
     /** The Watchlist row at the top of My library: films the owner meant to watch, imported from Stremio. */
     private fun watchlistRow() {
@@ -884,7 +910,7 @@ class MoviesPanel(
     }
 
     private fun playMusic(tracks: List<com.danielportelabyrne.cinema.data.music.MusicTrack>, start: Int = 0) {
-        if (tracks.isEmpty()) { Toast.makeText(activity, "Nothing to play", Toast.LENGTH_SHORT).show(); return }
+        if (tracks.isEmpty()) { CinemaToast.show(activity, "Nothing to play", Toast.LENGTH_SHORT); return }
         com.danielportelabyrne.cinema.ui.music.MusicPlayerActivity.launch(activity, tracks, start)
     }
 
@@ -909,7 +935,7 @@ class MoviesPanel(
         val head = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(pageStart, 0, pageEnd, 0) }
         head.addView(musicHeader(listOf("Music", host), "Your music"))
         val shuffle = CinemaButton(activity, CinemaButton.Kind.TERRA, "Shuffle all", R.drawable.ic_cin_play, small = true)
-        shuffle.setOnClickListener { musicLoad(gen, { it.randomSongs(100) }) { songs -> if (songs == null) Toast.makeText(activity, "Couldn't reach the music server", Toast.LENGTH_SHORT).show() else playMusic(songs) } }
+        shuffle.setOnClickListener { musicLoad(gen, { it.randomSongs(100) }) { songs -> if (songs == null) CinemaToast.show(activity, "Couldn't reach the music server", Toast.LENGTH_SHORT) else playMusic(songs) } }
         head.addView(musicButtons(shuffle), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
         content.addView(head, LinearLayout.LayoutParams(-1, -2))
         musicFocus(shuffle)
@@ -1099,7 +1125,7 @@ class MoviesPanel(
      */
     private fun lbOpen(f: com.danielportelabyrne.cinema.data.letterboxd.LbFilm, poster: String?) {
         val gen = generation
-        Toast.makeText(activity, "Opening ${f.name}…", Toast.LENGTH_SHORT).show()
+        CinemaToast.show(activity, "Opening ${f.name}…", Toast.LENGTH_SHORT)
         slowPool.execute {
             val info = lb.pageNow("/film/${f.slug}/", 7 * 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR)
                 ?.let { com.danielportelabyrne.cinema.data.letterboxd.Lb.film(it) }
@@ -1345,8 +1371,8 @@ class MoviesPanel(
         content.addView(tiles, LinearLayout.LayoutParams(-2, -2).apply { marginStart = pageStart; topMargin = Cinema.px(activity, 34) })
         val followButton = CinemaButton(activity, if (followed) CinemaButton.Kind.GLASS else CinemaButton.Kind.PRIMARY, if (followed) "Unfollow" else "Follow", null, small = true).apply {
             setOnClickListener {
-                if (lb.following.any { it.equals(user, true) }) { lb.unfollow(user); Toast.makeText(activity, "Stopped following ${lbName(user)}", Toast.LENGTH_SHORT).show(); current = Dest.Letterboxd; trail.clear(); styleTabs(); build() }
-                else { lb.follow(user); Toast.makeText(activity, "Following ${lbName(user)}", Toast.LENGTH_SHORT).show(); build() }
+                if (lb.following.any { it.equals(user, true) }) { lb.unfollow(user); CinemaToast.show(activity, "Stopped following ${lbName(user)}", Toast.LENGTH_SHORT); current = Dest.Letterboxd; trail.clear(); styleTabs(); build() }
+                else { lb.follow(user); CinemaToast.show(activity, "Following ${lbName(user)}", Toast.LENGTH_SHORT); build() }
             }
         }
 
@@ -1712,6 +1738,13 @@ class MoviesPanel(
 
     private fun com.danielportelabyrne.cinema.data.letterboxd.LbList.films() = previews
 
+    /** Words too common to find a list by: a phrase is searched by the rest of its words. */
+    private val lbStopWords = setOf("the", "and", "for", "you", "your", "want", "when", "what", "that", "this", "with", "from", "are", "was", "its", "all", "any", "some", "just", "like", "have", "not", "but", "out", "into")
+
+    /** The words of a list-search phrase that are worth searching for on their own (three letters or more, not common). */
+    private fun keywordsOf(q: String): List<String> =
+        q.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length >= 3 && it !in lbStopWords }.distinct()
+
     /** Typed text on the Letterboxd search and follow pages. */
     private var lbTyped = ""
 
@@ -1722,20 +1755,19 @@ class MoviesPanel(
     private fun buildLbSearch(gen: Int) {
         lbTyped = ""
         val stage = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false }
-        content.addView(stage, LinearLayout.LayoutParams(-1, Cinema.px(activity, 720)))
+        content.addView(stage, LinearLayout.LayoutParams(-1, Cinema.px(activity, 900)))
         val left = Cinema.px(activity, 176)
         fun place(v: View, x: Int, y: Int, w: Int = -2, h: Int = -2) = stage.addView(v, FrameLayout.LayoutParams(w, h).apply { leftMargin = x; topMargin = y })
-        val field = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(Cinema.px(activity, 42), 0, Cinema.px(activity, 42), 0); background = Cinema.glass(activity, 56f, 0x17FFF2DE)
-        }
-        field.addView(Cinema.icon(activity, R.drawable.ic_cin_search, Cinema.SAFFRON), LinearLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40)))
-        field.addView(com.danielportelabyrne.cinema.design.cinema.LbDots.view(activity, 12), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 22) })
-        field.addView(Cinema.text(activity, "Lists", 20, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 16) })
-        val query = Cinema.text(activity, "Search Letterboxd lists", 36, 0xFF8F8272.toInt(), weight = 300).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.START }
-        field.addView(query, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = Cinema.px(activity, 22) })
+        // The same search bar as the global search (SearchField), led by the Letterboxd mark and the word "Lists".
+        val lead = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        lead.addView(Cinema.icon(activity, R.drawable.ic_cin_search, Cinema.SAFFRON), LinearLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40)))
+        lead.addView(com.danielportelabyrne.cinema.design.cinema.LbDots.view(activity, 12), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 22) })
+        lead.addView(Cinema.text(activity, "Lists", 20, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 16) })
+        val field = SearchField(activity, lead, prompt = "Search Letterboxd lists", hintText = "")
+        val query = field.query
         place(field, left, Cinema.px(activity, 12), activity.resources.displayMetrics.widthPixels - left - pageEnd, Cinema.px(activity, 112))
-        place(Cinema.eyebrow(activity, listOf("Type to search"), color = Cinema.DIM, markAlpha = 0.5f), left, Cinema.px(activity, 170))
+        val typeToSearch = Cinema.eyebrow(activity, listOf("Type to search"), color = Cinema.DIM, markAlpha = 0.5f)
+        place(typeToSearch, left, Cinema.px(activity, 170))
         val side = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         place(side, Cinema.px(activity, 1232), Cinema.px(activity, 170), Cinema.px(activity, 592))
         val below = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
@@ -1746,6 +1778,7 @@ class MoviesPanel(
             side.addView(Cinema.text(activity, if (lists == null) "Searching for “$q”…" else "Lists matching “$q”", 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
             if (lists == null) return
             if (lists.isEmpty()) { side.addView(note("No lists found"), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) }); return }
+            saveRecentSearches(SearchKeyboard.LISTS, RecentSearches.add(recentSearches(SearchKeyboard.LISTS), q))
             lists.take(3).forEach { l ->
                 val card = GlowCard(activity, 26f).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(Cinema.px(activity, 22), 0, Cinema.px(activity, 22), 0); contentDescription = l.name }
                 val mini = ListCard(activity, posterW = 66, step = 30, widthMock = 186).apply { isFocusable = false; name.visibility = View.GONE; by.visibility = View.GONE }
@@ -1763,9 +1796,10 @@ class MoviesPanel(
         }
         fun showIdle() {
             side.removeAllViews(); below.removeAllViews()
+            addRecent(SearchKeyboard.LISTS, side, search = { term -> lbTyped = term; field.render(term, null); lbSearchRunner?.invoke(term) }, refresh = { showIdle() })
             side.addView(Cinema.text(activity, "Try a theme, a director or a mood", 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true))
             listOf("a24", "comfort", "horror", "ghibli", "noir").forEachIndexed { i, s ->
-                side.addView(pill(s, accent = false).apply { setOnClickListener { lbTyped = s; query.text = s; query.setTextColor(Cinema.CREAM); lbSearchRunner?.invoke(s) } },
+                side.addView(pill(s, accent = false).apply { setOnClickListener { lbTyped = s; field.render(s, null); lbSearchRunner?.invoke(s) } },
                     LinearLayout.LayoutParams(-2, Cinema.px(activity, 54)).apply { topMargin = Cinema.px(activity, if (i == 0) 22 else 12) })
             }
             // Lists by the people followed here.
@@ -1780,25 +1814,148 @@ class MoviesPanel(
                 }
             }
         }
+        fun listSearch(term: String, current: () -> Boolean, done: (List<com.danielportelabyrne.cinema.data.letterboxd.LbList>?) -> Unit) {
+            // A query the owner has typed past is dropped: its page is not fetched, or its browser load stops, so the latest one is not held up.
+            lb.load("/search/lists/${java.net.URLEncoder.encode(term, "UTF-8").replace("+", "%20")}/", 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR,
+                { Lb.lists(it) }, stillWanted = current) { l -> if (current()) done(l) }
+        }
+        // A phrase that matches no list at once: each of its words is searched, and the lists that match the most of them come first.
+        fun searchKeywords(q: String, words: List<String>, current: () -> Boolean) {
+            val hits = LinkedHashMap<String, Pair<com.danielportelabyrne.cinema.data.letterboxd.LbList, MutableSet<String>>>()
+            var waiting = words.size
+            words.forEach { word ->
+                listSearch(word, current) { found ->
+                    found?.forEach { list -> hits.getOrPut(list.path) { list to mutableSetOf() }.second.add(word) }
+                    if (--waiting == 0 && current()) showResults(q, hits.values.sortedByDescending { it.second.size }.map { it.first })
+                }
+            }
+        }
         fun runQuery(q: String) {
             if (q.length < 2) { showIdle(); return }
             showResults(q, null)
-            // A query the owner has typed past is dropped: its page is not fetched, or its browser load stops, so the latest one is not held up.
-            lb.load("/search/lists/${java.net.URLEncoder.encode(q, "UTF-8").replace("+", "%20")}/", 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR,
-                { Lb.lists(it) }, stillWanted = { gen == generation && lbTyped.trim() == q }) { l ->
-                if (gen == generation && lbTyped.trim() == q) showResults(q, l.orEmpty())
+            val current = { gen == generation && lbTyped.trim() == q }
+            listSearch(q, current) { l ->
+                val words = keywordsOf(q)
+                if (l.isNullOrEmpty() && words.size > 1) searchKeywords(q, words, current) else showResults(q, l.orEmpty())
             }
         }
         lbSearchRunner = { q -> runQuery(q) }
         val keyboard = QwertyKeyboard(activity) { key ->
             lbTyped = Qwerty.type(lbTyped, key)
-            query.text = lbTyped.ifEmpty { "Search Letterboxd lists" }; query.setTextColor(if (lbTyped.isEmpty()) 0xFF8F8272.toInt() else Cinema.CREAM)
+            field.render(lbTyped, null)
             pending?.let { ui.removeCallbacks(it) }
             pending = Runnable { runQuery(lbTyped.trim()) }.also { ui.postDelayed(it, 450) }
         }
+        keyboard.onLeave = { leaveKeyboard(field) }
         place(keyboard, left, Cinema.px(activity, 240), Cinema.px(activity, 980), Cinema.px(activity, 476))
+        // Typing from a phone: what is sent goes into the query, as if typed here.
+        fun typedFromPhone(text: String) {
+            lbTyped = (lbTyped + text).take(Qwerty.MAX_LENGTH)
+            field.render(lbTyped, null)
+            pending?.let { ui.removeCallbacks(it) }
+            runQuery(lbTyped.trim())
+        }
+        // Speaking the query: the words said replace it, and the search runs when they are done.
+        // The same listening screen as the global search: the keyboard gives way to it while the microphone listens.
+        // As on the global search: the listening view spans the page, and the bar says LISTENING in the same place.
+        val listening = VoiceListeningView(activity).apply { visibility = View.GONE }
+        stage.addView(listening, FrameLayout.LayoutParams(-1, -2).apply { leftMargin = left; rightMargin = pageEnd; topMargin = Cinema.px(activity, 230) })
+        fun showListening(partial: String, level: Float, hint: String) {
+            keyboard.visibility = View.INVISIBLE; side.visibility = View.INVISIBLE; below.visibility = View.INVISIBLE; typeToSearch.visibility = View.INVISIBLE; listening.visibility = View.VISIBLE
+            field.render(lbTyped, partial)
+            listening.update(partial, level, hint)
+        }
+        fun showKeyboard() {
+            keyboard.visibility = View.VISIBLE; side.visibility = View.VISIBLE; below.visibility = View.VISIBLE; typeToSearch.visibility = View.VISIBLE; listening.visibility = View.GONE
+            field.render(lbTyped, null)
+        }
+        fun startListSpeech() {
+            voiceSink = { state ->
+                when (state) {
+                    is VoiceState.Listening -> showListening(state.partial, state.level, "Speak now · Back to cancel")
+                    VoiceState.Requesting -> showListening("", 0f, "Allow the microphone to search by voice")
+                    is VoiceState.Done -> {
+                        voiceSink = null
+                        showKeyboard()
+                        lbTyped = state.text.take(Qwerty.MAX_LENGTH)
+                        field.render(lbTyped, null)
+                        runQuery(lbTyped.trim())
+                    }
+                    is VoiceState.Unavailable -> {
+                        voiceSink = null
+                        showKeyboard()
+                        query.text = state.reason; query.setTextColor(Cinema.MUTED)
+                    }
+                    VoiceState.Idle -> { voiceSink = null; showKeyboard() }
+                    else -> Unit
+                }
+            }
+            ensureVoice().start()
+        }
+        // The field's icons, as on the global search: a phone to type from, and the microphone to speak with.
+        field.onPhone = { openPhoneTyping(::typedFromPhone) }
+        field.onMic = { startListSpeech() }
         showIdle()
         keyboard.keys.firstOrNull { it.contentDescription == "q" }?.let { requestFocusRobust(overlay as ViewGroup, it) }
+    }
+
+    /** A round glass button with the phone icon: types from a phone. Cream when focused. */
+    private fun phoneIconButton(onClick: () -> Unit): View {
+        val icon = Cinema.icon(activity, R.drawable.ic_cin_phone, Cinema.CREAM)
+        return FrameLayout(activity).apply {
+            background = Cinema.glass(activity, 42f, Cinema.GLASS_STRONG)
+            isFocusable = true; isClickable = true; contentDescription = "Type on your phone"
+            addView(icon, FrameLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40), Gravity.CENTER))
+            setOnFocusChangeListener { _, focused ->
+                background = Cinema.glass(activity, 42f, if (focused) Cinema.CREAM else Cinema.GLASS_STRONG)
+                icon.setColorFilter(if (focused) Cinema.INK else Cinema.CREAM)
+            }
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private var phoneTyping: PhoneTyping? = null
+    private var phonePanel: View? = null
+
+    /**
+     * Opens a QR code that a phone scans to a page with one text box: what it sends goes to [onText] here, and the page
+     * stays open for more. Closed with its Done button or Back.
+     */
+    private fun openPhoneTyping(onText: (String) -> Unit) {
+        closePhoneTyping()
+        // A small card in the corner that takes no focus: the keyboard keeps it. Its code goes once a phone has opened the page,
+        // and the page stays connected until the search is closed.
+        lateinit var code: android.widget.ImageView
+        lateinit var status: TextView
+        lateinit var card: LinearLayout
+        val session = PhoneTyping(activity, onText) {
+            code.visibility = View.GONE
+            status.text = "Phone connected. Type on your phone; each send lands in the search box."
+            // Connected: the card has done its job, so it fades away after a few seconds and the phone keeps typing into the box.
+            card.postDelayed({ card.animate().alpha(0f).setDuration(600).withEndAction { card.visibility = View.GONE }.start() }, 4000)
+        }
+        val address = session.start()
+        if (address == null) { CinemaToast.show(activity, "Connect the TV to Wi-Fi to type from your phone", Toast.LENGTH_LONG); return }
+        phoneTyping = session
+        card = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+            background = Cinema.glass(activity, 28f, 0xF2120D0A.toInt()); setPadding(Cinema.px(activity, 26), Cinema.px(activity, 22), Cinema.px(activity, 26), Cinema.px(activity, 22))
+            isFocusable = false; isClickable = false
+        }
+        card.addView(Cinema.eyebrow(activity, listOf("Type from your phone"), 15))
+        code = android.widget.ImageView(activity).apply { setImageBitmap(com.danielportelabyrne.cinema.ui.setup.PhoneQr.bitmap(address, 8)) }
+        card.addView(code, LinearLayout.LayoutParams(Cinema.px(activity, 260), Cinema.px(activity, 260)).apply { topMargin = Cinema.px(activity, 16) })
+        status = Cinema.text(activity, "Scan the code with your phone's camera. Its text lands in the box you are typing in.", 19, Cinema.MUTED)
+        card.addView(status, LinearLayout.LayoutParams(Cinema.px(activity, 380), -2).apply { topMargin = Cinema.px(activity, 14) })
+        val panel = FrameLayout(activity).apply { isFocusable = false; isClickable = false; clipChildren = false }
+        panel.addView(card, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { marginEnd = Cinema.px(activity, 60); bottomMargin = Cinema.px(activity, 60) })
+        (overlay as ViewGroup).addView(panel, FrameLayout.LayoutParams(-1, -1))
+        phonePanel = panel
+    }
+
+    private fun closePhoneTyping() {
+        phoneTyping?.stop(); phoneTyping = null
+        phonePanel?.let { (it.parent as? ViewGroup)?.removeView(it) }; phonePanel = null
     }
 
     /** Runs a list search for a suggestion pressed on the search page (set by [buildLbSearch]). */
@@ -1868,7 +2025,7 @@ class MoviesPanel(
                 val already = lb.following.any { it.equals(user, true) }
                 buttons.addView(CinemaButton(activity, CinemaButton.Kind.PRIMARY, if (already) "Already following" else "Follow", null).apply {
                     isEnabled = !already
-                    setOnClickListener { lb.follow(user); lbNames[user.lowercase()] = p.name.substringBefore(' '); Toast.makeText(activity, "Following ${p.name}", Toast.LENGTH_SHORT).show(); current = Dest.Letterboxd; trail.clear(); styleTabs(); build() }
+                    setOnClickListener { lb.follow(user); lbNames[user.lowercase()] = p.name.substringBefore(' '); CinemaToast.show(activity, "Following ${p.name}", Toast.LENGTH_SHORT); current = Dest.Letterboxd; trail.clear(); styleTabs(); build() }
                 }, LinearLayout.LayoutParams(-2, Cinema.px(activity, 76)))
                 preview.addView(buttons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 34) })
             }
@@ -1881,6 +2038,14 @@ class MoviesPanel(
             if (lbTyped.length >= 2) pending = Runnable { showPreview(lbTyped) }.also { ui.postDelayed(it, 900) } else preview.visibility = View.INVISIBLE
         }
         place(keyboard, left, Cinema.px(activity, 320), Cinema.px(activity, 980), Cinema.px(activity, 476))
+        // Typing from a phone: the username sent becomes the one looked up here.
+        fun usernameFromPhone(text: String) {
+            lbTyped = (lbTyped + (com.danielportelabyrne.cinema.data.letterboxd.FollowPage.normalize(text) ?: text.trim().lowercase())).take(30)
+            typed.text = lbTyped
+            pending?.let { ui.removeCallbacks(it) }
+            if (lbTyped.length >= 2) showPreview(lbTyped)
+        }
+        place(phoneIconButton { openPhoneTyping(::usernameFromPhone) }, Cinema.px(activity, 1240), Cinema.px(activity, 0), Cinema.px(activity, 84), Cinema.px(activity, 84))
         // People the followed members follow, to choose without typing.
         val suggestions = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(suggestions, LinearLayout.LayoutParams(-1, -2))
@@ -1946,14 +2111,21 @@ class MoviesPanel(
                 val avg = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(Cinema.px(activity, 34), Cinema.px(activity, 30), Cinema.px(activity, 34), 0); background = Cinema.glass(activity, 30f) }
                 avg.addView(Cinema.text(activity, "Average rating", 15, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true))
                 val figures = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
-                figures.addView(Cinema.text(activity, info.average?.let { String.format(Locale.UK, "%.1f", it) } ?: "–", 96, Cinema.CREAM, serif = true))
+                // The film's page does not always give its average; then it is worked out from the chart once that arrives.
+                val figure = Cinema.text(activity, info.average?.let { String.format(Locale.UK, "%.1f", it) } ?: "–", 96, Cinema.CREAM, serif = true)
+                figures.addView(figure)
                 val chart = com.danielportelabyrne.cinema.design.cinema.LbHistogram(activity)
                 figures.addView(chart, LinearLayout.LayoutParams(Cinema.px(activity, 260), Cinema.px(activity, 90)).apply { marginStart = Cinema.px(activity, 26); bottomMargin = Cinema.px(activity, 14) })
                 avg.addView(figures, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 6) })
                 avg.addView(Cinema.text(activity, listOfNotNull(info.ratings?.let { "from ${lbCount(it)} ratings" }, info.reviews?.let { "${lbCount(it)} reviews" }).joinToString(" · "), 19, Cinema.MUTED),
                     LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 8) })
                 panels.addView(avg, LinearLayout.LayoutParams(Cinema.px(activity, 520), -1))
-                lb.load("/csi/film/${info.slug}/rating-histogram/", 24 * H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.histogram(it) }) { c -> c?.let { chart.counts = it } }
+                lb.load("/csi/film/${info.slug}/rating-histogram/", 24 * H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.histogram(it) }) { c ->
+                    c?.let {
+                        chart.counts = it
+                        if (info.average == null) com.danielportelabyrne.cinema.data.letterboxd.Lb.average(it)?.let { a -> figure.text = String.format(Locale.UK, "%.1f", a) }
+                    }
+                }
 
                 // The followed members: their stars, a like, and the start of their review, or that they have not logged it.
                 val circle = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(Cinema.px(activity, 34), Cinema.px(activity, 30), Cinema.px(activity, 34), 0); background = Cinema.glass(activity, 30f); clipChildren = false }
@@ -2042,7 +2214,7 @@ class MoviesPanel(
             val streams = continueStore.load(12).mapNotNull { s ->
                 val payload = s.payload ?: return@mapNotNull null
                 Resumable(s.title, s.subtitle, s.positionMs, s.durationMs, s.lastEngagedMs,
-                    open = { playbackStarted = true; if (!PlayerActivity.resume(activity, payload)) Toast.makeText(activity, "Couldn't reopen ${s.title}", Toast.LENGTH_LONG).show() },
+                    open = { playbackStarted = true; if (!PlayerActivity.resume(activity, payload)) CinemaToast.show(activity, "Couldn't reopen ${s.title}", Toast.LENGTH_LONG) },
                     still = s.imageUri?.let { continueStore.image(it) }, stillUrl = null)
             }
             val library = if (jellyfin.isConnected) jellyfin.continueWatching() else emptyList()
@@ -2324,34 +2496,79 @@ class MoviesPanel(
     private val libraryRemover by lazy { LibraryRemover(seerr) }
 
     /** Takes a downloaded title off disk after the owner confirms. Radarr or Sonarr is told too, so it is not fetched again. */
+    /** The episodes of a series the viewer finished in a stream played here. */
+    private fun streamedEpisodes(e: Entry): List<com.danielportelabyrne.cinema.data.movies.StreamedEpisode> =
+        e.title.imdbId?.let { com.danielportelabyrne.cinema.data.movies.StreamProgress.forSeries(streamProgress(), it) }.orEmpty()
+
+    /** Deletes one episode's file: through Sonarr when it holds the series, else from Jellyfin. [done] runs on the UI thread. */
+    private fun deleteEpisodeFiles(tmdb: Long?, season: Int, number: Int, mine: JellyfinItem?, done: (Boolean) -> Unit) {
+        slowPool.execute {
+            val managed = tmdb != null && sonarr.managesSeries(tmdb) && sonarr.deleteEpisodeFiles(tmdb, season, listOf(number))
+            val removed = managed || (mine != null && jellyfin.deleteItem(mine.id))
+            if (removed) jellyfin.refreshLibrary()
+            activity.runOnUiThread { done(removed) }
+        }
+    }
+
+    private fun confirmDeleteEpisode(e: Entry, tmdb: Long?, season: Int, number: Int, mine: JellyfinItem?, after: (Boolean) -> Unit) {
+        CinemaConfirm.show(infoSheet, activity, "DELETE", "${e.title.name} · S$season E$number",
+            "Removes this episode's file from disk. The rest of the season stays. This cannot be undone.", "Delete this episode") {
+            deleteEpisodeFiles(tmdb, season, number, mine) { removed ->
+                CinemaToast.show(activity, if (removed) "Deleted S$season E$number" else "Couldn't delete it right now", Toast.LENGTH_LONG)
+                after(removed)
+            }
+        }
+    }
+
+    /** Deletes a season's files and its Seerr request, so the season can be requested and downloaded again. */
+    private fun confirmDeleteSeason(e: Entry, tmdb: Long?, season: SeasonState, owned: List<JellyfinItem>, known: Set<Int>, after: () -> Unit) {
+        CinemaConfirm.show(infoSheet, activity, "DELETE", "${e.title.name} · ${season.name}",
+            "Removes every episode of ${season.name} from disk, and its request, so it can be downloaded again. This cannot be undone.", "Delete the season") {
+            slowPool.execute {
+                val here = owned.filter { it.season == season.number }
+                val numbers = (here.mapNotNull { it.episode } + known).distinct()
+                if (tmdb != null && sonarr.managesSeries(tmdb)) sonarr.deleteEpisodeFiles(tmdb, season.number, numbers)
+                here.forEach { jellyfin.deleteItem(it.id) }
+                val request = if (tmdb != null && seerr.isSignedIn) seerr.requests().firstOrNull { it.kind == Kind.SHOW && it.tmdbId == tmdb && it.seasons == listOf(season.number) } else null
+                val cancelled = request?.let { seerr.cancelRequest(it.id) } ?: true
+                jellyfin.refreshLibrary()
+                seerr.forgetTitles()
+                activity.runOnUiThread {
+                    season.availability = Availability.NONE
+                    if (tmdb != null) deletedSeasons += tmdb to season.number
+                    CinemaToast.show(activity, if (cancelled) "Deleted ${season.name}" else "Deleted ${season.name}, but its request is still there", Toast.LENGTH_LONG)
+                    after()
+                }
+            }
+        }
+    }
+
     private fun confirmDelete(e: Entry) {
         val ref = LibraryRef(e.title.name, e.title.year, e.title.tmdbId?.toLongOrNull(), e.title.imdbId)
-        infoSheet.show("DELETE", e.title.name, null, listOf("Removes every file for this title from the storage, and from Radarr or Sonarr so it is not downloaded again. Titles those do not hold are removed from Jellyfin. This cannot be undone."), null, listOf(
-            SheetAction("Delete", "Remove it from disk", primary = true) {
-                slowPool.execute {
-                    // Radarr or Sonarr first, so nothing fetches it again. A title they do not hold (added some other way, such as
-                    // public-domain films) is deleted from Jellyfin, which removes its files.
-                    val managed = libraryRemover.delete(e.title.kind, ref)
-                    val lib = e.library
-                    val removed = managed || (lib != null && jellyfin.deleteItem(lib.id))
-                    if (removed) jellyfin.refreshLibrary()
-                    // Fetch the library now, so the page does not keep showing what has gone. Only a title Jellyfin removed itself can
-                    // be checked straight away; one Radarr or Sonarr removed reappears in Jellyfin only after its scan.
-                    val stillThere = if (removed && lib != null) jellyfin.stillInLibrary(lib.id) else null
-                    activity.runOnUiThread {
-                        val message = when {
-                            !removed -> "Couldn't delete ${e.title.name} right now"
-                            !managed && stillThere == true -> "Jellyfin still lists ${e.title.name}, so its files weren't removed"
-                            else -> "Deleted ${e.title.name}"
-                        }
-                        Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
-                        if (removed && detailOpen) { closeDetail(restoreFocus = true); build() }
-                        loadStorage(force = true)
+        CinemaConfirm.show(infoSheet, activity, "DELETE", e.title.name,
+            "Removes every file for this title from the storage, and from Radarr or Sonarr so it is not downloaded again. Titles those do not hold are removed from Jellyfin. This cannot be undone.", "Delete it") {
+            slowPool.execute {
+                // Radarr or Sonarr first, so nothing fetches it again. A title they do not hold (added some other way, such as
+                // public-domain films) is deleted from Jellyfin, which removes its files.
+                val managed = libraryRemover.delete(e.title.kind, ref)
+                val lib = e.library
+                val removed = managed || (lib != null && jellyfin.deleteItem(lib.id))
+                if (removed) jellyfin.refreshLibrary()
+                // Fetch the library now, so the page does not keep showing what has gone. Only a title Jellyfin removed itself can
+                // be checked straight away; one Radarr or Sonarr removed reappears in Jellyfin only after its scan.
+                val stillThere = if (removed && lib != null) jellyfin.stillInLibrary(lib.id) else null
+                activity.runOnUiThread {
+                    val message = when {
+                        !removed -> "Couldn't delete ${e.title.name} right now"
+                        !managed && stillThere == true -> "Jellyfin still lists ${e.title.name}, so its files weren't removed"
+                        else -> "Deleted ${e.title.name}"
                     }
+                    CinemaToast.show(activity, message, Toast.LENGTH_LONG)
+                    if (removed && detailOpen) { closeDetail(restoreFocus = true); build() }
+                    loadStorage(force = true)
                 }
-            },
-            SheetAction("Keep it") { }
-        ))
+            }
+        }
     }
 
     /** Cancels every pending download and withdraws every pending request, after the owner confirms. Anything already finished is left alone. */
@@ -2364,7 +2581,7 @@ class MoviesPanel(
                     val failed = items.count { !queueClient.cancel(it) } + requests.count { !queueClient.cancelRequest(it) } +
                         if (sonarr.unwant(wanted.map { it.id })) 0 else 1
                     activity.runOnUiThread {
-                        Toast.makeText(activity, if (failed == 0) "Cancelled everything pending" else "$failed couldn't be cancelled right now", Toast.LENGTH_LONG).show()
+                        CinemaToast.show(activity, if (failed == 0) "Cancelled everything pending" else "$failed couldn't be cancelled right now", Toast.LENGTH_LONG)
                         refresh()
                     }
                 }
@@ -2427,7 +2644,7 @@ class MoviesPanel(
             if (item.canCancel) actions += SheetAction("Cancel download", "Stop it and remove its partial files") {
                 worker.execute {
                     val done = queueClient.cancel(item)
-                    activity.runOnUiThread { Toast.makeText(activity, if (done) "Cancelled ${item.title}" else "Couldn't cancel it right now", Toast.LENGTH_LONG).show(); if (done) refresh() }
+                    activity.runOnUiThread { CinemaToast.show(activity, if (done) "Cancelled ${item.title}" else "Couldn't cancel it right now", Toast.LENGTH_LONG); if (done) refresh() }
                 }
             }
             infoSheet.show("DOWNLOAD", item.title, item.detail, listOf(status), null, actions)
@@ -2454,7 +2671,7 @@ class MoviesPanel(
                     DownloadActionResult.NEEDS_SIGN_IN -> "Sign in to $clientName"
                     DownloadActionResult.FAILED -> "Couldn't change the download right now"
                 }
-                Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
+                CinemaToast.show(activity, message, Toast.LENGTH_LONG)
                 refresh()
             }
         }
@@ -2473,7 +2690,7 @@ class MoviesPanel(
                 SheetAction("Cancel", "Stop looking for them", primary = true) {
                     worker.execute {
                         val done = sonarr.unwant(episodes.map { it.id })
-                        activity.runOnUiThread { Toast.makeText(activity, if (done) "Stopped looking for $title" else "Couldn't cancel it right now", Toast.LENGTH_LONG).show(); if (done) refresh() }
+                        activity.runOnUiThread { CinemaToast.show(activity, if (done) "Stopped looking for $title" else "Couldn't cancel it right now", Toast.LENGTH_LONG); if (done) refresh() }
                     }
                 },
                 SheetAction("Keep them") { }
@@ -2496,7 +2713,7 @@ class MoviesPanel(
                 SheetAction("Cancel", "Stop waiting for them", primary = true) {
                     slowPool.execute {
                         val done = sonarr.unwant(episodes.map { it.id })
-                        activity.runOnUiThread { Toast.makeText(activity, if (done) "Stopped waiting for $title" else "Couldn't cancel it right now", Toast.LENGTH_LONG).show(); if (done) refresh() }
+                        activity.runOnUiThread { CinemaToast.show(activity, if (done) "Stopped waiting for $title" else "Couldn't cancel it right now", Toast.LENGTH_LONG); if (done) refresh() }
                     }
                 },
                 SheetAction("Keep them") { }
@@ -2547,7 +2764,7 @@ class MoviesPanel(
                 worker.execute {
                     val accepted = if (seerr.hasRequestHelper) seerr.retrySearch(r.id) else queueClient.searchAgain(r)
                     activity.runOnUiThread {
-                        Toast.makeText(activity, if (accepted) "Search requested" else "Search couldn't start yet. Try again shortly.", Toast.LENGTH_LONG).show()
+                        CinemaToast.show(activity, if (accepted) "Search requested" else "Search couldn't start yet. Try again shortly.", Toast.LENGTH_LONG)
                         refresh()
                     }
                 }
@@ -2556,7 +2773,7 @@ class MoviesPanel(
                     worker.execute {
                         val done = queueClient.cancelRequest(r)
                         activity.runOnUiThread {
-                            Toast.makeText(activity, if (done) "Cancelled $name" else "Couldn't cancel this request right now", Toast.LENGTH_LONG).show()
+                            CinemaToast.show(activity, if (done) "Cancelled $name" else "Couldn't cancel this request right now", Toast.LENGTH_LONG)
                             if (done) refresh()
                         }
                     }
@@ -2636,28 +2853,12 @@ class MoviesPanel(
         fun place(v: View, x: Int, y: Int, w: Int = -2, h: Int = -2) = stage.addView(v, FrameLayout.LayoutParams(w, h).apply { leftMargin = x; topMargin = y })
 
         // The field: search icon, caret, the query (or its hint), "Say a title, actor or theme" and the mic button.
-        val field = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false
-            setPadding(Cinema.px(activity, 42), 0, Cinema.px(activity, 14), 0)
-            background = Cinema.glass(activity, 56f, 0x17FFF2DE)
-        }
+        // The same search bar as the Letterboxd lists search (see SearchField): the icon, the query, the hint, phone and mic.
         val icon = Cinema.icon(activity, R.drawable.ic_cin_search, Cinema.SAFFRON)
-        field.addView(icon, LinearLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40)))
-        // The query and its caret share a line: the caret follows the last letter typed, and sits before the grey prompt
-        // while nothing has been typed (see placeCaret). The query is capped so the caret always has room after it.
-        val line = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        field.addView(line, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = Cinema.px(activity, 22) })
-        val caret = View(activity).apply { setBackgroundColor(Cinema.SAFFRON) }
-        val query = Cinema.text(activity, "", 36, Cinema.CREAM, weight = 300).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.START }
-        line.addView(caret, LinearLayout.LayoutParams(Cinema.px(activity, 3), Cinema.px(activity, 48)))
-        line.addView(query, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 22) })
-        line.addOnLayoutChangeListener { v, l, _, r, _, ol, _, or, _ ->
-            if (r - l != or - ol) { query.maxWidth = (v.width - Cinema.px(activity, 40)).coerceAtLeast(0); query.post { query.requestLayout() } }
-        }
-        val hint = Cinema.text(activity, "Say a title, actor or theme", 18, Cinema.MUTED, tracking = 0.04f)
-        field.addView(hint, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = Cinema.px(activity, 20) })
-        val mic = MicButton(activity).apply { contentDescription = "Voice search"; setOnClickListener { startVoice(held = false) } }
-        field.addView(mic, LinearLayout.LayoutParams(Cinema.px(activity, 84), Cinema.px(activity, 84)))
+        val field = SearchField(activity, icon, prompt = "Search films, series and documentaries", hintText = "Say a title, actor or theme")
+        val caret = field.caret; val query = field.query; val hint = field.hint; val mic = field.mic
+        field.onMic = { startVoice(held = false) }
+        field.onPhone = { openPhoneTyping(::phoneTextIntoSearch) }
         place(field, left, Cinema.px(activity, 64), activity.resources.displayMetrics.widthPixels - left - pageEnd, Cinema.px(activity, 112))
         caret.animate().alpha(0f).setDuration(530).withEndAction(object : Runnable {
             override fun run() { if (caret.isAttachedToWindow) caret.animate().alpha(if (caret.alpha < 0.5f) 1f else 0f).setDuration(530).withEndAction(this).start() }
@@ -2667,6 +2868,7 @@ class MoviesPanel(
         val eyebrow = Cinema.eyebrow(activity, listOf("Type to search"), color = Cinema.DIM, markAlpha = 0.5f)
         place(eyebrow, left, Cinema.px(activity, 222))
         val keyboard = QwertyKeyboard(activity) { key -> typeKey(key) }
+        keyboard.onLeave = { leaveKeyboard(field) }
         place(keyboard, left, Cinema.px(activity, 300), Cinema.px(activity, 980), Cinema.px(activity, 476))
         val hints = Cinema.keyHints(activity, listOf("MIC" to "Hold on your remote to speak", "OK" to "Select", "▲" to "Voice search"))
         stage.addView(hints, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin = left; bottomMargin = Cinema.px(activity, 48) })
@@ -2699,6 +2901,12 @@ class MoviesPanel(
     }
 
     /** Puts the caret just after the typed text ([after]), or before the grey prompt when nothing is typed yet. */
+    /** Back on the keyboard leaves it: focus goes to the search field's last control (the microphone), and the page stays open. */
+    private fun leaveKeyboard(field: View) {
+        val group = field as? ViewGroup ?: return
+        (group.childCount - 1 downTo 0).map { group.getChildAt(it) }.firstOrNull { it.isFocusable }?.requestFocus()
+    }
+
     private fun placeCaret(s: SearchUi, after: Boolean) {
         val line = s.caret.parent as? LinearLayout ?: return
         val caretFirst = line.indexOfChild(s.caret) == 0
@@ -2712,25 +2920,17 @@ class MoviesPanel(
 
     private fun showQuery(partial: String? = null) {
         val s = searchUi ?: return
-        val listening = partial != null
-        s.query.text = when {
-            listening && partial!!.isNotEmpty() -> android.text.SpannableStringBuilder(partial).apply {
-                // The word still being recognised is shown dimmer than the settled ones.
-                val cut = partial.lastIndexOf(' ')
-                if (cut > 0) setSpan(android.text.style.ForegroundColorSpan(Cinema.DIM), cut, partial.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            listening -> ""
-            searchText.isEmpty() -> "Search films, series and documentaries"
-            else -> searchText
-        }
-        s.query.setTextColor(if (!listening && searchText.isEmpty()) 0xFF8F8272.toInt() else Cinema.CREAM)
-        Cinema.weight(s.query, 36, serif = false, weight = if (!listening && searchText.isEmpty()) 300 else 400)
-        s.caret.visibility = if (listening) View.GONE else View.VISIBLE
-        placeCaret(s, after = !listening && searchText.isNotEmpty())
-        s.icon.setColorFilter(if (listening) Cinema.TERRA else Cinema.SAFFRON)
-        s.hint.text = if (listening) "LISTENING" else "Say a title, actor or theme"
-        Cinema.style(s.hint, 18, if (listening) Cinema.TERRA else Cinema.MUTED, weight = if (listening) 600 else 400, tracking = if (listening) 0.14f else 0.04f)
-        s.field.background = Cinema.glass(activity, 56f, if (listening) Cinema.alpha(Cinema.STRIPE_TERRA, 0.16f) else 0x17FFF2DE)
+        (s.field as? SearchField)?.render(searchText, partial)
+    }
+
+    /** Text a phone sent to the global search box: typed on as if from the keyboard, and searched once it settles. */
+    private fun phoneTextIntoSearch(text: String) {
+        searchText = (searchText + text).take(Qwerty.MAX_LENGTH)
+        showQuery()
+        val ui = searchUi?.field ?: return
+        searchPending?.let { ui.removeCallbacks(it) }
+        val q = searchText.trim()
+        searchPending = Runnable { runSearch(q) }.also { ui.postDelayed(it, 500) }
     }
 
     /** One list card on the search page's right side: poster, name, "Film · 2026", chevron. */
@@ -2757,7 +2957,12 @@ class MoviesPanel(
     /** The right side with no query: trending searches (today's top titles) and genres to browse. */
     private fun showTrending(s: SearchUi) {
         s.side.removeAllViews()
-        val head = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        addRecent(SearchKeyboard.GLOBAL, s.side, search = { term ->
+            searchText = term; showQuery()
+            searchPending?.let { s.field.removeCallbacks(it) }
+            runSearch(term)
+        }, refresh = { showTrending(s) })
+        val head =LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(Cinema.icon(activity, R.drawable.ic_cin_trend, Cinema.DIM), LinearLayout.LayoutParams(Cinema.px(activity, 22), Cinema.px(activity, 22)).apply { marginEnd = Cinema.px(activity, 14) })
         head.addView(Cinema.text(activity, "Trending searches", 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true))
         s.side.addView(head)
@@ -2784,6 +2989,34 @@ class MoviesPanel(
         }
     }
 
+    /**
+     * The searches run lately on [keyboard], as pills at the top of [into]: a press searches that again. Nothing is drawn
+     * when there are none. [search] runs a term; [refresh] redraws the side after the history is cleared.
+     */
+    private fun addRecent(keyboard: SearchKeyboard, into: LinearLayout, search: (String) -> Unit, refresh: () -> Unit) {
+        val terms = recentSearches(keyboard).take(RecentSearches.SHOWN)
+        if (terms.isEmpty()) return
+        into.addView(Cinema.text(activity, "Recent searches", 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true))
+        terms.forEachIndexed { i, term ->
+            into.addView(pill(term, accent = false).apply { ellipsize = TextUtils.TruncateAt.END; setOnClickListener { search(term) } },
+                LinearLayout.LayoutParams(-2, Cinema.px(activity, 54)).apply { topMargin = Cinema.px(activity, if (i == 0) 18 else 12) })
+        }
+        into.addView(pill("Clear recent", accent = false).apply { setOnClickListener { saveRecentSearches(keyboard, emptyList()); refresh() } },
+            LinearLayout.LayoutParams(-2, Cinema.px(activity, 54)).apply { topMargin = Cinema.px(activity, 12); bottomMargin = Cinema.px(activity, 40) })
+    }
+
+    /** [a] and [b] taken in turn, [max] in all, so both kinds show; when one runs out the other fills the rest. */
+    private fun <T> interleave(a: List<T>, b: List<T>, max: Int): List<T> {
+        val out = ArrayList<T>()
+        var i = 0
+        var j = 0
+        while (out.size < max && (i < a.size || j < b.size)) {
+            if (i < a.size) out.add(a[i++])
+            if (out.size < max && j < b.size) out.add(b[j++])
+        }
+        return out
+    }
+
     /** Searches the library and the catalogue for [query]; at least two letters. Results replace the right side. */
     private fun runSearch(query: String) {
         val s = searchUi ?: return
@@ -2800,9 +3033,14 @@ class MoviesPanel(
                 val shelves = found.map { it.heading to it.titles.map { t -> entry(t) } }
                 s.side.removeAllViews()
                 s.side.addView(Cinema.text(activity, "Results for “$query”", 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
-                val top = (library + shelves.flatMap { it.second }).distinctBy { it.title.name.lowercase() + it.title.year }.take(5)
+                val all = (library + shelves.flatMap { it.second }).distinctBy { it.title.name.lowercase() + it.title.year }
+                // Films and series in turn, so the preview shows both; everything else is in the results below the keyboard.
+                val top = interleave(all.filter { it.title.kind != Kind.SHOW }, all.filter { it.title.kind == Kind.SHOW }, PREVIEW_ROWS)
+                if (all.isNotEmpty()) saveRecentSearches(SearchKeyboard.GLOBAL, RecentSearches.add(recentSearches(SearchKeyboard.GLOBAL), query))
                 if (top.isEmpty()) s.side.addView(note("Nothing found for “$query”"), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) })
                 top.forEach { e -> s.side.addView(searchRow(e, top.map { it.title }), LinearLayout.LayoutParams(-1, Cinema.px(activity, 104)).apply { topMargin = Cinema.px(activity, 18) }) }
+                if (all.size > top.size) s.side.addView(Cinema.text(activity, "Scroll down for all ${all.size} results", 19, Cinema.DIM).apply { maxLines = 1 },
+                    LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 22) })
                 // Everything found, as poster rows below the keyboard.
                 fun add(heading: String, entries: List<Entry>) {
                     if (entries.isEmpty()) return
@@ -2823,9 +3061,15 @@ class MoviesPanel(
     private fun startVoice(held: Boolean) {
         if (current != Dest.Search) go(Dest.Search)
         voiceHeld = held
-        val v = voice ?: VoiceSearch(activity) { state -> onVoice(state) }.also { voice = it }
-        v.start()
+        voiceSink = null
+        ensureVoice().start()
     }
+
+    /** The one recogniser; its states go to whichever screen started it (the global search, or a list search). */
+    private fun ensureVoice(): VoiceSearch = voice ?: VoiceSearch(activity) { state -> (voiceSink ?: ::onVoice).invoke(state) }.also { voice = it }
+
+    /** Set by a screen that started listening itself (the list search); null hands states to the global search. */
+    private var voiceSink: ((VoiceState) -> Unit)? = null
 
     private fun onVoice(state: VoiceState) {
         val s = searchUi ?: return
@@ -2867,29 +3111,6 @@ class MoviesPanel(
     private val voiceActive: Boolean get() = voice?.state.let { it is VoiceState.Listening || it is VoiceState.Requesting }
 
     /** The search field's microphone: a saffron-to-terracotta disc with soft halo rings; grows and glows on focus. */
-    private class MicButton(context: Context) : View(context) {
-        private val disc = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val ring = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val icon = context.getDrawable(R.drawable.ic_cin_mic)!!.mutate().apply { setTint(0xFF1D0D05.toInt()) }
-        init { isFocusable = true; isClickable = true }
-        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-            disc.shader = android.graphics.RadialGradient(w / 2f, h * 0.4f, w / 2f, Cinema.STRIPE_SAFFRON, Cinema.STRIPE_TERRA, android.graphics.Shader.TileMode.CLAMP)
-        }
-        override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
-            super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-            val s = if (gainFocus) 1.1f else 1f
-            animate().scaleX(s).scaleY(s).setDuration(160).start(); invalidate()
-        }
-        override fun onDraw(canvas: Canvas) {
-            val c = width / 2f
-            ring.color = Cinema.alpha(Cinema.STRIPE_ORANGE, if (isFocused) 0.3f else 0.12f); canvas.drawCircle(c, c, c + Cinema.pxf(context, 15), ring)
-            ring.color = Cinema.alpha(Cinema.STRIPE_TERRA, if (isFocused) 0.45f else 0.25f); canvas.drawCircle(c, c, c + Cinema.pxf(context, 7), ring)
-            canvas.drawCircle(c, c, c, disc)
-            val i = Cinema.px(context, 19)
-            icon.setBounds(i, i, width - i, height - i); icon.draw(canvas)
-        }
-    }
-
     // --- Featured title ----------------------------------------------------------------------------
 
     /**
@@ -3075,8 +3296,30 @@ class MoviesPanel(
         }
         val gap = Cinema.px(activity, 20); val h = Cinema.px(activity, 76)
         buttons.addView(primary, LinearLayout.LayoutParams(-2, h))
+        // A series' season download, beside Request all seasons: drawSeasons sets it to the season in view.
+        heroSeasonButton = if (t.kind == Kind.SHOW) CinemaButton(activity, CinemaButton.Kind.GLASS, "Download", R.drawable.ic_cin_dl).apply { visibility = View.GONE } else null
+        heroSeasonButton?.let { buttons.addView(it, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap }) }
         buttons.addView(restart, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
         buttons.addView(stream, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
+        // Add to the owner's watchlist (its row in My library), or take it off again. A title with no IMDb id has none.
+        t.imdbId?.let { id ->
+            // An icon only, square like the other buttons: a bookmark, with a tick in it once the title is on the watchlist.
+            val watch = CinemaButton(activity, CinemaButton.Kind.GLASS, "", R.drawable.ic_cin_watchlist).apply { setPadding(0, 0, 0, 0); makeIconOnly() }
+            fun paintWatch() {
+                val on = watchlist().any { it.imdbId == id }
+                watch.setIcon(if (on) R.drawable.ic_cin_watchlist_added else R.drawable.ic_cin_watchlist)
+                watch.contentDescription = if (on) "On your watchlist" else "Add to watchlist"
+            }
+            paintWatch()
+            watch.setOnClickListener {
+                val films = watchlist()
+                val on = films.any { it.imdbId == id }
+                saveWatchlist(if (on) Watchlist.without(films, id) else Watchlist.merge(films, listOf(WatchlistFilm(id, t.name, t.year, t.posterUrl))))
+                paintWatch()
+                CinemaToast.show(activity, if (on) "Removed ${t.name} from your watchlist" else "Added ${t.name} to your watchlist")
+            }
+            buttons.addView(watch, LinearLayout.LayoutParams(h, h).apply { marginStart = gap })
+        }
         buttons.addView(clearStale, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
         // Anything on disk can be taken off it, a series or a film, from its own page.
         if (inLibrary) buttons.addView(CinemaButton(activity, CinemaButton.Kind.DANGER, "Delete", R.drawable.ic_cin_trash).apply { setOnClickListener { confirmDelete(e) } },
@@ -3153,6 +3396,12 @@ class MoviesPanel(
         }.also { detail.viewTreeObserver.addOnGlobalFocusChangeListener(it) }
     }
 
+    /**
+     * Draws the series page again where it is, after a season or episode is deleted: the owner stays on the series, and the
+     * seasons and episodes are drawn afresh. Closing the page here would drop them back on the Films page.
+     */
+    private fun redrawSeriesPage() { detailButtons?.invoke() }
+
     private fun closeDetail(restoreFocus: Boolean) {
         if (!detailOpen) return
         detailFocusListener?.let { if (detail.viewTreeObserver.isAlive) detail.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
@@ -3165,6 +3414,15 @@ class MoviesPanel(
     }
 
     /** Watch now for what is in the library; for the rest, queue it, or say where its request has got to. */
+    /** A series' season download on its title row, beside Request all seasons; null for a film. */
+    private var heroSeasonButton: CinemaButton? = null
+
+    /**
+     * Seasons the owner has deleted in this session, by (TMDB id, season). Seerr and Jellyfin can keep saying they are there
+     * for a while after the files go, so such a season reads as not downloaded until it is asked for again.
+     */
+    private val deletedSeasons = HashSet<Pair<Long, Int>>()
+
     /** The title page on screen, and how to redo its buttons when the viewer's place in it changes. */
     private var detailEntry: Entry? = null
     private var detailButtons: (() -> Unit)? = null
@@ -3198,9 +3456,9 @@ class MoviesPanel(
                 val outcome = seerr.request(e.title.kind, tmdb)
                 activity.runOnUiThread {
                     when (outcome) {
-                        RequestOutcome.QUEUED, RequestOutcome.ALREADY -> { set("Requested ✓", false, null); Toast.makeText(activity, "Request accepted for ${e.title.name}. The server will search for a release.", Toast.LENGTH_LONG).show() }
+                        RequestOutcome.QUEUED, RequestOutcome.ALREADY -> { set("Requested ✓", false, null); CinemaToast.show(activity, "Request accepted for ${e.title.name}. The server will search for a release.", Toast.LENGTH_LONG) }
                         RequestOutcome.NEEDS_SIGN_IN -> { set("Queue download", true) { queue() }; seerrSheet.show(seerr, jellyfin) { queue() } }
-                        RequestOutcome.FAILED -> { set("Queue download", true) { queue() }; Toast.makeText(activity, "Couldn't queue it right now", Toast.LENGTH_LONG).show() }
+                        RequestOutcome.FAILED -> { set("Queue download", true) { queue() }; CinemaToast.show(activity, "Couldn't queue it right now", Toast.LENGTH_LONG) }
                     }
                 }
             }
@@ -3225,11 +3483,11 @@ class MoviesPanel(
                             activity.runOnUiThread {
                                 if (!detailOpen || !clearStale.isAttachedToWindow) return@runOnUiThread
                                 if (cleared) {
-                                    Toast.makeText(activity, "Stale request cleared", Toast.LENGTH_SHORT).show()
+                                    CinemaToast.show(activity, "Stale request cleared", Toast.LENGTH_SHORT)
                                     refresh()
                                 } else {
                                     clearStale.isEnabled = true; clearStale.setText("Clear stale request")
-                                    Toast.makeText(activity, "Couldn't clear it. An admin must be signed in, with no requests, downloads or files for this title.", Toast.LENGTH_LONG).show()
+                                    CinemaToast.show(activity, "Couldn't clear it. An admin must be signed in, with no requests, downloads or files for this title.", Toast.LENGTH_LONG)
                                 }
                             }
                         }
@@ -3263,7 +3521,7 @@ class MoviesPanel(
     /** [episode] is (season, episode) for a TV episode; [shownTitle] is what the screens call it ("Show · S1 E7"). */
     private fun streamNow(e: Entry, button: View, episode: Pair<Int, Int>? = null, shownTitle: String? = null) {
         if (!seerr.hasStreamService) {
-            Toast.makeText(activity, "Not in your library yet. Use the download button to get it.", Toast.LENGTH_LONG).show()
+            CinemaToast.show(activity, "Not in your library yet. Use the download button to get it.", Toast.LENGTH_LONG)
             return
         }
         if (!seerr.isSignedIn) { seerrSheet.show(seerr, jellyfin) { streamNow(e, button, episode, shownTitle) }; return }
@@ -3285,7 +3543,12 @@ class MoviesPanel(
             ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 3500)
         }
         slowPool.execute {
-            val result = seerr.startStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null)
+            // What the owner's Stremio add-ons offer for it, asked from this TV so their addresses never leave it.
+            val candidates = e.title.imdbId?.let { imdb ->
+                stremio.addonStreams(stremioAddons(), imdb, episode).sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
+            }.orEmpty()
+            android.util.Log.i("StreamNow", "add-ons offered ${candidates.size} for ${e.title.name} (${stremioAddons().size} ported, imdb ${e.title.imdbId != null})")
+            val result = seerr.startStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null, candidates)
             activity.runOnUiThread {
                 Perf.end("stream.press->startReply", result.status.name)
                 if (token != streamToken) return@runOnUiThread   // cancelled with Back
@@ -3298,7 +3561,7 @@ class MoviesPanel(
                         val candidate = StreamCandidate("stream:${e.title.key}", PlayerActivity.STREAM_PROVIDER, result.label ?: e.title.name, url, null, StreamMetadata())
                         PlayerActivity.launch(activity, listOf(RankedStream(candidate, 100, 0L, false, Verdict.RECOMMENDED, null, emptyList())), label, e.title.imdbId,
                             artUrl = e.title.backdropUrl ?: e.title.posterUrl,
-                            meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview))
+                            meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode)
                         // The player opens over this same screen; take it down once it is covered.
                         ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
                     }
@@ -3331,11 +3594,11 @@ class MoviesPanel(
         playbackStarted = true
         remember(title, streamed = false)
         if (!item.isSeries) { JellyfinPlayback.play(activity, jellyfin, item, title.name, title.imdbId ?: "jf:${item.id}", fromStart); return }
-        Toast.makeText(activity, "Finding the next episode…", Toast.LENGTH_SHORT).show()
+        CinemaToast.show(activity, "Finding the next episode…", Toast.LENGTH_SHORT)
         worker.execute {
             val ep = jellyfin.episodeToPlay(item.id)
             activity.runOnUiThread {
-                if (ep == null) Toast.makeText(activity, "No episodes found for ${title.name}", Toast.LENGTH_LONG).show()
+                if (ep == null) CinemaToast.show(activity, "No episodes found for ${title.name}", Toast.LENGTH_LONG)
                 else JellyfinPlayback.play(activity, jellyfin, ep, listOfNotNull(title.name, ep.episodeLabel()).joinToString(" · "), "jf:${ep.id}")
             }
         }
@@ -3400,12 +3663,20 @@ class MoviesPanel(
         }
     }
 
-    /** "Resume S1 E2" on the title's own button when Jellyfin has a part-watched episode of it. */
+    /**
+     * The series' main button, once its episodes are known: "Continue watching S3E2" when that episode is part-way through,
+     * otherwise "Watch S3E3" for the next one (or "Watch S1E1" when nothing has been watched). Films keep their own button.
+     */
     private fun resumeOnHero(primary: CinemaButton?, e: Entry, owned: List<JellyfinItem>) {
-        if (primary == null || e.library == null) return
-        val ep = owned.filter { it.resumeMs > 0 && !it.played && it.season != null && it.episode != null }
-            .maxWithOrNull(compareBy<JellyfinItem> { it.season }.thenBy { it.episode }) ?: return
-        primary.setText("Resume S${ep.season} E${ep.episode}")
+        if (primary == null || e.library?.isSeries != true) return
+        val episodes = owned.filter { (it.season ?: 0) > 0 && it.episode != null }
+        val streamed = streamedEpisodes(e).filter { it.played }.map { com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season, it.episode, true, 0L, it.atMs) }
+        val up = com.danielportelabyrne.cinema.data.movies.NextEpisode.of(episodes.map {
+            com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season!!, it.episode!!, it.played, it.resumeMs, it.playedMs)
+        }, streamed) ?: return
+        val ep = episodes.firstOrNull { it.season == up.season && it.episode == up.episode } ?: return
+        val code = "S${ep.season}E${ep.episode.toString().padStart(2, '0')}"
+        primary.setText(if (up.continuing) "Continue watching $code" else "Watch $code")
         primary.setOnClickListener { playbackStarted = true; remember(e.title, streamed = false); JellyfinPlayback.play(activity, jellyfin, ep, "${e.title.name} · S${ep.season} E${ep.episode}", "jf:${ep.id}") }
     }
 
@@ -3466,14 +3737,25 @@ class MoviesPanel(
 
         lateinit var showSeason: (SeasonState) -> Unit
 
+        // The season's action lives on the title's own row, beside Request all seasons, and follows the season in view.
         fun setAction(s: SeasonState, allInLibrary: Boolean) {
-            actionSlot.removeAllViews()
-            val label = EpisodeCards.seasonAction(s.availability, s.name, allInLibrary) ?: return
-            val can = s.availability == Availability.NONE && tmdb != null
-            val button = CinemaButton(activity, if (can) CinemaButton.Kind.TERRA else CinemaButton.Kind.GLASS, label, if (can) R.drawable.ic_cin_dl else null, small = true)
+            val button = heroSeasonButton ?: return
+            val gone = tmdb != null && (tmdb to s.number) in deletedSeasons
+            val availability = if (gone) Availability.NONE else s.availability
+            val onDisk = !gone && (availability == Availability.AVAILABLE || availability == Availability.PARTIAL || owned.any { it.season == s.number })
+            if (onDisk) {
+                button.visibility = View.VISIBLE; button.kind = CinemaButton.Kind.DANGER
+                button.setText("Delete ${s.name}"); button.setIcon(R.drawable.ic_cin_trash); button.isEnabled = true
+                button.setOnClickListener { confirmDeleteSeason(e, tmdb, s, owned, states.keys.filter { it.first == s.number }.map { it.second }.toSet()) { redrawSeriesPage() } }
+                return
+            }
+            val label = EpisodeCards.seasonAction(availability, s.name, allInLibrary)
+            if (label == null) { button.visibility = View.GONE; return }
+            val can = availability == Availability.NONE && tmdb != null
+            button.visibility = View.VISIBLE
+            button.kind = if (can) CinemaButton.Kind.TERRA else CinemaButton.Kind.GLASS
+            button.setText(label); button.setIcon(R.drawable.ic_cin_dl)
             button.isEnabled = can
-            button.setOnKeyListener(downToRail)
-            button.setOnFocusChangeListener { v, f -> if (f) reveal(v) }
             button.setOnClickListener {
                 if (!seerr.isSignedIn) { seerrSheet.show(seerr, jellyfin) { showSeason(s) }; return@setOnClickListener }
                 button.setText("Requesting…"); button.isEnabled = false
@@ -3481,15 +3763,14 @@ class MoviesPanel(
                     val outcome = seerr.request(Kind.SHOW, tmdb!!, listOf(s.number))
                     activity.runOnUiThread {
                         when (outcome) {
-                            RequestOutcome.QUEUED, RequestOutcome.ALREADY -> { s.availability = Availability.REQUESTED; Toast.makeText(activity, "${e.title.name}, ${s.name} is queued for download", Toast.LENGTH_LONG).show() }
+                            RequestOutcome.QUEUED, RequestOutcome.ALREADY -> { s.availability = Availability.REQUESTED; deletedSeasons -= tmdb!! to s.number; CinemaToast.show(activity, "${e.title.name}, ${s.name} is queued for download", Toast.LENGTH_LONG) }
                             RequestOutcome.NEEDS_SIGN_IN -> seerrSheet.show(seerr, jellyfin) { showSeason(s) }
-                            RequestOutcome.FAILED -> Toast.makeText(activity, "Couldn't queue ${s.name} right now", Toast.LENGTH_LONG).show()
+                            RequestOutcome.FAILED -> CinemaToast.show(activity, "Couldn't queue ${s.name} right now", Toast.LENGTH_LONG)
                         }
                         if (detailOpen && shown === s) { showSeason(s); selectedTab()?.requestFocus() }
                     }
                 }
             }
-            actionSlot.addView(button, FrameLayout.LayoutParams(-2, -1))
         }
 
         /** A drawn card; [restate] rebinds it in place from the latest states and downloads. */
@@ -3500,7 +3781,7 @@ class MoviesPanel(
             val card = EpisodeCard(activity, ep.number, ep.name, ep.overview ?: mine?.overview)
             val label = "${e.title.name} · S${s.number} E${ep.number}"
             fun latest() = episodeCardState(mine != null, states[s.number to ep.number], s.availability, ep.airDate, today, tmdb != null,
-                EpisodeCards.download(downloads, tmdb, s.number, ep.number))
+                seerr.hasStreamService, EpisodeCards.download(downloads, tmdb, s.number, ep.number))
             var look = latest()
             fun rebind() {
                 card.bind(look, EpisodeCards.formatDate(ep.airDate)?.uppercase() ?: "TBA")
@@ -3517,6 +3798,8 @@ class MoviesPanel(
             val progress = mine?.let { WatchProgress.of(it.played, it.resumeMs, runtime) } ?: WatchState.NotStarted
             card.setResume(WatchProgress.episodeBar(progress))
             card.watched = WatchProgress.episodeShowsTick(progress)
+            if (mine == null && streamedEpisodes(e).any { it.season == s.number && it.episode == ep.number && it.played }) card.watched = true
+            card.onDelete = { confirmDeleteEpisode(e, tmdb, s.number, ep.number, mine) { removed -> if (removed) redrawSeriesPage() } }
             // The library's own still when it has one (sent with the Jellyfin sign-in), otherwise TMDB's.
             val (url, headers) = when {
                 mine?.hasPrimaryImage == true -> jellyfin.episodeImageUrl(mine.id) to jellyfin.playbackHeaders()
@@ -3532,8 +3815,8 @@ class MoviesPanel(
             }
             card.download.setOnClickListener {
                 when (look.state) {
-                    CardState.REQUESTED -> Toast.makeText(activity, "Requested, waiting for a release", Toast.LENGTH_SHORT).show()
-                    CardState.DOWNLOADING -> Toast.makeText(activity, look.progress?.let { "Downloading, ${Math.round(it * 100)}% so far" } ?: "Downloading", Toast.LENGTH_SHORT).show()
+                    CardState.REQUESTED -> CinemaToast.show(activity, "Requested, waiting for a release", Toast.LENGTH_SHORT)
+                    CardState.DOWNLOADING -> CinemaToast.show(activity, look.progress?.let { "Downloading, ${Math.round(it * 100)}% so far" } ?: "Downloading", Toast.LENGTH_SHORT)
                     // Asked for before it aired: offer to stop waiting for it.
                     CardState.UNAIRED_REQUESTED -> if (tmdb != null) infoSheet.show("REQUESTED", label, EpisodeCards.airsLabel(ep.airDate),
                         listOf("It will download by itself once it airs."), null, listOf(
@@ -3543,10 +3826,10 @@ class MoviesPanel(
                                     activity.runOnUiThread {
                                         if (done) {
                                             states[s.number to ep.number] = EpisodeState.NONE
-                                            look = episodeCardState(mine != null, EpisodeState.NONE, s.availability, ep.airDate, today, true, null)
+                                            look = episodeCardState(mine != null, EpisodeState.NONE, s.availability, ep.airDate, today, true, seerr.hasStreamService, null)
                                             if (token == loading) rebind()
                                         }
-                                        Toast.makeText(activity, if (done) "Cancelled S${s.number} E${ep.number}" else "Couldn't cancel it right now", Toast.LENGTH_LONG).show()
+                                        CinemaToast.show(activity, if (done) "Cancelled S${s.number} E${ep.number}" else "Couldn't cancel it right now", Toast.LENGTH_LONG)
                                     }
                                 }
                             },
@@ -3563,14 +3846,14 @@ class MoviesPanel(
                                     when (outcome) {
                                         EpisodeOutcome.QUEUED, EpisodeOutcome.ALREADY -> {
                                             states[s.number to ep.number] = EpisodeState.REQUESTED
-                                            look = episodeCardState(mine != null, EpisodeState.REQUESTED, s.availability, ep.airDate, today, true, null)
+                                            look = episodeCardState(mine != null, EpisodeState.REQUESTED, s.availability, ep.airDate, today, true, seerr.hasStreamService, null)
                                             if (token == loading) rebind()
-                                            Toast.makeText(activity, if (look.unaired) EpisodeCards.preRequestDone(s.number, ep.number, ep.airDate)
-                                                else "${e.title.name} S${s.number} E${ep.number} is queued", Toast.LENGTH_LONG).show()
+                                            CinemaToast.show(activity, if (look.unaired) EpisodeCards.preRequestDone(s.number, ep.number, ep.airDate)
+                                                else "${e.title.name} S${s.number} E${ep.number} is queued", Toast.LENGTH_LONG)
                                         }
-                                        EpisodeOutcome.NOT_CONFIGURED -> Toast.makeText(activity, "Sonarr's details aren't available, so only whole seasons can be requested here", Toast.LENGTH_LONG).show()
-                                        EpisodeOutcome.NOT_FOUND -> Toast.makeText(activity, "Sonarr couldn't find that episode yet. Try again in a moment", Toast.LENGTH_LONG).show()
-                                        EpisodeOutcome.FAILED -> Toast.makeText(activity, "Couldn't queue that episode right now", Toast.LENGTH_LONG).show()
+                                        EpisodeOutcome.NOT_CONFIGURED -> CinemaToast.show(activity, "Sonarr's details aren't available, so only whole seasons can be requested here", Toast.LENGTH_LONG)
+                                        EpisodeOutcome.NOT_FOUND -> CinemaToast.show(activity, "Sonarr couldn't find that episode yet. Try again in a moment", Toast.LENGTH_LONG)
+                                        EpisodeOutcome.FAILED -> CinemaToast.show(activity, "Couldn't queue that episode right now", Toast.LENGTH_LONG)
                                     }
                                 }
                             }

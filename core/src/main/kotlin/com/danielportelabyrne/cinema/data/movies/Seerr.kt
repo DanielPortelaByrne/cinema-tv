@@ -188,6 +188,9 @@ class SeerrClient(platform: Platform) {
         c.exchange { val code = c.responseCode; if (code == 401) signOut(); code in 200..299 }.also { titles.forget() }
     } catch (e: Exception) { Log.w(TAG, "cancelRequest failed: ${e.javaClass.simpleName}"); false }
 
+    /** Drops the titles kept for two minutes, so the next look at a title asks Seerr again (after a delete, say). */
+    fun forgetTitles() = titles.forget()
+
     fun availability(kind: Kind, tmdbId: Long): Availability = titleState(kind, tmdbId)?.availability ?: Availability.NONE
 
     fun titleState(kind: Kind, tmdbId: Long): TitleRequestState? = title(kind, tmdbId)?.let { SeerrApi.titleState(it) }
@@ -252,14 +255,15 @@ class SeerrClient(platform: Platform) {
      * same indexers the library uses, so nothing goes through Stremio. The service waits for torrent metadata, so this call is slow.
      */
     /** [season] and [episode] are set for a TV episode; the server then looks for that one episode. */
-    fun startStream(title: String, year: Int?, season: Int? = null, episode: Int? = null, runtimeMin: Int? = null): StreamStart = try {
+    fun startStream(title: String, year: Int?, season: Int? = null, episode: Int? = null, runtimeMin: Int? = null,
+                    candidates: List<com.danielportelabyrne.cinema.data.stremio.AddonStream> = emptyList()): StreamStart = try {
         if (!hasStreamService) throw IllegalStateException("no stream service")
         val c = open("POST", "${streamEndpoint()}/start")
         c.readTimeout = 120_000
         c.doOutput = true
         val endpoint = streamEndpoint()
         c.exchange {
-            val body = streamBody(title, year, season, episode, runtimeMin)
+            val body = streamBody(title, year, season, episode, runtimeMin, candidates)
             c.outputStream.use { it.write(body.toString().toByteArray()) }
             when (c.responseCode) {
                 200 -> {
@@ -281,10 +285,15 @@ class SeerrClient(platform: Platform) {
 
     private fun streamEndpoint() = settings.streamServiceUrl.orEmpty().trimEnd('/')
 
-    private fun streamBody(title: String, year: Int?, season: Int?, episode: Int?, runtimeMin: Int?) = JSONObject().put("title", title).put("year", year?.toString().orEmpty()).apply {
+    private fun streamBody(title: String, year: Int?, season: Int?, episode: Int?, runtimeMin: Int?,
+                           candidates: List<com.danielportelabyrne.cinema.data.stremio.AddonStream> = emptyList()) = JSONObject().put("title", title).put("year", year?.toString().orEmpty()).apply {
         if (season != null && episode != null) put("season", season).put("episode", episode)
         runtimeMin?.takeIf { it > 0 }?.let { put("runtime", it) }   // lets the service judge which release can keep up
         put("audio", "any")   // this player decodes Dolby Digital Plus and DTS, so those releases need not be passed over
+        // Torrents the owner's Stremio add-ons offered, found from this TV: the service picks among them with its own results.
+        if (candidates.isNotEmpty()) put("candidates", org.json.JSONArray(candidates.map { c ->
+            JSONObject().put("title", c.title).put("infoHash", c.infoHash).put("seeders", c.seeders).put("size", c.size)
+        }))
     }
 
     private val prepared = java.util.concurrent.ConcurrentHashMap<String, Long>()

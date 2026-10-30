@@ -1,5 +1,6 @@
 package com.danielportelabyrne.cinema.ui.room
 
+import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
@@ -88,7 +89,7 @@ class SeerrSignInSheet(
             thread {
                 val error = seerr.signIn(u, p)
                 activity.runOnUiThread {
-                    if (error == null) { sheet.hide(); Toast.makeText(activity, "Signed in", Toast.LENGTH_SHORT).show(); onSignedIn() }
+                    if (error == null) { sheet.hide(); CinemaToast.show(activity, "Signed in", Toast.LENGTH_SHORT); onSignedIn() }
                     else { status.text = error; signIn.isEnabled = true }
                 }
             }

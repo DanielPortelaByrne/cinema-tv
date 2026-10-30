@@ -17,6 +17,15 @@ data class LbReview(
     val text: String, val date: String?, val likes: Int?
 ) : java.io.Serializable
 
+/** A person on a film's page: where their Letterboxd page is ([path], "/actor/al-pacino/"), their name and, for the cast, the character. */
+data class LbPerson(val path: String, val name: String, val role: String?) : java.io.Serializable
+
+/** One crew role (Director, Writer…) and who did it. */
+data class LbCrew(val role: String, val people: List<LbPerson>) : java.io.Serializable
+
+/** A film's cast and crew, from the Cast and Crew tabs of its Letterboxd page. */
+data class LbCredits(val cast: List<LbPerson>, val crew: List<LbCrew>) : java.io.Serializable
+
 /** A list: where it lives ([path], "/someone/list/2026/"), whose it is, how big, and the first few posters. */
 data class LbList(
     val path: String, val name: String, val owner: String, val ownerName: String?, val count: Int?, val likes: String?,
@@ -186,6 +195,29 @@ object Lb {
         if (histogram.size != 10 || total == 0L) return null
         return histogram.withIndex().sumOf { (i, n) -> (i + 1) / 2.0 * n } / total
     }
+
+    /** The text of one tab panel of a film's page (`cast`, `crew`…): from its id to the next tab's. Empty when absent. */
+    private fun panel(html: String, name: String): String {
+        val start = html.indexOf("id=\"tab-panel-$name\"").takeIf { it >= 0 } ?: return ""
+        val end = html.indexOf("id=\"tab-panel-", start + 16).takeIf { it > 0 } ?: html.length
+        return html.substring(start, end)
+    }
+
+    /** A film's cast and crew, each with the path of their page, so their picture can be found. */
+    fun credits(html: String): LbCredits {
+        val cast = regex("""<a title="([^"]*)" href="(/[^"]+/)" class="text-slug[^"]*">([^<]+)</a>""").findAll(panel(html, "cast")).map {
+            LbPerson(it.groupValues[2], text(it.groupValues[3]), text(it.groupValues[1]).ifBlank { null })
+        }.toList()
+        val crew = regex("""<span class="crewrole -full">([^<]+)</span>.*?<div class="text-sluglist">(.*?)</div>""", dot).findAll(panel(html, "crew")).map { role ->
+            LbCrew(text(role.groupValues[1]), regex("""<a href="(/[^"]+/)" class="text-slug">([^<]+)</a>""").findAll(role.groupValues[2]).map {
+                LbPerson(it.groupValues[1], text(it.groupValues[2]), null)
+            }.toList())
+        }.filter { it.people.isNotEmpty() }.toList()
+        return LbCredits(cast, crew)
+    }
+
+    /** A person's picture, from their Letterboxd page: TMDb's headshot of them. Null when the page has none. */
+    fun headshot(html: String): String? = regex("""data-image="(https://image\.tmdb\.org/[^"]+)"""").find(html)?.groupValues?.get(1)
 
     /** The rating chart fragment: how many gave each of the ten ratings, from ½ up. */
     fun histogram(html: String): List<Long> {

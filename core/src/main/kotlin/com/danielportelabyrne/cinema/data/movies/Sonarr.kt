@@ -68,6 +68,14 @@ object SonarrApi {
         (0 until a.length()).map { a.getJSONObject(it) }.filter { it.optInt("seasonNumber") == season && it.optInt("episodeNumber") in numbers }.map { it.getInt("id") }
     } catch (_: Exception) { emptyList() }
 
+    /** The episodes of [season] numbered [numbers] that have a file on disk: Sonarr's (episode id, file id) for each. */
+    fun episodeFiles(episodesJson: String, season: Int, numbers: Collection<Int>): List<Pair<Int, Int>> = try {
+        val a = JSONArray(episodesJson)
+        (0 until a.length()).map { a.getJSONObject(it) }
+            .filter { it.optInt("seasonNumber") == season && it.optInt("episodeNumber") in numbers && it.optInt("episodeFileId") > 0 }
+            .map { it.getInt("id") to it.getInt("episodeFileId") }
+    } catch (_: Exception) { emptyList() }
+
     /** Which episodes are on disk and which are wanted, keyed by (season, episode). */
     fun episodeStates(episodesJson: String): Map<Pair<Int, Int>, EpisodeState> = try {
         val a = JSONArray(episodesJson)
@@ -170,6 +178,25 @@ class SonarrClient(private val seerr: SeerrClient) {
         // Episodes not out yet are only monitored: Sonarr picks them up from RSS when they air, so nothing is searched.
         if (plan.search.isEmpty()) return EpisodeOutcome.QUEUED
         return if (call(c, "POST", "/api/v3/command", SonarrApi.searchBody(plan.search)) == null) EpisodeOutcome.FAILED else EpisodeOutcome.QUEUED
+    }
+
+    /** Whether Sonarr holds this series, so its episodes can be deleted through Sonarr. */
+    fun managesSeries(tmdbId: Long): Boolean = config()?.let { seriesId(it, tmdbId) } != null
+
+    /**
+     * Deletes the files of the given episodes of one season and stops Sonarr wanting them, so they are not fetched again.
+     * True when every file that was there is gone (an episode with no file counts as gone). Never throws.
+     */
+    fun deleteEpisodeFiles(tmdbId: Long, season: Int, numbers: List<Int>): Boolean {
+        val c = config() ?: return false
+        val id = seriesId(c, tmdbId) ?: return false
+        val json = call(c, "GET", "/api/v3/episode?seriesId=$id") ?: return false
+        val files = SonarrApi.episodeFiles(json, season, numbers)
+        episodeLists.forget("${c.baseUrl}#$id")
+        if (files.isEmpty()) return true
+        // Unmonitor first: a file deleted while still wanted would be searched for and grabbed again.
+        if (!unwant(files.map { it.first })) return false
+        return files.all { (_, fileId) -> call(c, "DELETE", "/api/v3/episodefile/$fileId") != null }
     }
 
     /** Stops wanting the given episodes of one season (an episode asked for before it aired). */

@@ -43,6 +43,9 @@ class AvatarView(context: Context, private val sizeMock: Int) : FrameLayout(cont
     /** Rings of the stripe set around the picture (focused member cards). */
     var ringed = false
         set(v) { field = v; invalidate() }
+    /** Whether the picture draws its rings. Off for people's pictures on a film's cast and crew, which only want a clean circle. */
+    var drawRing = true
+        set(v) { field = v; invalidate() }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
 
     init {
@@ -61,6 +64,7 @@ class AvatarView(context: Context, private val sizeMock: Int) : FrameLayout(cont
 
     override fun dispatchDraw(canvas: Canvas) {
         super.dispatchDraw(canvas)
+        if (!drawRing) return
         val c = width / 2f
         val gap = Cinema.pxf(context, 4)
         ringPaint.strokeWidth = gap
@@ -187,8 +191,11 @@ class FollowCard(context: Context) : LinearLayout(context) {
     private val lit = GradientDrawable().apply { cornerRadius = radius; setColor(Cinema.CREAM) }
     private val label = Cinema.text(context, "Follow someone", 32, Cinema.CREAM, serif = true)
     private val sub = Cinema.text(context, "Any Letterboxd member", 18, Cinema.DIM)
-    private val plus = Cinema.text(context, "+", 52, Cinema.SAFFRON, weight = 300).apply {
-        gravity = Gravity.CENTER; background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x17FFF2DE); setStroke(Cinema.px(context, 2), 0x59EDBE56) }
+    // A vector plus centred in the round button: a text "+" sits low in its line, so it would not be centred.
+    private val plus = FrameLayout(context).apply {
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x17FFF2DE); setStroke(Cinema.px(context, 2), 0x59EDBE56) }
+        addView(ImageView(context).apply { setImageResource(com.danielportelabyrne.cinema.R.drawable.ic_cin_plus); setColorFilter(Cinema.SAFFRON); scaleType = ImageView.ScaleType.FIT_CENTER },
+            FrameLayout.LayoutParams(Cinema.px(context, 44), Cinema.px(context, 44), Gravity.CENTER))
     }
 
     init {

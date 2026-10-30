@@ -1,5 +1,6 @@
 package com.danielportelabyrne.cinema.ui.room
 
+import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -85,7 +86,7 @@ class JellyfinConnectSheet(
                                 val done = approved && client.finishQuickConnect(t)
                                 activity.runOnUiThread {
                                     if (!open) return@runOnUiThread
-                                    if (done) { stop(); sheet.hide(); Toast.makeText(activity, "Jellyfin connected", Toast.LENGTH_SHORT).show(); onConnected() }
+                                    if (done) { stop(); sheet.hide(); CinemaToast.show(activity, "Jellyfin connected", Toast.LENGTH_SHORT); onConnected() }
                                     else handler.postDelayed(this, 2000)
                                 }
                             }

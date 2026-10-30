@@ -23,6 +23,9 @@ object Watchlist {
         }
     } catch (_: Exception) { emptyList() }
 
+    /** [films] without the film [imdbId]; unchanged when it is not there. */
+    fun without(films: List<WatchlistFilm>, imdbId: String): List<WatchlistFilm> = films.filterNot { it.imdbId == imdbId }
+
     /** [added] go in front of [existing], and a film already there keeps its place. */
     fun merge(existing: List<WatchlistFilm>, added: List<WatchlistFilm>): List<WatchlistFilm> {
         val have = existing.map { it.imdbId }.toSet()

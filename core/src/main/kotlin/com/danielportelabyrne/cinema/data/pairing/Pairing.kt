@@ -11,6 +11,8 @@ class Pairing(
     val code: String = newCode(),
     private val ttlMillis: Long = TEN_MINUTES,
     private val now: () -> Long = System::currentTimeMillis,
+    /** A reusable session (typing from a phone) keeps its code after a successful submission, until it expires. */
+    private val reusable: Boolean = false,
 ) {
     enum class Check { OK, WRONG_CODE, EXPIRED, USED }
 
@@ -44,7 +46,7 @@ class Pairing(
     @Synchronized
     fun finish(success: Boolean) {
         inFlight = false
-        if (success) used = true
+        if (success && !reusable) used = true
     }
 
     val isExpired: Boolean @Synchronized get() = now() >= expiresAt

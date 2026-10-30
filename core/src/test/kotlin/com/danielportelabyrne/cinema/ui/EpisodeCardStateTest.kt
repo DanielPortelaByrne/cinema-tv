@@ -11,8 +11,8 @@ class EpisodeCardStateTest {
     private val today = "2026-10-22"
 
     private fun state(inLibrary: Boolean = false, sonarr: EpisodeState? = null, season: Availability = Availability.NONE,
-                      airDate: String? = "2025-03-30", canRequest: Boolean = true, download: QueueItem? = null) =
-        episodeCardState(inLibrary, sonarr, season, airDate, today, canRequest, download)
+                      airDate: String? = "2025-03-30", canRequest: Boolean = true, canStream: Boolean = true, download: QueueItem? = null) =
+        episodeCardState(inLibrary, sonarr, season, airDate, today, canRequest, canStream, download)
 
     private fun item(detail: String?, size: Long = 100, left: Long = 58, tmdb: Long = 7) =
         QueueItem(QueueSource.SONARR, 1, "MobLand", detail, tmdb, "downloading", size, left, null, null)
@@ -26,6 +26,15 @@ class EpisodeCardStateTest {
     @Test fun nothing_asked_for_offers_a_download() {
         val look = state()
         assertEquals(CardState.REQUEST, look.state); assertNull(look.badge); assertTrue(look.downloadFocusable)
+    }
+
+    @Test fun without_a_stream_service_an_episode_not_in_the_library_has_no_play() {
+        val asked = state(canStream = false)
+        assertEquals(CardState.REQUEST, asked.state); assertFalse(asked.playShown); assertTrue(asked.downloadFocusable)
+        assertFalse(state(canStream = false, sonarr = EpisodeState.REQUESTED).playShown)
+        assertFalse(state(canStream = false, download = item("S2 E2 · Song 2")).playShown)
+        // Play on an episode in the library plays from Jellyfin, so it stays.
+        assertTrue(state(canStream = false, inLibrary = true).playShown)
     }
 
     @Test fun no_way_to_request_leaves_play_alone() {

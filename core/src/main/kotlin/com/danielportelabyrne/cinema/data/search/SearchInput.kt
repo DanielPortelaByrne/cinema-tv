@@ -6,6 +6,10 @@ object Qwerty {
     val ROWS = listOf("1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm")
     val ROW_OFFSETS = listOf(0f, 0f, 0.5f, 1f)
 
+    /** The symbols layer ("123#"): common punctuation and symbols, four rows, no stagger. */
+    val SYMBOL_ROWS = listOf("1234567890", "@#$%&*()-+", "!\"'.,:;/?_", "<>[]{}\\|~^")
+    val SYMBOL_OFFSETS = listOf(0f, 0f, 0f, 0f)
+
     /** The longest query the field accepts; plenty for a title or a name. */
     const val MAX_LENGTH = 60
 

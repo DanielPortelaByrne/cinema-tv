@@ -2,6 +2,8 @@ package com.danielportelabyrne.cinema.data.settings
 
 import com.danielportelabyrne.cinema.data.movies.Watchlist
 import com.danielportelabyrne.cinema.data.movies.WatchlistFilm
+import com.danielportelabyrne.cinema.data.search.RecentSearches
+import com.danielportelabyrne.cinema.data.search.SearchKeyboard
 import com.danielportelabyrne.cinema.data.music.SubsonicConfig
 import com.danielportelabyrne.cinema.platform.Platform
 import com.danielportelabyrne.cinema.platform.SecretStore
@@ -81,6 +83,21 @@ class CinemaSettings(platform: Platform) {
     var stremioKey: String?
         get() = secrets.get("stremio_key")?.takeIf { it.isNotBlank() }
         set(v) = secrets.put("stremio_key", v)
+
+    /** The Stremio add-ons the owner ported to Cinema. Their addresses can carry the owner's settings, so they are kept as a secret. */
+    var stremioAddons: List<com.danielportelabyrne.cinema.data.stremio.StremioAddon>
+        get() = com.danielportelabyrne.cinema.data.stremio.StremioApi.savedAddons(secrets.get("stremio_addons"))
+        set(v) = secrets.put("stremio_addons", if (v.isEmpty()) null else com.danielportelabyrne.cinema.data.stremio.StremioApi.savedAddonsJson(v))
+
+    /** How far each episode got in a stream played here (see StreamProgress): streams leave no record in Jellyfin. */
+    var streamProgress: String?
+        get() = prefs.getString("stream_progress", null)
+        set(v) { prefs.edit().putString("stream_progress", v).apply() }
+
+    /** The searches run lately on [keyboard], most recent first. Kept on this TV only. */
+    fun recentSearches(keyboard: SearchKeyboard): List<String> = RecentSearches.parse(prefs.getString(keyboard.key, null))
+
+    fun setRecentSearches(keyboard: SearchKeyboard, terms: List<String>) { prefs.edit().putString(keyboard.key, RecentSearches.encode(terms)).apply() }
 
     /** Films the owner means to watch, shown as the Watchlist row in My library. */
     var watchlist: List<WatchlistFilm>

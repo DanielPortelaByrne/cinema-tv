@@ -1,5 +1,6 @@
 package com.danielportelabyrne.cinema.ui.room
 
+import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
@@ -82,7 +83,7 @@ class DownloadClientSignInSheet(private val activity: android.app.Activity, priv
             thread {
                 val error = if (trySignIn(u, p)) null else "Couldn't sign in. Check the ${if (kind.needsUsername) "username, " else ""}password and connection."
                 activity.runOnUiThread {
-                    if (error == null) { password.text.clear(); sheet.hide(); Toast.makeText(activity, "Signed in", Toast.LENGTH_SHORT).show(); onSignedIn() }
+                    if (error == null) { password.text.clear(); sheet.hide(); CinemaToast.show(activity, "Signed in", Toast.LENGTH_SHORT); onSignedIn() }
                     else { status.text = error; signIn.isEnabled = true }
                 }
             }
