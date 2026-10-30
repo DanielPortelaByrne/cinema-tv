@@ -85,3 +85,11 @@ compose.desktop {
         }
     }
 }
+
+/** Renders the player chrome's states as PNGs in build/chrome-preview, to lay over the TV's own screenshots. */
+tasks.register<JavaExec>("chromePreview") {
+    group = "verification"
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.danielportelabyrne.cinema.desktop.ChromePreviewKt")
+    args(layout.buildDirectory.dir("chrome-preview").get().asFile.path)
+}

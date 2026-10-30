@@ -21,6 +21,7 @@ import kotlin.system.exitProcess
  */
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "--self-test") exitProcess(SelfTest.run(args.getOrNull(1)))
+    if (args.firstOrNull() == "--player-demo") exitProcess(PlayerDemo.run(args.getOrNull(1) ?: "av://lavfi:testsrc2=size=1280x720:rate=24:duration=3000"))
     val windowed = System.getenv("CINEMA_WINDOWED") == "1"
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val model = CinemaModel(DesktopPlatform(), scope)

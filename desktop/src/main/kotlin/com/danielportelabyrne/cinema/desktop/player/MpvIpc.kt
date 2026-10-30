@@ -10,7 +10,7 @@ import java.nio.file.Path
 
 /** Something mpv said: an event ("file-loaded", "end-file"...) or a changed property it was asked to watch. */
 sealed class MpvMessage {
-    data class Event(val name: String, val reason: String? = null, val error: String? = null) : MpvMessage()
+    data class Event(val name: String, val reason: String? = null, val error: String? = null, val args: List<String> = emptyList()) : MpvMessage()
     data class Property(val name: String, val value: Any?) : MpvMessage()
 }
 
@@ -24,7 +24,7 @@ object MpvProtocol {
         when (val event = o.optString("event")) {
             "" -> null
             "property-change" -> MpvMessage.Property(o.optString("name"), if (o.has("data") && !o.isNull("data")) o.get("data") else null)
-            else -> MpvMessage.Event(event, o.optString("reason").ifBlank { null }, o.optString("file_error").ifBlank { null })
+            else -> MpvMessage.Event(event, o.optString("reason").ifBlank { null }, o.optString("file_error").ifBlank { null }, o.optJSONArray("args")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty())
         }
     } catch (_: Exception) { null }
 }

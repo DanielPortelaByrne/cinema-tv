@@ -72,8 +72,8 @@ object Fonts {
     private fun data(name: String): ByteArray? = bytes.getOrPut(name) { Fonts::class.java.getResourceAsStream("/fonts/$name")?.use { it.readBytes() } }
 
     @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
-    fun family(serif: Boolean, sizePx: Float, weight: Int): FontFamily {
-        val drawn = sizePx * renderScale
+    fun family(serif: Boolean, sizePx: Float, weight: Int, scale: Float = renderScale): FontFamily {
+        val drawn = sizePx * scale
         val opsz = ((if (serif) drawn.coerceIn(9f, 144f) else drawn.coerceIn(14f, 32f)) / 4f).roundToInt() * 4
         val key = "$serif|$opsz|$weight"
         return families.getOrPut(key) {
