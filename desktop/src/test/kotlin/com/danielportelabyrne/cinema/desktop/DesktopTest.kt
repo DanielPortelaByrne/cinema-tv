@@ -85,15 +85,11 @@ class MpvTest {
         assertEquals("/app/bin/mpv", args.first())
         assertTrue("--no-config" in args)
         assertTrue("--input-ipc-server=/run/x.sock" in args)
-        assertTrue("--osc=yes" in args)
-        assertTrue("--script-opts=osc-visibility=always" in args)
+        assertTrue("--osc=no" in args)                       // Cinema draws the controls itself
+        assertTrue("--input-default-bindings=no" in args)    // and its keys come over the socket
         assertTrue("--ontop=yes" in args)
         assertTrue(args.none { it.contains("Authorization") || it.contains("Token") })
         assertFalse("--gpu-context=x11egl" in args)
-        val themed = MpvLaunch.args("mpv", "s", emptyMap(), "/cache/cinema-osc.lua")
-        assertTrue("--osc=no" in themed)
-        assertTrue("--script=/cache/cinema-osc.lua" in themed)
-        assertFalse("--osc=yes" in themed)
     }
 
     @Test fun gameModeKeepsMpvOnX11() {

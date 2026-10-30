@@ -89,3 +89,24 @@ object SelfTest {
         }
     }
 }
+
+/**
+ * `cinema --player-demo [file or URL]`: plays something in the real player, with the player controls over it and made-up
+ * details (the film's title, year, cast of genres and a synopsis) in place of a library item, until mpv is closed. For
+ * looking at the controls on a Deck without a Jellyfin server; keys can be sent to mpv's socket by hand.
+ */
+object PlayerDemo {
+    fun run(media: String): Int {
+        val done = java.util.concurrent.CountDownLatch(1)
+        val player = com.danielportelabyrne.cinema.desktop.player.Player(
+            com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient(DesktopPlatform()), { state -> println("player: $state") }, { done.countDown() },
+        )
+        player.playUrl(media, "Dark · S1 E5", com.danielportelabyrne.cinema.desktop.player.chrome.ChromeMeta(
+            title = "Dark · S1 E5", year = 2017, genres = listOf("Crime", "Drama", "Mystery"), runtimeMin = 45, rating = 8.5,
+            overview = "Hannah takes her obsession with Ulrich too far. The stranger asks Regina to deliver an important package. Martha is torn between Jonas and Bartosz.",
+            sizeBytes = 520_000_000,
+        ))
+        done.await()
+        return 0
+    }
+}

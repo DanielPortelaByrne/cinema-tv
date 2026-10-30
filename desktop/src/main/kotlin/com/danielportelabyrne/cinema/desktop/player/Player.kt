@@ -7,6 +7,9 @@ import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinPlaybackSession
 import com.danielportelabyrne.cinema.desktop.AppDirs
 import com.danielportelabyrne.cinema.desktop.input.NavAction
+import com.danielportelabyrne.cinema.desktop.player.chrome.ChromeHost
+import com.danielportelabyrne.cinema.desktop.player.chrome.ChromeMeta
+import com.danielportelabyrne.cinema.desktop.player.chrome.MpvChrome
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -39,8 +42,8 @@ object PlayerControls {
     )
 
     val help: List<Pair<String, String>> = listOf(
-        "A" to "Pause / play", "B" to "Stop", "← →" to "Back / forward 10 s", "↑ ↓" to "Forward / back 1 min",
-        "LB RB" to "Previous / next chapter", "X" to "Subtitles", "Y" to "Audio track", "≡" to "Show progress", "⧉" to "Details",
+        "A" to "OK / pause", "B" to "Back", "← →" to "Scrub (A to jump there)", "↑ ↓" to "Move between rows",
+        "LB RB" to "Previous / next chapter", "X" to "Subtitles", "Y" to "Audio track", "≡" to "Show controls", "⧉" to "Show controls",
     )
 }
 
@@ -75,6 +78,14 @@ class Player(
     /** What is playing when it is not a library item (Stream now). */
     private var streamTitle: String? = null
 
+    /** The TV's player chrome, drawn over mpv's picture. */
+    private val chrome = MpvChrome(AppDirs.runtime, object : ChromeHost {
+        override fun leave() { ipc?.send("stop") }
+        override fun hasNextEpisode() = next != null
+        override fun playNextEpisode() { skipToNext() }
+    })
+    private var tickTask: ScheduledFuture<*>? = null
+
     @Volatile var active: Boolean = false
         private set
 
@@ -98,7 +109,7 @@ class Player(
      * Plays an address that is not in the library (the stream service's copy, for Stream now) in the same window. Nothing
      * is reported to Jellyfin, and it does not move on to anything when it ends.
      */
-    fun playUrl(url: String, title: String) {
+    fun playUrl(url: String, title: String, meta: ChromeMeta? = null) {
         active = true
         lastState = PlayerState.Starting(title)
         onState(lastState)
@@ -106,7 +117,7 @@ class Player(
             if (!ensureMpv()) return@execute
             item = null; next = null; loaded = false; triedConverted = true; streamTitle = title
             positionMs = 0; durationMs = 0; paused = false
-            sendChromeMeta(null, title)
+            chrome.load(meta ?: ChromeMeta(title = title), null)
             ipc?.apply {
                 send("set_property", "http-header-fields", org.json.JSONArray())
                 send("set_property", "force-media-title", title)
@@ -121,7 +132,7 @@ class Player(
     fun handle(action: NavAction) {
         if (!active) return
         worker.execute {
-            ipc?.send("script-message", "cinema-activity")
+            if (chrome.nav(action)) return@execute
             if (action == NavAction.BACK) { ipc?.send("stop"); return@execute }
             PlayerControls.commands[action]?.let { ipc?.send(*it.toTypedArray()) }
         }
@@ -135,23 +146,10 @@ class Player(
 
     // --- mpv -------------------------------------------------------------------------------------
 
-    private fun themeScriptPath(): String? {
-        val resource = javaClass.getResourceAsStream("/mpv/cinema-osc.lua") ?: return null
-        val script = File(AppDirs.cache, "mpv/cinema-osc.lua")
-        return try {
-            script.parentFile?.mkdirs()
-            resource.use { input -> script.outputStream().use(input::copyTo) }
-            script.absolutePath
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not install Cinema's mpv theme: ${e.javaClass.simpleName}")
-            null
-        }
-    }
-
     private fun ensureMpv(): Boolean {
         if (process?.isAlive == true && ipc != null) return true
         val socket = File(AppDirs.runtime, "mpv-${ProcessHandle.current().pid()}.sock").apply { delete() }
-        val args = MpvLaunch.args(mpvPath, socket.path, System.getenv(), themeScriptPath())
+        val args = MpvLaunch.args(mpvPath, socket.path, System.getenv())
         val p = try {
             ProcessBuilder(args).redirectErrorStream(true).redirectOutput(File(AppDirs.cache, "mpv.log")).start()
         } catch (e: Exception) {
@@ -166,6 +164,10 @@ class Player(
             send("observe_property", 2, "pause")
             send("observe_property", 3, "duration")
         }
+        MpvChrome.PROPERTIES.filter { it !in setOf("time-pos", "pause", "duration") }.forEachIndexed { i, name -> ipc!!.send("observe_property", 10 + i, name) }
+        chrome.attach { args -> ipc?.send(*args) }
+        tickTask?.cancel(false)
+        tickTask = worker.scheduleAtFixedRate({ chrome.tick() }, 250, 250, TimeUnit.MILLISECONDS)
         return true
     }
 
@@ -175,7 +177,7 @@ class Player(
         session = JellyfinPlaybackSession()
         val title = MpvLaunch.title(target)
         val url = if (converted) client.transcodeUrl(target) else client.streamUrl(target)
-        sendChromeMeta(target, title)
+        chrome.load(chromeMeta(target), startMs)
         ipc?.apply {
             send("set_property", "http-header-fields", org.json.JSONArray(client.playbackHeaders().map { (k, v) -> "$k: $v" }))
             send("set_property", "force-media-title", title)
@@ -186,21 +188,9 @@ class Player(
         onState(PlayerState.Starting(title))
     }
 
-    /** Give the Lua chrome the same library metadata that Android's PlayerChrome displays. */
-    private fun sendChromeMeta(target: JellyfinItem?, title: String) {
-        val metadata = org.json.JSONObject().put("title", title)
-        target?.year?.let { metadata.put("year", it) }
-        target?.runtimeMin?.let { metadata.put("runtimeMin", it) }
-        target?.officialRating?.let { metadata.put("certificate", it) }
-        target?.communityRating?.let { metadata.put("rating", it) }
-        target?.overview?.takeIf { it.isNotBlank() }?.let { metadata.put("overview", it) }
-        target?.genres?.takeIf { it.isNotEmpty() }?.let { metadata.put("genres", org.json.JSONArray(it)) }
-        target?.sizeBytes?.let { metadata.put("sizeBytes", it) }
-        target?.audioCodec?.let { metadata.put("audioCodec", it) }
-        ipc?.send("script-message", "cinema-meta", metadata.toString())
-    }
-
     private fun message(m: MpvMessage) {
+        if (m is MpvMessage.Property) chrome.onProperty(m.name, m.value)
+        if (m is MpvMessage.Event && m.name == "client-message" && m.args.size == 2 && m.args[0] == "cinema-key") chrome.onKey(m.args[1])
         when (m) {
             is MpvMessage.Property -> when (m.name) {
                 "time-pos" -> (m.value as? Number)?.let { positionMs = (it.toDouble() * 1000).toLong(); publish() }
@@ -213,6 +203,21 @@ class Player(
             }
         }
     }
+
+    /** Next, from the controls: leave this episode for the one lined up after it. */
+    private fun skipToNext() {
+        val following = next ?: return
+        if (loaded) report("Stopped")
+        progressTask?.cancel(false)
+        loaded = false
+        load(following, 0L, converted = false)
+    }
+
+    private fun chromeMeta(i: JellyfinItem) = ChromeMeta(
+        title = if (i.isEpisode) listOfNotNull(i.seriesName, i.episodeLabel()).joinToString(" · ") else i.name,
+        year = i.year, genres = i.genres, runtimeMin = i.runtimeMin, certificate = i.officialRating, rating = i.communityRating,
+        overview = i.overview?.takeIf { it.isNotBlank() }, sizeBytes = i.sizeBytes,
+    )
 
     private fun fileLoaded() {
         loaded = true
@@ -256,6 +261,7 @@ class Player(
         if (process !== p) return
         if (loaded) report("Stopped")
         progressTask?.cancel(false)
+        tickTask?.cancel(false); chrome.detach()
         loaded = false; process = null; ipc?.close(); ipc = null; item = null; next = null
         client.invalidateLibrary()
         val failed = p.exitValue() != 0 && p.exitValue() != 4 /* mpv: quit by the user */
@@ -313,14 +319,14 @@ class Player(
 
 /** How mpv is started. Pure, so the choices can be tested. */
 object MpvLaunch {
-    fun args(mpv: String, socket: String, env: Map<String, String>, themeScript: String? = null): List<String> {
+    fun args(mpv: String, socket: String, env: Map<String, String>): List<String> {
         val args = mutableListOf(
             mpv,
             "--no-config",                    // the viewer's own mpv setup must not change how Cinema behaves
             "--idle=yes", "--force-window=yes", "--fullscreen", "--ontop=yes", "--no-terminal",
-            // OSC is mpv's Lua controller; keep it visible for gamepad users who do not move a mouse.
-            "--osc=yes", "--script-opts=osc-visibility=always",
-            "--input-default-bindings=yes", "--input-vo-keyboard=yes",
+            // Cinema draws its own player controls over mpv's picture (see player/chrome), so mpv's own are off, and its keys
+            // are routed to them over the IPC socket.
+            "--osc=no", "--input-default-bindings=no", "--input-vo-keyboard=yes",
             "--input-ipc-server=$socket",
             "--title=Cinema", "--keep-open=no", "--save-position-on-quit=no",
             "--hwdec=auto-safe",
@@ -332,12 +338,6 @@ object MpvLaunch {
             "--background-color=#1A140E",
             "--cursor-autohide=1000",
         )
-        if (!themeScript.isNullOrBlank()) {
-            args.remove("--osc=yes")
-            args.remove("--script-opts=osc-visibility=always")
-            args += "--osc=no"
-            args += "--script=$themeScript"
-        }
         // Steam's Game Mode (gamescope) shows X11 windows; a Wayland window from mpv would never be shown there.
         if (isGamescope(env)) args += "--gpu-context=x11egl"
         return args
