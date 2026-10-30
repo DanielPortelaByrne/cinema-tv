@@ -251,18 +251,31 @@ class JellyfinClient(platform: Platform) {
         return try { JellyfinApi.parseItem(JSONObject(body)) } catch (_: Exception) { null }
     }
 
-    /** The episode to play for a series: the next unwatched one, else the first. Null when it has none or Jellyfin is unreachable. */
+    /**
+     * The episode to play for a series: the next unwatched one, else the first. Null when it has none, when Jellyfin is
+     * unreachable, or when the episode is not one of this series' own: Jellyfin answers a series it no longer has with
+     * some other show's next episode, which must never play under this series' name.
+     */
     fun episodeToPlay(seriesId: String): JellyfinItem? {
         val uid = userId ?: return null
         val base = JellyfinApi.cleanBase(server)
         val next = request("GET", JellyfinApi.nextUpUrl(base, uid, seriesId))?.let { JellyfinApi.parseItems(it).firstOrNull() }
-        return next ?: request("GET", JellyfinApi.firstEpisodeUrl(base, uid, seriesId))?.let { JellyfinApi.parseItems(it).firstOrNull() }
+        val ep = next ?: request("GET", JellyfinApi.firstEpisodeUrl(base, uid, seriesId))?.let { JellyfinApi.parseItems(it).firstOrNull() }
+        if (ep == null) return null
+        if (!sameId(ep.seriesId, seriesId)) { invalidateLibrary(); return null }
+        return ep
     }
+
+    /** Jellyfin writes an id with or without its dashes, in either case. */
+    private fun sameId(a: String?, b: String): Boolean = a != null && a.replace("-", "").equals(b.replace("-", ""), ignoreCase = true)
 
     /** Every episode of a series, with season and episode numbers, or empty when there are none or Jellyfin cannot be reached. */
     fun episodes(seriesId: String): List<JellyfinItem> {
         val uid = userId ?: return emptyList()
-        return request("GET", JellyfinApi.episodesUrl(JellyfinApi.cleanBase(server), uid, seriesId))?.let { JellyfinApi.parseItems(it) }.orEmpty()
+        val body = request("GET", JellyfinApi.episodesUrl(JellyfinApi.cleanBase(server), uid, seriesId))
+        // No answer for the series: it is gone from Jellyfin, so the cached library that still lists it is dropped.
+        if (body == null) { invalidateLibrary(); return emptyList() }
+        return JellyfinApi.parseItems(body)
     }
 
     /** Resolve ahead of the end screen; no dependency on a watched-state report reaching the server first. */

@@ -35,6 +35,12 @@ import com.danielportelabyrne.cinema.design.cinema.StripeDrawable
 class EpisodeCard(context: Context, val number: Int, name: String, overview: String?) : FrameLayout(context) {
     val play = ActionDisc(context, 78, R.drawable.ic_cin_play, 34, nudge = 2f)
     val download = ActionDisc(context, 62, R.drawable.ic_cin_dl, 28)
+    /** Deletes this episode's file. Shown only while the card has focus and the episode is downloaded. */
+    val delete = ActionDisc(context, 56, R.drawable.ic_cin_trash, 26)
+    /** Whether the episode is on disk, so it can be deleted. */
+    var deletable = false
+        set(v) { field = v; updateDelete() }
+    var onDelete: (() -> Unit)? = null
     /** Called once the card lights up or goes out, so the page can scroll it into view. */
     var onLit: ((Boolean) -> Unit)? = null
     /** Shown above the Download disc while it has focus ("Download S2 E4"); null for none. */
@@ -122,6 +128,9 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
 
         play.onFocus = { post { refresh() } }
         download.onFocus = { post { refresh() } }
+        delete.onFocus = { post { refresh() } }
+        delete.setOnClickListener { onDelete?.invoke() }
+        still.addView(delete, LayoutParams(delete.box, delete.box, Gravity.BOTTOM or Gravity.END).apply { rightMargin = p(12); bottomMargin = p(16) })
         buildPlaceholder()
     }
 
@@ -170,6 +179,7 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         play.visibility = if (look.playShown) VISIBLE else GONE
         play.isFocusable = look.playShown
         download.visibility = if (look.downloadShown) VISIBLE else GONE
+        deletable = look.state == CardState.LIBRARY
         download.isFocusable = look.downloadFocusable
         download.isClickable = look.downloadFocusable
         when (look.state) {
@@ -257,6 +267,7 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
     private fun refresh() {
         val now = hasFocus()
         refreshTip()
+        updateDelete()
         if (now == lit) return
         lit = now
         val duration = if (now) Motion.FOCUS_IN_MS else Motion.FOCUS_OUT_MS
@@ -275,6 +286,13 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         metaTexts.forEach { it.setTextColor(if (now) Cinema.MUTED else Cinema.DIM) }
         invalidate()
         onLit?.invoke(now)
+    }
+
+    /** The delete disc shows while this card has focus, and only for an episode that is on disk. */
+    private fun updateDelete() {
+        val show = deletable && hasFocus()
+        delete.visibility = if (show) VISIBLE else GONE
+        delete.isFocusable = show; delete.isClickable = show
     }
 
     private fun refreshTip() { tip.visibility = if (download.isFocused && !tipText.isNullOrEmpty()) VISIBLE else GONE }

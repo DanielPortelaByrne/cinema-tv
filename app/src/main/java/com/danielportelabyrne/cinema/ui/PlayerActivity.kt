@@ -1,5 +1,6 @@
 package com.danielportelabyrne.cinema.ui
 
+import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.app.Activity
 import android.content.Context
@@ -41,6 +42,7 @@ import android.view.Gravity
 import android.widget.TextView
 import com.danielportelabyrne.cinema.data.settings.CinemaSettings
 import com.danielportelabyrne.cinema.data.settings.Integration
+import com.danielportelabyrne.cinema.data.movies.StreamProgress
 import com.danielportelabyrne.cinema.data.stream.NetworkEstimator
 import com.danielportelabyrne.cinema.data.stream.PlaybackRecord
 import com.danielportelabyrne.cinema.data.stream.PlaybackStore
@@ -102,6 +104,8 @@ class PlayerActivity : AppCompatActivity() {
     private var captionsOn = true
     private lateinit var items: List<PlayItem>
     private var imdbId: String? = null
+    /** The season and episode of a TV episode played from a stream, so its progress is kept (see StreamProgress). */
+    private var streamEpisode: Pair<Int, Int>? = null
     /** A live channel: no resume point, no Continue watching card, and no Stremio to fall back on. */
     private var live = false
     /** Set for a Jellyfin title: playback is reported to the server, so "continue watching" and watched marks follow the viewer. */
@@ -139,7 +143,7 @@ class PlayerActivity : AppCompatActivity() {
         override fun run() { saveResume(); snapshotToContinue(); handler.postDelayed(this, 15_000) }
     }
     private val reportTick = object : Runnable {
-        override fun run() { reportToJellyfin("Progress"); handler.postDelayed(this, REPORT_EVERY_MS) }
+        override fun run() { reportToJellyfin("Progress"); recordStreamProgress(); handler.postDelayed(this, REPORT_EVERY_MS) }
     }
     /** The next-episode card is up while the credits still play (it appears as they begin, not at the file's end). */
     private var creditsCard = false
@@ -190,6 +194,7 @@ class PlayerActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         items = parse(intent.getStringExtra(EXTRA_ITEMS))
         imdbId = intent.getStringExtra(EXTRA_IMDB)
+        streamEpisode = intent.getStringExtra(EXTRA_EPISODE)?.split(":")?.takeIf { it.size == 2 }?.let { p -> p[0].toIntOrNull()?.let { s -> p[1].toIntOrNull()?.let { e -> s to e } } }
         live = intent.getBooleanExtra(EXTRA_LIVE, false)
         jf = com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport.fromJson(intent.getStringExtra(EXTRA_JF))
         forcedStart = intent.getBooleanExtra(EXTRA_FROM_START, false)
@@ -280,7 +285,7 @@ class PlayerActivity : AppCompatActivity() {
         intent.getStringExtra(EXTRA_META)?.let { m -> runCatching { chrome?.setMeta(metaFrom(JSONObject(m))) } }
         val report = jf
         // A stream or a JustWatch title carries its IMDb id; a library item's ids arrive with its details below.
-        loadLetterboxd(imdbId, null, episode = false)
+        lbSource = Triple(imdbId, null, false)
         if (report == null) startAttempt(0) else {
             // Start loading at once from what the library list already said (source and resume point), held paused; the
             // item's details (chapters, trickplay, the server's latest resume point) are fetched alongside. Playback
@@ -293,7 +298,7 @@ class PlayerActivity : AppCompatActivity() {
                 val fresh = client.item(report.itemId)
                 handler.post {
                     if (isFinishing || isDestroyed) return@post
-                    if (fresh != null) { applyFreshItem(report, fresh); loadLetterboxd(fresh.imdbId, fresh.tmdbId, fresh.isEpisode) }
+                    if (fresh != null) { applyFreshItem(report, fresh); lbSource = Triple(fresh.imdbId, fresh.tmdbId, fresh.isEpisode) }
                     handler.removeCallbacks(release); player.playWhenReady = true
                     prefetchNextEpisode(fresh)
                 }
@@ -301,31 +306,47 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private val lbRepo by lazy { com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository(this, allowBrowser = false) }
+    /** The player's own Letterboxd reads: the browser may load a page here, because they only happen when the screen pauses. */
+    private val lbRepo by lazy { com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository(this, allowBrowser = true) }
     private val lbWorker by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
-    private var lbAsked = false
+    private val lbPictures by lazy { java.util.concurrent.Executors.newFixedThreadPool(2) }
+    /** Where the item being played is on IMDb or TMDB, and whether it is an episode (which keeps the Stream card). */
+    private var lbSource: Triple<String?, String?, Boolean>? = null
 
     /**
-     * The paused screen's Letterboxd card: the film's page (by IMDb or TMDB id), its chart and what the followed
-     * members made of it. Plain requests and what the Movies page saved only, so the player never starts a browser.
-     * Films only: an episode keeps the Stream card.
+     * The paused screen's Letterboxd card, read each time the screen appears: the film's page (by IMDb or TMDB id), its cast
+     * and crew, its chart and what the followed members made of it. Then the people's pictures and the reviews arrive. Films
+     * only: an episode keeps the Stream card. Nothing is loaded while the film plays.
      */
-    private fun loadLetterboxd(imdb: String?, tmdb: String?, episode: Boolean) {
-        if (lbAsked || live || chrome == null || episode) return
+    private fun loadLetterboxd() {
+        val (imdb, tmdb, episode) = lbSource ?: return
+        if (live || chrome == null || episode) return
         if (!CinemaSettings(AndroidPlatform(this)).isOn(Integration.LETTERBOXD)) return
         val path = imdb?.takeIf { it.startsWith("tt") }?.let { "/imdb/$it/" } ?: tmdb?.toLongOrNull()?.let { "/tmdb/$it/" } ?: return
-        lbAsked = true
         lbWorker.execute {
             val L = com.danielportelabyrne.cinema.data.letterboxd.Lb
             val H = com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR
-            val info = lbRepo.pageNow(path, 72 * H)?.let { L.film(it) } ?: return@execute
+            val html = lbRepo.pageNow(path, 72 * H) ?: return@execute
+            val info = L.film(html) ?: return@execute
+            val credits = L.credits(html)
             val chart = lbRepo.pageNow("/csi/film/${info.slug}/rating-histogram/", 24 * 7 * H)?.let { L.histogram(it) }.orEmpty()
             val circle = lbRepo.following.map { u ->
                 val name = lbRepo.pageNow("/$u/", 24 * 7 * H)?.let { L.profile(it, u)?.name?.substringBefore(' ') } ?: u
                 val mine = lbRepo.pageNow("/$u/film/${info.slug}/", 6 * H)?.let { h -> if (lbRepo.missing(h)) null else L.memberFilm(h, u) }
                 name to (mine?.rating?.let { L.stars(it) } ?: if (mine != null) "watched" else null)
             }
-            handler.post { if (!isFinishing && !isDestroyed) chrome?.setLetterboxd(info.copy(histogram = chart), circle) }
+            handler.post { if (!isFinishing && !isDestroyed) chrome?.setLetterboxd(info.copy(histogram = chart), circle, credits) }
+            // Each person's picture is on their own page: fetched a few at a time, shown as each arrives.
+            (credits.cast + credits.crew.flatMap { it.people }).distinctBy { it.path }.forEach { person ->
+                lbPictures.execute {
+                    val url = lbRepo.pageNow(person.path, 7 * 24 * H)?.let { L.headshot(it) } ?: return@execute
+                    handler.post { if (!isFinishing && !isDestroyed) chrome?.setHeadshot(person.path, url) }
+                }
+            }
+            lbPictures.execute {
+                val reviews = lbRepo.pageNow("/film/${info.slug}/reviews/by/activity/", 24 * H)?.let { L.reviews(it) }.orEmpty()
+                handler.post { if (!isFinishing && !isDestroyed) chrome?.setReviews(reviews) }
+            }
         }
     }
 
@@ -380,7 +401,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun seekChecked(ms: Long) {
         val from = player.currentPosition
         if (!player.isCurrentMediaItemSeekable && ms != 0L) {
-            Toast.makeText(this, "Skipping isn't available for this stream", Toast.LENGTH_SHORT).show()
+            CinemaToast.show(this, "Skipping isn't available for this stream", Toast.LENGTH_SHORT)
             Perf.mark("player.seek refused (unseekable)")
             return
         }
@@ -388,7 +409,7 @@ class PlayerActivity : AppCompatActivity() {
             val limit = com.danielportelabyrne.cinema.data.player.PlayerMath.streamSeekLimit(player.duration, streamDownloaded, player.bufferedPosition)
             com.danielportelabyrne.cinema.data.player.PlayerMath.clampStreamSeek(ms, from, limit)
         }
-        if (target != ms) Toast.makeText(this, "Not downloaded yet", Toast.LENGTH_SHORT).show()
+        if (target != ms) CinemaToast.show(this, "Not downloaded yet", Toast.LENGTH_SHORT)
         if (target != from) player.seekTo(target)
         Perf.mark("player.seek $from -> $ms (to $target, seekable=${player.isCurrentMediaItemSeekable})")
         handler.postDelayed({ if (!isFinishing) Perf.mark("player.seek landed at ${player.currentPosition}") }, 3000)
@@ -504,7 +525,7 @@ class PlayerActivity : AppCompatActivity() {
         if (index + 1 < items.size) {
             // While the loading screen is up it says so itself; mid-film a short note is all there is room for.
             loadingScreen?.takeIf { loadingView?.visibility == View.VISIBLE }?.message("Trying another version…")
-                ?: Toast.makeText(this, "Trying another version…", Toast.LENGTH_SHORT).show()
+                ?: CinemaToast.show(this, "Trying another version…", Toast.LENGTH_SHORT)
             startAttempt(index + 1)
             if (position > 60_000) player.seekTo(position)
         } else fallBackToStremio("no version could be played")
@@ -537,21 +558,21 @@ class PlayerActivity : AppCompatActivity() {
     private fun fallBackToStremio(reason: String) {
         if (streamOnly()) {
             Log.w(TAG, "Stream failed: $reason")
-            Toast.makeText(this, "Couldn't play this stream. Try again in a minute.", Toast.LENGTH_LONG).show()
+            CinemaToast.show(this, "Couldn't play this stream. Try again in a minute.", Toast.LENGTH_LONG)
             finish(); return
         }
         if (live) {
             Log.w(TAG, "Live channel failed: $reason")
-            Toast.makeText(this, "This channel isn't available right now", Toast.LENGTH_LONG).show()
+            CinemaToast.show(this, "This channel isn't available right now", Toast.LENGTH_LONG)
             finish(); return
         }
         Log.w(TAG, "Falling back to Stremio: $reason")
-        Toast.makeText(this, "Couldn't play this automatically, opening Stremio", Toast.LENGTH_LONG).show()
+        CinemaToast.show(this, "Couldn't play this automatically, opening Stremio", Toast.LENGTH_LONG)
         val id = imdbId
         val uri = if (id != null) "stremio:///detail/movie/$id/$id" else "stremio:///search?search=" + Uri.encode(title)
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).setPackage("com.stremio.one").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        } catch (_: Exception) { Toast.makeText(this, "Stremio isn't installed on this TV", Toast.LENGTH_LONG).show() }
+        } catch (_: Exception) { CinemaToast.show(this, "Stremio isn't installed on this TV", Toast.LENGTH_LONG) }
         finish()
     }
 
@@ -600,7 +621,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 Player.STATE_READY -> { closeBuffer(); seeking = false }
                 Player.STATE_ENDED -> if (!ended) {
-                    closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); resumePrefs.edit().remove(imdbId ?: "").apply()
+                    closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); recordStreamProgress(atEnd = true); resumePrefs.edit().remove(imdbId ?: "").apply()
                     continueStore.save(ResumeItem(title, null, packageName, null, player.duration, player.duration, null, System.currentTimeMillis()), null)
                     if (!foreground) autoplay.cancel()
                     autoplay.end(SystemClock.elapsedRealtime())
@@ -775,7 +796,8 @@ class PlayerActivity : AppCompatActivity() {
             seekChecked(target)
         }
         c.onNext = { nextTarget()?.invoke() }
-        c.captureFrame = { done -> captureFrame(done) }
+        c.onPaused = { loadLetterboxd() }
+        c.loadPicture = { url, width, done -> chromeImages.load(url, maxWidth = width) { done(it) } }
         art?.let { url -> chromeImages.load(url, maxWidth = 960) { c.backdrop = it } }
         c.chapterImage = { chapter, done ->
             val r = jf; val tag = chapter.imageTag
@@ -919,7 +941,7 @@ class PlayerActivity : AppCompatActivity() {
         captionsOn = !captionsOn
         captionPrefs.edit().putBoolean("captions", captionsOn).apply()
         applyCaptions()
-        if (captionsOn && !hasCaptions()) Toast.makeText(this, "This stream has no captions", Toast.LENGTH_SHORT).show()
+        if (captionsOn && !hasCaptions()) CinemaToast.show(this, "This stream has no captions", Toast.LENGTH_SHORT)
         updateCaptionsLabel()
     }
 
@@ -1052,6 +1074,18 @@ class PlayerActivity : AppCompatActivity() {
      * Tells Jellyfin where playback is. "Playing" opens the session, "Progress" updates it (also on pause), and
      * "Stopped" closes it with the final position, at which point Jellyfin counts a title as watched if it is near the end.
      */
+    /** Keeps how far a stream episode got, here, since a stream leaves no record in Jellyfin. Library playback is reported to Jellyfin instead. */
+    private fun recordStreamProgress(atEnd: Boolean = false) {
+        val episode = streamEpisode ?: return
+        val id = imdbId?.takeIf { it.startsWith("tt") } ?: return
+        if (jf != null || !::player.isInitialized) return
+        val duration = player.duration.takeIf { it > 0 } ?: 0L
+        val position = if (atEnd && duration > 0) duration else player.currentPosition
+        if (position <= 0) return
+        val settings = CinemaSettings(AndroidPlatform(this))
+        settings.streamProgress = StreamProgress.record(settings.streamProgress, id, episode.first, episode.second, position, duration, System.currentTimeMillis())
+    }
+
     private fun reportToJellyfin(kind: String, pausedOverride: Boolean? = null, atEnd: Boolean = false) {
         val r = jf ?: return
         if (!::player.isInitialized) return
@@ -1077,7 +1111,8 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        if (lbAsked) lbWorker.shutdownNow()
+        recordStreamProgress()
+        lbWorker.shutdownNow(); lbPictures.shutdownNow()
         episodeGeneration++
         episodeLookup.shutdownNow(); statusPoller.shutdownNow()
         if (chrome != null) chromeImages.close()
@@ -1112,6 +1147,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_LIVE = "live"
         private const val EXTRA_ART = "art"
         private const val EXTRA_JF = "jf"
+        private const val EXTRA_EPISODE = "episode"
         private const val EXTRA_FROM_START = "fromStart"
         /** The film's details for the chrome (year, genres, runtime, certificate, rating, overview), as JSON. */
         private const val EXTRA_META = "meta"
@@ -1129,9 +1165,9 @@ class PlayerActivity : AppCompatActivity() {
         private const val ENGINE_STARTUP_TIMEOUT_MS = 75_000L
 
         /** Starts playback of [ranked] in order, capped at three attempts. */
-        fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false) {
+        fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false, episode: Pair<Int, Int>? = null) {
             context.startActivity(playbackIntent(context, ranked, title, imdbId, report).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
-                .putExtra(EXTRA_FROM_START, fromStart))
+                .putExtra(EXTRA_FROM_START, fromStart).putExtra(EXTRA_EPISODE, episode?.let { "${it.first}:${it.second}" }))
         }
 
         private fun metaJson(m: PlayerMeta): String = JSONObject().put("title", m.title).put("year", m.year ?: 0)

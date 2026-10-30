@@ -58,8 +58,20 @@ object FastFocus {
                 p = p.parent
             }
             horizontal?.let { glideSideways(view, it, sideMargin) }
-            vertical?.let { glideDown(view, it, if (it === page) topInset else 0, bottomInset) }
+            vertical?.let { glideDown(view, it, if (it === page) topInset else 0, bottomInset, headingOf(horizontal)) }
         }
+    }
+
+    /**
+     * The heading above a row's scroller, when there is one: a row's heading is the view just before its scroller in the
+     * column. Null for a scroller that is first in its column, or when the view before it is another row.
+     */
+    private fun headingOf(scroller: View?): View? {
+        val parent = scroller?.parent as? ViewGroup ?: return null
+        val i = parent.indexOfChild(scroller)
+        if (i <= 0) return null
+        val before = parent.getChildAt(i - 1)
+        return if (before is HorizontalScrollView) null else before
     }
 
     private fun glideSideways(view: View, scroller: HorizontalScrollView, margin: Int) {
@@ -75,13 +87,19 @@ object FastFocus {
         scroller.smoothScrollTo(target, 0)
     }
 
-    private fun glideDown(view: View, page: ScrollView, topInset: Int, bottomInset: Int) {
+    private fun glideDown(view: View, page: ScrollView, topInset: Int, bottomInset: Int, heading: View?) {
         val r = Rect(0, 0, view.width, view.height)
         page.offsetDescendantRectToMyCoords(view, r)
+        // Moving up, the row's heading must stay on screen with its cards: the top is the heading's when it has one.
+        val upTop = heading?.let { h ->
+            val hr = Rect(0, 0, h.width, h.height)
+            page.offsetDescendantRectToMyCoords(h, hr)
+            minOf(hr.top, r.top)
+        } ?: r.top
         val top = page.scrollY
         val bottom = top + page.height
         val target = when {
-            r.top - topInset < top -> r.top - topInset
+            upTop - topInset < top -> upTop - topInset
             r.bottom + bottomInset > bottom -> r.bottom + bottomInset - page.height
             else -> return
         }.coerceAtLeast(0)
@@ -89,7 +107,7 @@ object FastFocus {
         // stuck. A row further down that only needs its bottom shown must not snap to the top, so this is checked on where
         // the item is now, not on the scroll target alone.
         val nearTop = 160 * page.resources.displayMetrics.density
-        val snapped = if (target < nearTop && r.top - topInset < nearTop) 0 else target
+        val snapped = if (target < nearTop && upTop - topInset < nearTop) 0 else target
         page.smoothScrollTo(0, snapped)
     }
 

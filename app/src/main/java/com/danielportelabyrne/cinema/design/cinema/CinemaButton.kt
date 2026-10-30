@@ -50,6 +50,16 @@ class CinemaButton(context: Context, kind: Kind, label: CharSequence, iconRes: I
 
     fun setText(value: CharSequence) { label.text = value; contentDescription = value }
 
+    /** Swaps the picture on a button built with one, keeping its colour (the watchlist's add and added states). */
+    fun setIcon(res: Int) { icon?.setImageResource(res) }
+
+    /** A square button of its icon alone: the label is hidden and the icon has no gap after it, so it sits in the middle. */
+    fun makeIconOnly() {
+        label.visibility = GONE
+        (icon?.layoutParams as? LayoutParams)?.marginEnd = 0
+        icon?.requestLayout()
+    }
+
     override fun setEnabled(enabled: Boolean) { super.setEnabled(enabled); alpha = if (enabled) 1f else 0.6f }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {

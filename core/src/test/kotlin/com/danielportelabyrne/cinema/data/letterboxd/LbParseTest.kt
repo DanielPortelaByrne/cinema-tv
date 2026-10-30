@@ -120,4 +120,25 @@ class LbParseTest {
         assertNull(Lb.average(listOf(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L)))
         assertNull(Lb.average(emptyList()))
     }
+
+    @Test fun a_films_cast_and_crew_come_with_their_page_paths() {
+        val html = """<div id="tab-panel-cast" role="tabpanel"> <div class="cast-list text-sluglist">
+            <a title="Lt. Vincent Hanna" href="/actor/al-pacino/" class="text-slug tooltip">Al Pacino</a>
+            <a title="Neil McCauley" href="/actor/robert-de-niro/" class="text-slug tooltip">Robert De Niro</a> </div></div>
+            <div id="tab-panel-crew" class="column-block"> <h3> <span class="crewrole -full">Director</span> </h3>
+            <div class="text-sluglist"> <a href="/director/michael-mann/" class="text-slug">Michael Mann</a> </div>
+            <h3> <span class="crewrole -full">Writer</span> </h3> <div class="text-sluglist"> <a href="/writer/michael-mann/" class="text-slug">Michael Mann</a> </div></div>
+            <div id="tab-panel-details">Studios</div>"""
+        val credits = Lb.credits(html)
+        assertEquals(listOf(LbPerson("/actor/al-pacino/", "Al Pacino", "Lt. Vincent Hanna"), LbPerson("/actor/robert-de-niro/", "Robert De Niro", "Neil McCauley")), credits.cast)
+        assertEquals(listOf("Director", "Writer"), credits.crew.map { it.role })
+        assertEquals(LbPerson("/director/michael-mann/", "Michael Mann", null), credits.crew[0].people[0])
+        assertEquals(LbCredits(emptyList(), emptyList()), Lb.credits("<p>nothing</p>"))
+    }
+
+    @Test fun a_persons_picture_is_their_tmdb_headshot() {
+        val html = """<img src="https://s.ltrbxd.com/static/img/empty.png" class="js-tmdb-person" data-image="https://image.tmdb.org/t/p/w500/m8HAAjq1T75.jpg" data-tmdb-id="1158" />"""
+        assertEquals("https://image.tmdb.org/t/p/w500/m8HAAjq1T75.jpg", Lb.headshot(html))
+        assertNull(Lb.headshot("<p>no picture</p>"))
+    }
 }

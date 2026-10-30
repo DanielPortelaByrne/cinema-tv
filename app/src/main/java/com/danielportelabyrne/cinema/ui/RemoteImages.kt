@@ -1,6 +1,7 @@
 package com.danielportelabyrne.cinema.ui
 
 import com.danielportelabyrne.cinema.data.exchange
+import com.danielportelabyrne.cinema.platform.Log
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -81,6 +82,7 @@ class RemoteImages private constructor(context: Context) {
     companion object {
         @Volatile private var shared: RemoteImages? = null
         private const val SHADED = "shaded"
+        private const val TAG = "Images"
 
         fun shared(context: Context): RemoteImages = shared ?: synchronized(this) {
             shared ?: RemoteImages(context.applicationContext).also { shared = it }
@@ -101,9 +103,13 @@ class RemoteImages private constructor(context: Context) {
             headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
             c.exchange {
                 val code = c.responseCode
-                if (code != 200) { Perf.mark("image ${url.substringBefore('?')} -> HTTP $code"); null } else c.inputStream.use { it.readBytes() }
+                if (code != 200) { Perf.mark("image ${url.substringBefore('?')} -> HTTP $code"); Log.w(TAG, "image ${url.substringBefore('?')} -> HTTP $code"); null } else c.inputStream.use { it.readBytes() }
             }
-        } catch (e: Exception) { Perf.mark("image ${url.substringBefore('?')} failed: ${e.javaClass.simpleName}"); null }
+        } catch (e: Exception) {
+            Perf.mark("image ${url.substringBefore('?')} failed: ${e.javaClass.simpleName}")
+            Log.w(TAG, "image ${url.substringBefore('?')} failed: ${e.javaClass.simpleName}")
+            null
+        }
 
         /**
          * Decodes straight to [maxWidth]: a power-of-two subsample first (cheap), then the decoder's own scaling for the

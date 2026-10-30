@@ -541,14 +541,60 @@ class SetupFlow(
                 if (added > 0) changed = true
                 p.done(if (added > 0) "Added ${filmCount(added)} to your Watchlist. Find it in My library." else "Your Watchlist already has all of them.")
             }
+            p.secondary("Add-ons from Stremio") { stremioAddonsStep(key) }
             p.secondary("Refresh") { stremioStep() }
-            p.secondary("Disconnect Stremio") { settings.stremioKey = null; changed = true; integrationsStep() }
+            p.secondary("Disconnect Stremio") {
+                settings.stremioKey = null; settings.stremioAddons = emptyList(); changed = true
+                integrationsStep()
+            }
             p.secondary("Back") { integrationsStep() }
             films.take(STREMIO_LIST_LIMIT).forEach { stremioFilmLine(p, it) }
             if (films.size > STREMIO_LIST_LIMIT) {
                 p.column.addView(Cinema.text(activity, "…and ${films.size - STREMIO_LIST_LIMIT} more", 22, Cinema.DIM), LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(14) })
             }
         }
+    }
+
+    /** The add-ons installed in the owner's Stremio account, and the button that ports them to Cinema. */
+    private fun stremioAddonsStep(key: String) {
+        val p = page("STREMIO", "Add-ons from Stremio", null)
+        backTo = { stremioStep() }
+        val token = pageToken
+        p.status("Loading your add-ons…")
+        bg({ stremio.addons(key).let { it to (it == null && stremio.keyRejected(key)) } }) { (addons, rejected) ->
+            if (token != pageToken) return@bg
+            if (rejected) { settings.stremioKey = null; settings.stremioAddons = emptyList(); changed = true; stremioIntroStep(); return@bg }
+            if (addons == null) {
+                p.status("Couldn't reach Stremio just now.")
+                p.primary("Try again", null) { stremioAddonsStep(key) }
+                p.secondary("Back") { stremioStep() }
+                return@bg
+            }
+            p.status("")
+            p.body("${addons.size} installed in Stremio, ${addons.count { it.streams }} of them with streams. Porting keeps them on this TV; they are asked for copies when you press Play or Stream now.")
+            p.primary("Port ${addons.size} add-ons", R.drawable.ic_cin_check) {
+                settings.stremioAddons = addons
+                changed = true
+                p.done("Ported ${addons.size} add-ons. Cinema asks the ones that stream for copies when you press Play or Stream now.")
+            }
+            p.secondary("Back") { stremioStep() }
+            addons.forEach { stremioAddonLine(p, it) }
+        }
+    }
+
+    private fun stremioAddonLine(p: Page, addon: com.danielportelabyrne.cinema.data.stremio.StremioAddon) {
+        val rest = Cinema.glass(activity, 30f)
+        val line = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; isFocusable = true; clipChildren = false; clipToPadding = false
+            setPadding(px(36), px(18), px(28), px(18)); background = rest
+        }
+        line.addView(Cinema.text(activity, addon.name, 30, Cinema.CREAM, weight = 600).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+        line.addView(Cinema.text(activity, listOfNotNull(addon.types.joinToString(", ").ifBlank { null }, if (addon.streams) "Streams" else "No streams").joinToString("  ·  "), 22, Cinema.MUTED),
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(2) })
+        line.setOnFocusChangeListener { v, focused ->
+            v.background = if (focused) GradientDrawable().apply { cornerRadius = px(30).toFloat(); setColor(0xFF7A5C42.toInt()) } else rest
+        }
+        p.column.addView(line, LinearLayout.LayoutParams(px(1500), -2).apply { topMargin = px(12) })
     }
 
     private fun stremioFilmLine(p: Page, film: com.danielportelabyrne.cinema.data.stremio.StremioFilm) {

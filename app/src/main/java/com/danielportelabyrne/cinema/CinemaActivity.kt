@@ -1,5 +1,6 @@
 package com.danielportelabyrne.cinema
 
+import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.os.Bundle
 import android.view.FocusFinder
@@ -72,7 +73,12 @@ class CinemaActivity : AppCompatActivity() {
             onOpenSettings = { moviesPanel.hide(); setup.openSettings() },
             integrationOn = { settings.isOn(it) },
             music = { settings.subsonic },
-            watchlist = { settings.watchlist }
+            stremioAddons = { settings.stremioAddons },
+            streamProgress = { settings.streamProgress },
+            recentSearches = { settings.recentSearches(it) },
+            saveRecentSearches = { keyboard, terms -> settings.setRecentSearches(keyboard, terms) },
+            watchlist = { settings.watchlist },
+            saveWatchlist = { settings.watchlist = it }
         )
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -151,7 +157,7 @@ class CinemaActivity : AppCompatActivity() {
         intent.action = null
         ContinueWatchingContract.streamTitle(key)?.let { title ->
             val payload = ContinueWatching(this).load(50).firstOrNull { it.title == title }?.payload
-            if (payload == null || !PlayerActivity.resume(this, payload)) Toast.makeText(this, "Couldn't reopen $title", Toast.LENGTH_LONG).show()
+            if (payload == null || !PlayerActivity.resume(this, payload)) CinemaToast.show(this, "Couldn't reopen $title", Toast.LENGTH_LONG)
             return
         }
         ContinueWatchingContract.jellyfinItemId(key)?.let { id ->
@@ -159,7 +165,7 @@ class CinemaActivity : AppCompatActivity() {
                 val item = jellyfin.item(id)
                 runOnUiThread {
                     if (isDestroyed) return@runOnUiThread
-                    if (item == null) Toast.makeText(this, "Couldn't reach Jellyfin for that title", Toast.LENGTH_LONG).show()
+                    if (item == null) CinemaToast.show(this, "Couldn't reach Jellyfin for that title", Toast.LENGTH_LONG)
                     else JellyfinPlayback.play(this, jellyfin, item, listOfNotNull(item.displayTitle, item.episodeLabel()).joinToString(" · "), item.resumeKey)
                 }
             }.start()

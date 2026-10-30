@@ -27,6 +27,11 @@ class WatchlistTest {
         assertEquals(listOf(c, a, b), Watchlist.merge(listOf(a, b), listOf(a, c)))
     }
 
+    @Test fun without_takes_one_film_out_and_keeps_the_rest() {
+        assertEquals(listOf(b), Watchlist.without(listOf(a, b), "tt1"))
+        assertEquals(listOf(a, b), Watchlist.without(listOf(a, b), "tt9"))
+    }
+
     @Test fun settings_keep_the_watchlist_and_count_new_films() {
         val settings = CinemaSettings(MemoryPlatform())
         assertEquals(2, settings.addToWatchlist(listOf(a, b)))

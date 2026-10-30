@@ -31,6 +31,9 @@ data class CardLook(
  *
  * An episode that has not aired can still be asked for: Sonarr then watches for it and grabs it once it is out. It
  * keeps its greyed still and "Airs …" label either way; it has no Play (there is nothing to stream yet).
+ *
+ * [canStream] is whether this TV has a stream service. Without one, an episode that is not in the library has no Play:
+ * pressing it could only say to use the download, so it is left off, as Stream now is for films.
  */
 fun episodeCardState(
     inLibrary: Boolean,
@@ -39,6 +42,7 @@ fun episodeCardState(
     airDate: String?,
     today: String,
     canRequest: Boolean,
+    canStream: Boolean,
     download: QueueItem? = null
 ): CardLook {
     val unaired = EpisodeCards.unaired(airDate, today)
@@ -59,10 +63,10 @@ fun episodeCardState(
     return when (state) {
         CardState.LIBRARY -> CardLook(state, "IN LIBRARY", true, playShown = true, downloadShown = true, downloadFocusable = false)
         CardState.DOWNLOADING -> CardLook(state, if (progress != null) "DOWNLOADING ${Math.round(progress * 100)}%" else "DOWNLOADING", true,
-            playShown = true, downloadShown = true, downloadFocusable = true, progress = progress)
-        CardState.REQUESTED -> CardLook(state, "REQUESTED", false, playShown = true, downloadShown = true, downloadFocusable = true)
-        CardState.REQUEST -> CardLook(state, null, false, playShown = true, downloadShown = true, downloadFocusable = true)
-        CardState.STREAM_ONLY -> CardLook(state, null, false, playShown = true, downloadShown = false, downloadFocusable = false)
+            playShown = canStream, downloadShown = true, downloadFocusable = true, progress = progress)
+        CardState.REQUESTED -> CardLook(state, "REQUESTED", false, playShown = canStream, downloadShown = true, downloadFocusable = true)
+        CardState.REQUEST -> CardLook(state, null, false, playShown = canStream, downloadShown = true, downloadFocusable = true)
+        CardState.STREAM_ONLY -> CardLook(state, null, false, playShown = canStream, downloadShown = false, downloadFocusable = false)
         CardState.UNAIRED -> CardLook(state, null, false, playShown = false, downloadShown = canRequest, downloadFocusable = canRequest, unaired = true)
         CardState.UNAIRED_REQUESTED -> CardLook(state, "REQUESTED", false, playShown = false, downloadShown = true, downloadFocusable = true, unaired = true)
     }

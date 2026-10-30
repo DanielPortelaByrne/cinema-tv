@@ -246,7 +246,7 @@ private fun Seasons(model: CinemaModel, route: Route.Title, art: Art) {
     }
     val today = remember { EpisodeCards.today() }
     val ownedHere = d.owned.filter { it.season == season.number }
-    val looks = listing?.map { ep -> ep to episodeCardState(ownedHere.any { it.episode == ep.number }, states[season.number to ep.number], season.availability, ep.airDate, today, tmdb != null, EpisodeCards.download(d.downloads, tmdb, season.number, ep.number)) }
+    val looks = listing?.map { ep -> ep to episodeCardState(ownedHere.any { it.episode == ep.number }, states[season.number to ep.number], season.availability, ep.airDate, today, tmdb != null, model.seerr.hasStreamService, EpisodeCards.download(d.downloads, tmdb, season.number, ep.number)) }
 
     // The season bar (`.sbar`): stripe marker, the season tabs, the season's counts and its download button.
     Row(Modifier.height(62.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
