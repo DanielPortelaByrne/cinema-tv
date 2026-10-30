@@ -16,6 +16,7 @@
     </p>
   </description>
   <launchable type="desktop-id">io.github.danielportelabyrne.Cinema.desktop</launchable>
+  <icon type="stock">io.github.danielportelabyrne.Cinema</icon>
   <url type="homepage">https://github.com/DanielPortelaByrne/cinema-tv</url>
   <content_rating type="oars-1.1"/>
   <supports>

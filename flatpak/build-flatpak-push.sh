@@ -7,6 +7,12 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# AppStream's Glycin image loader needs a Flatpak system repository for its sandbox.
+# On Nix/developer setups with only a per-user installation, use that repo as the system dir.
+if [[ -z "${FLATPAK_SYSTEM_DIR:-}" && ! -d /var/lib/flatpak/repo && -d "$HOME/.local/share/flatpak/repo" ]]; then
+  export FLATPAK_SYSTEM_DIR="$HOME/.local/share/flatpak"
+fi
+
 STEAM_DECK_HOST="${STEAM_DECK_HOST:-deck@steamdeck.local}"
 if [[ "$STEAM_DECK_HOST" != *@* ]]; then STEAM_DECK_HOST="deck@$STEAM_DECK_HOST"; fi
 STEAM_DECK_PATH="${STEAM_DECK_PATH:-/home/deck/flatpaks}"

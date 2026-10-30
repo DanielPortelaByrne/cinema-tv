@@ -90,6 +90,10 @@ class MpvTest {
         assertTrue("--ontop=yes" in args)
         assertTrue(args.none { it.contains("Authorization") || it.contains("Token") })
         assertFalse("--gpu-context=x11egl" in args)
+        val themed = MpvLaunch.args("mpv", "s", emptyMap(), "/cache/cinema-osc.lua")
+        assertTrue("--osc=no" in themed)
+        assertTrue("--script=/cache/cinema-osc.lua" in themed)
+        assertFalse("--osc=yes" in themed)
     }
 
     @Test fun gameModeKeepsMpvOnX11() {
