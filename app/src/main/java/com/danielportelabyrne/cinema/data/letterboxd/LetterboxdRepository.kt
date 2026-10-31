@@ -56,9 +56,10 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
      * Calls [done] on the main thread with what [parse] makes of [path]: first from the saved copy, if there is one,
      * then again from a fresh copy when the saved one is older than [maxAgeMs] (only if it changed). Null means the
      * page could not be had at all. [stillWanted] (a search typed past, a list left) lets a fetch that nobody wants any more
-     * be dropped; [done] then hears null, which its caller can ignore.
+     * be dropped; [done] then hears null, which its caller can ignore. [background] is for lookups made in bulk as a page
+     * is built (a long list asks about every film): they wait behind any page the owner has opened themselves.
      */
-    fun <T> load(path: String, maxAgeMs: Long, parse: (String) -> T?, stillWanted: (() -> Boolean)? = null, done: (T?) -> Unit) {
+    fun <T> load(path: String, maxAgeMs: Long, parse: (String) -> T?, stillWanted: (() -> Boolean)? = null, background: Boolean = false, done: (T?) -> Unit) {
         if (stillWanted != null) wanted[path] = stillWanted else wanted.remove(path)
         val started = android.os.SystemClock.elapsedRealtime()
         // Each public URL has one model shape. Lambda class names contain runtime identities and cannot be disk keys.
@@ -94,7 +95,7 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
                     if (!tmp.renameTo(snapshot)) tmp.delete()
                 } finally { tmp.delete() }
             }
-        }, { main.post { done(null) } })
+        }, { main.post { done(null) } }, background)
     }
 
     /** Blocking: the page now, saved copy first when it is recent enough. Null when it cannot be had. */

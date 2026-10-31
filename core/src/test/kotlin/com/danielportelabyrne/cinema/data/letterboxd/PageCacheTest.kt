@@ -75,4 +75,73 @@ class PageCacheTest {
             assertEquals("saved", second.pageNow("/page", -1))
         } finally { second.close(); dir.deleteRecursively() }
     }
+
+    /** A cache with one network worker whose first fetch holds until [release], recording the order the rest are fetched in. */
+    private class OrderedFetches {
+        val dir = Files.createTempDirectory("lb-cache").toFile()
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val release = CountDownLatch(1)
+        val firstStarted = CountDownLatch(1)
+        private val first = AtomicInteger()
+        val cache = PageCache(dir, { path ->
+            if (first.getAndIncrement() == 0) { firstStarted.countDown(); release.await(5, TimeUnit.SECONDS) }
+            order += path
+            path
+        }, networkThreads = 1)
+
+        /** Starts the blocking fetch, so everything asked for after this queues behind it. */
+        fun hold() { cache.load("/held", 0, {}, {}); assertTrue(firstStarted.await(2, TimeUnit.SECONDS)) }
+        fun finishAndWait(expected: Int) {
+            Thread.sleep(300)   // the loads queue their fetches from a worker thread
+            release.countDown()
+            val until = System.currentTimeMillis() + 5000
+            while (order.size < expected && System.currentTimeMillis() < until) Thread.sleep(20)
+        }
+        fun close() { release.countDown(); cache.close(); dir.deleteRecursively() }
+    }
+
+    @Test fun a_page_the_owner_opens_is_fetched_before_queued_background_lookups() {
+        val t = OrderedFetches()
+        try {
+            t.hold()
+            repeat(5) { t.cache.load("/bulk$it", 0, {}, {}, background = true); Thread.sleep(30) }
+            Thread.sleep(100)
+            t.cache.load("/film", 0, {}, {})
+            t.finishAndWait(7)
+            assertEquals(listOf("/held", "/film", "/bulk0", "/bulk1", "/bulk2", "/bulk3", "/bulk4"), t.order.toList())
+        } finally { t.close() }
+    }
+
+    @Test fun background_lookups_still_go_in_the_order_they_were_asked() {
+        val t = OrderedFetches()
+        try {
+            t.hold()
+            listOf("/a", "/b", "/c", "/d").forEach { t.cache.load(it, 0, {}, {}, background = true); Thread.sleep(30) }
+            t.finishAndWait(5)
+            assertEquals(listOf("/held", "/a", "/b", "/c", "/d"), t.order.toList())
+        } finally { t.close() }
+    }
+
+    @Test fun the_owners_pages_go_in_the_order_they_were_asked_too() {
+        val t = OrderedFetches()
+        try {
+            t.hold()
+            listOf("/x", "/y", "/z").forEach { t.cache.load(it, 0, {}, {}); Thread.sleep(30) }
+            t.finishAndWait(4)
+            assertEquals(listOf("/held", "/x", "/y", "/z"), t.order.toList())
+        } finally { t.close() }
+    }
+
+    @Test fun a_background_lookup_the_owner_then_asks_for_moves_up_and_is_fetched_once() {
+        val t = OrderedFetches()
+        try {
+            t.hold()
+            listOf("/a", "/b", "/c").forEach { t.cache.load(it, 0, {}, {}, background = true); Thread.sleep(30) }
+            val delivered = CountDownLatch(1)
+            t.cache.load("/c", 0, { delivered.countDown() }, {})
+            t.finishAndWait(4)
+            assertEquals(listOf("/held", "/c", "/a", "/b"), t.order.toList())
+            assertTrue(delivered.await(2, TimeUnit.SECONDS))
+        } finally { t.close() }
+    }
 }

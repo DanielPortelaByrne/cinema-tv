@@ -1628,7 +1628,7 @@ class MoviesPanel(
                 wanted.forEach { f ->
                     if (!watchAsked.add("$u/${f.slug}")) return@forEach
                     watchesAsked++
-                    lb.load("/$u/film/${f.slug}/", 6 * H, { Lb.member(it, u) }, stillHere) { m ->
+                    lb.load("/$u/film/${f.slug}/", 6 * H, { Lb.member(it, u) }, stillHere, background = true) { m ->
                         if (gen != generation) return@load
                         watchesDone++
                         if (m != null) watched.getOrPut(u) { HashMap() }[f.slug] = m.watched
@@ -1720,7 +1720,7 @@ class MoviesPanel(
             if (ratingsStarted || !loaded) return
             ratingsStarted = true
             films.forEach { f ->
-                lb.load("/csi/film/${f.slug}/rating-histogram/", 7 * 24 * H, { Lb.histogram(it) }, stillHere) { counts ->
+                lb.load("/csi/film/${f.slug}/rating-histogram/", 7 * 24 * H, { Lb.histogram(it) }, stillHere, background = true) { counts ->
                     if (gen != generation) return@load
                     ratingsDone++
                     val average = counts?.let { Lb.average(it) }
