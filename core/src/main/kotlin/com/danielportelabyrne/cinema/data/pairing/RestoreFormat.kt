@@ -3,6 +3,7 @@ package com.danielportelabyrne.cinema.data.pairing
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession
 import com.danielportelabyrne.cinema.data.movies.SeerrClient
+import com.danielportelabyrne.cinema.data.movies.Watchlist
 import com.danielportelabyrne.cinema.data.movies.SeerrSession
 import com.danielportelabyrne.cinema.data.music.SubsonicConfig
 import com.danielportelabyrne.cinema.data.settings.Arr
@@ -18,7 +19,8 @@ import org.json.JSONObject
  * cookies. Passwords are never written, because the phone types them once and the TV keeps only what a sign-in leaves.
  *
  * Download-client logins are included with their addresses, so a restored TV controls its downloads without a second
- * sign-in. Stremio and Subsonic secrets are included too. The whole file is sealed with the PIN ([RestoreBundle]).
+ * sign-in. Stremio and Subsonic secrets are included too, and so are the Letterboxd members followed and the whole
+ * watchlist. The whole file is sealed with the PIN ([RestoreBundle]).
  */
 object RestoreFormat {
     const val KIND = "cinema-restore"
@@ -52,6 +54,9 @@ object RestoreFormat {
             clients.put(JSONObject().put("url", it.baseUrl).put("username", it.username).put("password", it.password))
         }
         s.put("clients", clients)
+        // What the owner has built up on the TV: who they follow on Letterboxd, and the whole watchlist (the one imported from Stremio too).
+        s.put("letterboxdFollowing", org.json.JSONArray(settings.letterboxdFollowing))
+        s.put("watchlist", org.json.JSONArray(Watchlist.toJson(settings.watchlist)))
         root.put("settings", s)
         return root.toString()
     }
@@ -90,6 +95,11 @@ object RestoreFormat {
                 list.optJSONObject(i)?.let { ClientLogin(text(it, "url"), text(it, "username"), text(it, "password")) }
             }.filter { it.baseUrl.isNotBlank() && it.password.isNotBlank() }
         }.orEmpty()
+        // Absent in a file from an older build: then what is on this TV is left alone, not wiped.
+        val following = s.optJSONArray("letterboxdFollowing")?.let { list ->
+            (0 until list.length()).mapNotNull { i -> list.optString(i).trim().takeIf { it.isNotEmpty() } }.distinctBy { it.lowercase() }
+        }
+        val watchlist = s.optJSONArray("watchlist")?.let { Watchlist.parse(it.toString()) }
         val stremio = text(s, "stremioKey").ifBlank { null }
         val helper = text(s, "requestHelperUrl").ifBlank { null }
         val stream = text(s, "streamServiceUrl").ifBlank { null }
@@ -102,6 +112,8 @@ object RestoreFormat {
         settings.subsonic = subsonic
         settings.stremioKey = stremio
         integrations?.let { o -> Integration.entries.forEach { if (o.has(it.key)) settings.setOn(it, o.optBoolean(it.key)) } }
+        following?.let { settings.letterboxdFollowing = it }
+        watchlist?.let { settings.watchlist = it }
         clients.forEach {
             settings.setClientUser(it.baseUrl, it.username.ifBlank { null })
             settings.setClientPassword(it.baseUrl, it.password)

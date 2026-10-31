@@ -30,6 +30,11 @@ class RestoreFormatTest {
         settings.subsonic = SubsonicConfig("http://10.0.0.7:4533", "daniel", "music-pw", "")
         settings.setClientUser("http://10.0.0.11:8090", "admin")
         settings.setClientPassword("http://10.0.0.11:8090", "qbit-pw")
+        settings.letterboxdFollowing = listOf("davidehrlich", "eva_films")
+        settings.watchlist = listOf(
+            com.danielportelabyrne.cinema.data.movies.WatchlistFilm("tt0111161", "The Shawshank Redemption", 1994, "https://img/poster1.jpg"),
+            com.danielportelabyrne.cinema.data.movies.WatchlistFilm("tt0068646", "The Godfather", null, null),
+        )
         jellyfin.restoreSession(JellyfinSession("http://10.0.0.8:8096", "jf-token", "user-1"))
         seerr.restoreSession(SeerrSession("http://10.0.0.9:5055", "connect.sid=s%3Aabc"))
 
@@ -48,10 +53,30 @@ class RestoreFormatTest {
         assertEquals("music-pw", freshSettings.subsonic?.password)
         assertEquals("admin", freshSettings.clientUser("http://10.0.0.11:8090"))
         assertEquals("qbit-pw", freshSettings.clientPassword("http://10.0.0.11:8090"))
+        assertEquals(listOf("davidehrlich", "eva_films"), freshSettings.letterboxdFollowing)
+        assertEquals(settings.watchlist, freshSettings.watchlist)
+        assertEquals(2, freshSettings.watchlist.size)
         assertEquals("jf-token", freshJellyfin.savedSession()?.token)
         assertEquals("user-1", freshJellyfin.savedSession()?.userId)
         assertEquals("connect.sid=s%3Aabc", freshSeerr.savedSession()?.cookie)
         assertTrue(freshSettings.setupDone)
+    }
+
+    @Test fun a_file_from_an_older_build_leaves_the_follow_list_and_watchlist_alone() {
+        val (settings, jellyfin, seerr) = tv(MemoryPlatform())
+        settings.letterboxdFollowing = listOf("someone")
+        settings.watchlist = listOf(com.danielportelabyrne.cinema.data.movies.WatchlistFilm("tt1", "Kept", 2000, null))
+        RestoreFormat.apply("""{"kind":"cinema-restore","version":1,"settings":{"region":"GB"}}""", settings, jellyfin, seerr)
+        assertEquals(listOf("someone"), settings.letterboxdFollowing)
+        assertEquals("Kept", settings.watchlist.single().name)
+    }
+
+    @Test fun an_empty_list_in_the_file_does_replace_what_is_there() {
+        val (settings, jellyfin, seerr) = tv(MemoryPlatform())
+        settings.letterboxdFollowing = listOf("someone")
+        RestoreFormat.apply("""{"kind":"cinema-restore","version":1,"settings":{"letterboxdFollowing":[],"watchlist":[]}}""", settings, jellyfin, seerr)
+        assertTrue(settings.letterboxdFollowing.isEmpty())
+        assertTrue(settings.watchlist.isEmpty())
     }
 
     @Test fun sign_ins_that_were_not_signed_in_are_left_out_of_the_file() {
