@@ -64,6 +64,52 @@ class PairingTest {
         assertEquals(Pairing.Check.OK, pairing.begin("777777"))
     }
 
+    private val minute = 60_000L
+
+    @Test fun touching_moves_expiry_to_the_idle_window() {
+        val clock = Clock()
+        val pairing = Pairing(code = "123123", ttlMillis = 30 * minute, idleMillis = 30 * minute, now = clock)
+        clock.now += 29 * minute
+        pairing.touch()
+        clock.now += 29 * minute
+        assertEquals(Pairing.Check.OK, pairing.check("123123"))
+        clock.now += 1 * minute
+        assertEquals(Pairing.Check.EXPIRED, pairing.check("123123"))
+    }
+
+    @Test fun touching_never_goes_past_the_hard_cap() {
+        val clock = Clock()
+        val pairing = Pairing(code = "123123", ttlMillis = 30 * minute, idleMillis = 30 * minute, maxMillis = 60 * minute, now = clock)
+        clock.now += 25 * minute; pairing.touch()
+        clock.now += 25 * minute; pairing.touch()
+        clock.now += 9 * minute
+        assertEquals(Pairing.Check.OK, pairing.check("123123"))
+        clock.now += 1 * minute
+        assertEquals(Pairing.Check.EXPIRED, pairing.check("123123"))
+    }
+
+    @Test fun without_touching_the_session_expires_at_its_ttl() {
+        val clock = Clock()
+        val pairing = Pairing(code = "123123", ttlMillis = 30 * minute, idleMillis = 30 * minute, now = clock)
+        clock.now += 30 * minute
+        assertEquals(Pairing.Check.EXPIRED, pairing.check("123123"))
+    }
+
+    @Test fun an_expired_session_stays_expired_when_touched() {
+        val clock = Clock()
+        val pairing = Pairing(code = "123123", ttlMillis = 10 * minute, now = clock)
+        clock.now += 11 * minute
+        pairing.touch()
+        assertTrue(pairing.isExpired)
+    }
+
+    @Test fun touching_does_not_unspend_a_spent_code() {
+        val pairing = Pairing(code = "123123", now = Clock())
+        pairing.begin("123123"); pairing.finish(success = true)
+        pairing.touch()
+        assertEquals(Pairing.Check.USED, pairing.check("123123"))
+    }
+
     @Test fun a_wrong_code_cannot_start_a_submission() {
         val pairing = Pairing(code = "777777", now = Clock())
         assertEquals(Pairing.Check.WRONG_CODE, pairing.begin("000000"))

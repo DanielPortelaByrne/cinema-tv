@@ -13,12 +13,29 @@ class Pairing(
     private val now: () -> Long = System::currentTimeMillis,
     /** A reusable session (typing from a phone) keeps its code after a successful submission, until it expires. */
     private val reusable: Boolean = false,
+    /** How long a [touch] keeps the session alive. Defaults to [ttlMillis], so sessions that never touch are unchanged. */
+    private val idleMillis: Long = ttlMillis,
+    /** The longest the session can live, however often it is touched. */
+    private val maxMillis: Long = Long.MAX_VALUE,
 ) {
     enum class Check { OK, WRONG_CODE, EXPIRED, USED }
 
-    private val expiresAt = now() + ttlMillis
+    private val createdAt = now()
+    private var expiresAt = createdAt + ttlMillis
     private var used = false
     private var inFlight = false
+
+    /**
+     * Records activity: the session now lasts [idleMillis] from this moment, but never past [maxMillis] from when it
+     * was made. A session that has already expired stays expired.
+     */
+    @Synchronized
+    fun touch() {
+        val at = now()
+        if (at >= expiresAt) return
+        val capped = if (maxMillis > Long.MAX_VALUE - createdAt) Long.MAX_VALUE else createdAt + maxMillis
+        expiresAt = minOf(at + idleMillis, capped)
+    }
 
     /** Whether [presented] may be used right now. Does not spend the code, so a page can be loaded more than once. */
     @Synchronized
