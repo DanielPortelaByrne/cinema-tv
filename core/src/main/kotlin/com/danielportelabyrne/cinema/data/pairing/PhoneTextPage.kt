@@ -25,7 +25,105 @@ object PhoneTextPage {
         """.trimIndent(),
     )
 
-    private fun page(body: String): String = """
+    /**
+     * The live page: the label of the field the TV has focused, one box whose text follows the TV field as it is typed,
+     * and a Done button. It talks to the TV over a WebSocket at `/ws/<code>`, reconnects by itself, and needs no
+     * downloads. Passwords on the TV are never sent here, so a password field starts empty.
+     */
+    fun live(code: String): String {
+        val digits = code.filter { it.isDigit() }
+        return page(
+            bodyAttrs = """ data-code="${PairingPages.escape(digits)}"""",
+            body = """
+                <p class="eyebrow" id="label">Connecting…</p>
+                <p class="lead">What you type here appears on the TV as you type.</p>
+                <form id="live" onsubmit="return false">
+                  <input id="field" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Type…" maxlength="$MAX_LENGTH" disabled>
+                  <button type="button" id="done">Done</button>
+                </form>
+                <p class="note status" id="status" role="status">Connecting…</p>
+                <noscript><p class="note bad">This page needs JavaScript. Without it, open the plain page and use Send.</p></noscript>
+            """.trimIndent(),
+            script = "<script>$LIVE_SCRIPT</script>",
+        )
+    }
+
+    private const val LIVE_SCRIPT = """
+        (function () {
+          var code = document.body.getAttribute('data-code');
+          var label = document.getElementById('label');
+          var field = document.getElementById('field');
+          var done = document.getElementById('done');
+          var status = document.getElementById('status');
+          var ws = null, retry = 0, everOpened = false, stopped = false, fieldId = '', pingTimer = null, sendTimer = null;
+          var waits = [500, 1000, 2000, 5000];
+          function say(text) { status.textContent = text; }
+          function clean(text) { return text.replace(/[\t\r\n]/g, ' '); }
+          function send(text) { if (ws && ws.readyState === 1) ws.send(text); }
+          function none() { fieldId = ''; field.value = ''; field.disabled = true; label.textContent = 'Nothing selected on the TV'; }
+          function handle(message) {
+            var kind = message.charAt(0);
+            if (kind === 'F') {
+              var parts = message.substring(1).split('\t');
+              var same = parts[0] === fieldId;
+              var max = parseInt(parts[3], 10);
+              fieldId = parts[0];
+              label.textContent = parts[1] || 'Type on the TV';
+              field.type = parts[2] === '1' ? 'password' : 'text';
+              field.maxLength = max > 0 ? max : 200;
+              field.disabled = false;
+              if (!(same && document.activeElement === field)) field.value = parts.slice(4).join('\t');
+              if (!same) field.focus();
+            } else if (kind === 'N') {
+              none();
+            }
+          }
+          function open() {
+            if (stopped) return;
+            var scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+            ws = new WebSocket(scheme + location.host + '/ws/' + code);
+            ws.onopen = function () {
+              retry = 0; everOpened = true; say('Connected to the TV');
+              clearInterval(pingTimer);
+              pingTimer = setInterval(function () { send('P'); }, 20000);
+            };
+            ws.onmessage = function (event) { handle(String(event.data)); };
+            ws.onclose = function () {
+              clearInterval(pingTimer);
+              field.disabled = true;
+              if (stopped) return;
+              say(!everOpened && retry >= 3 ? 'The TV may already have a phone connected. Trying again…' : 'Reconnecting…');
+              var wait = waits[Math.min(retry, waits.length - 1)];
+              retry++;
+              setTimeout(check, wait);
+            };
+          }
+          // A refused upgrade does not say why, so ask the page itself: gone means the code has ended.
+          function check() {
+            fetch(location.pathname, { cache: 'no-store' }).then(function (response) {
+              if (response.status === 403 || response.status === 410) { stopped = true; say('Scan the code on the TV again.'); none(); return; }
+              open();
+            }).catch(function () { open(); });
+          }
+          field.addEventListener('input', function () {
+            if (!fieldId) return;
+            clearTimeout(sendTimer);
+            sendTimer = setTimeout(function () { send('T' + fieldId + '\t' + clean(field.value)); }, 120);
+          });
+          done.addEventListener('click', function () {
+            clearTimeout(sendTimer);
+            if (fieldId) send('T' + fieldId + '\t' + clean(field.value));
+            send('D');
+          });
+          document.addEventListener('visibilitychange', function () {
+            if (!document.hidden && !stopped && (!ws || ws.readyState > 1)) { retry = 0; check(); }
+          });
+          none();
+          open();
+        })();
+    """
+
+    private fun page(body: String, bodyAttrs: String = "", script: String = ""): String = """
         <!doctype html><html lang="en"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Cinema · Type on the TV</title>
@@ -52,9 +150,12 @@ object PhoneTextPage {
           button { font: 600 19px/1 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; padding: 18px 16px; border: 0; border-radius: 999px; cursor: pointer;
                    background: linear-gradient(120deg, #eb9a66 0%, #d0623a 100%); color: #1b120c; box-shadow: 0 10px 24px rgba(208,98,58,.28); }
           button:active { transform: scale(.98); }
-        </style></head><body>
+          input:disabled { opacity: .55; }
+          .note.status { background: rgba(255,242,222,.07); color: #bfae98; margin: 18px 0 0; }
+        </style></head><body$bodyAttrs>
         <div class="brand"><span class="dot"></span><span class="wordmark">Cinema</span></div>
         $body
+        $script
         </body></html>
     """.trimIndent()
 }
