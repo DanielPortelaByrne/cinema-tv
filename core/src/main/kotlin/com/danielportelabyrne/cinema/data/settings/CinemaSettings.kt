@@ -15,6 +15,9 @@ enum class Arr(val label: String, val defaultPort: Int) { SONARR("Sonarr", 8989)
 /** An address and API key for Sonarr or Radarr, typed in by hand because Seerr would not share its own. */
 data class ManualArr(val baseUrl: String, val apiKey: String)
 
+/** A torrent client's address and the login this TV keeps for it. */
+data class ClientLogin(val baseUrl: String, val username: String, val password: String)
+
 /**
  * Everything this TV has been told about the owner's setup that is not a sign-in: the catalogue region, Sonarr and
  * Radarr entered by hand, and the optional helper services. Jellyfin's and Seerr's addresses live with their clients.
@@ -118,9 +121,29 @@ class CinemaSettings(platform: Platform) {
 
     /** Download-client passwords, per client address. Only used when Sonarr/Radarr hide theirs. */
     fun clientPassword(baseUrl: String): String? = secrets.get("client_pw_$baseUrl")
-    fun setClientPassword(baseUrl: String, password: String?) = secrets.put("client_pw_$baseUrl", password)
+    fun setClientPassword(baseUrl: String, password: String?) {
+        secrets.put("client_pw_$baseUrl", password)
+        if (password != null) rememberClient(baseUrl)
+    }
     fun clientUser(baseUrl: String): String? = prefs.getString("client_user_$baseUrl", null)
-    fun setClientUser(baseUrl: String, user: String?) { prefs.edit().putString("client_user_$baseUrl", user).apply() }
+    fun setClientUser(baseUrl: String, user: String?) {
+        prefs.edit().putString("client_user_$baseUrl", user).apply()
+        if (user != null) rememberClient(baseUrl)
+    }
+
+    /** Every download client this TV holds a login for, so a restore file can carry them. The secret store cannot list its keys. */
+    fun clientLogins(): List<ClientLogin> = clientAddresses.mapNotNull { url ->
+        val password = clientPassword(url) ?: return@mapNotNull null
+        ClientLogin(url, clientUser(url).orEmpty(), password)
+    }
+
+    private val clientAddresses: List<String>
+        get() = prefs.getString("client_addresses", null)?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
+
+    private fun rememberClient(baseUrl: String) {
+        val known = clientAddresses
+        if (baseUrl !in known) prefs.edit().putString("client_addresses", (known + baseUrl).joinToString("\n")).apply()
+    }
 
     /** Forgets everything here and in the secret store. Jellyfin and Seerr sign-ins are cleared by their own clients. */
     fun reset() { prefs.edit().clear().apply(); secrets.clear() }

@@ -7,6 +7,7 @@ import com.danielportelabyrne.cinema.data.movies.SeerrSession
 import com.danielportelabyrne.cinema.data.music.SubsonicConfig
 import com.danielportelabyrne.cinema.data.settings.Arr
 import com.danielportelabyrne.cinema.data.settings.CinemaSettings
+import com.danielportelabyrne.cinema.data.settings.ClientLogin
 import com.danielportelabyrne.cinema.data.settings.Integration
 import com.danielportelabyrne.cinema.data.settings.LibraryOrder
 import com.danielportelabyrne.cinema.data.settings.ManualArr
@@ -16,8 +17,8 @@ import org.json.JSONObject
  * The JSON inside a restore file: the settings this TV was given, plus the Jellyfin and Seerr sign-ins as tokens and
  * cookies. Passwords are never written, because the phone types them once and the TV keeps only what a sign-in leaves.
  *
- * Download-client passwords are not included: they are keyed by each client's address, which the TV does not list,
- * so the owner re-enters them after a restore. Stremio and Subsonic secrets are included.
+ * Download-client logins are included with their addresses, so a restored TV controls its downloads without a second
+ * sign-in. Stremio and Subsonic secrets are included too. The whole file is sealed with the PIN ([RestoreBundle]).
  */
 object RestoreFormat {
     const val KIND = "cinema-restore"
@@ -46,6 +47,11 @@ object RestoreFormat {
                 .put("password", it.password).put("apiKey", it.apiKey))
         }
         settings.stremioKey?.let { s.put("stremioKey", it) }
+        val clients = org.json.JSONArray()
+        settings.clientLogins().forEach {
+            clients.put(JSONObject().put("url", it.baseUrl).put("username", it.username).put("password", it.password))
+        }
+        s.put("clients", clients)
         root.put("settings", s)
         return root.toString()
     }
@@ -79,6 +85,11 @@ object RestoreFormat {
                 .takeIf { c -> c.baseUrl.isNotBlank() && (c.apiKey.isNotBlank() || c.password.isNotBlank()) }
         }
         val integrations = s.optJSONObject("integrations")
+        val clients = s.optJSONArray("clients")?.let { list ->
+            (0 until list.length()).mapNotNull { i ->
+                list.optJSONObject(i)?.let { ClientLogin(text(it, "url"), text(it, "username"), text(it, "password")) }
+            }.filter { it.baseUrl.isNotBlank() && it.password.isNotBlank() }
+        }.orEmpty()
         val stremio = text(s, "stremioKey").ifBlank { null }
         val helper = text(s, "requestHelperUrl").ifBlank { null }
         val stream = text(s, "streamServiceUrl").ifBlank { null }
@@ -91,6 +102,10 @@ object RestoreFormat {
         settings.subsonic = subsonic
         settings.stremioKey = stremio
         integrations?.let { o -> Integration.entries.forEach { if (o.has(it.key)) settings.setOn(it, o.optBoolean(it.key)) } }
+        clients.forEach {
+            settings.setClientUser(it.baseUrl, it.username.ifBlank { null })
+            settings.setClientPassword(it.baseUrl, it.password)
+        }
         jellyfinSession?.let { jellyfin.restoreSession(it) }
         seerrSession?.let { seerr.restoreSession(it) }
         settings.setupDone = true
