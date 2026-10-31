@@ -230,13 +230,30 @@ class CinemaActivity : AppCompatActivity() {
                         // Cinema has its own focus rules, so ask the views themselves, staying inside the page.
                         focused.focusSearch(direction)?.takeIf { it !== focused && isInside(it, target) }?.requestFocus(direction)
                     } else {
-                        FocusFinder.getInstance().findNextFocus(target, focused, direction)?.requestFocus(direction)
+                        val next = FocusFinder.getInstance().findNextFocus(target, focused, direction)
+                        next?.requestFocus(direction)
+                        // Setup pages and Settings move focus here, not through the page's own scroll view, so the rule that keeps
+                        // the top reachable lives here too: Up with nothing above, or focus landing on the first item, shows the
+                        // header again instead of leaving it scrolled out of reach.
+                        if (direction == View.FOCUS_UP && (next == null || FocusFinder.getInstance().findNextFocus(target, next, View.FOCUS_UP) == null)) {
+                            scrollPageToTop(target)
+                        }
                     }
                     return true
                 }
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    /** Scrolls the first scrolling page under [root] back to its top. */
+    private fun scrollPageToTop(root: ViewGroup) {
+        fun find(v: View): android.widget.ScrollView? {
+            if (v is android.widget.ScrollView) return v
+            if (v is ViewGroup) for (i in 0 until v.childCount) find(v.getChildAt(i))?.let { return it }
+            return null
+        }
+        find(root)?.takeIf { it.scrollY > 0 }?.smoothScrollTo(0, 0)
     }
 
     private fun isInside(view: View, parent: View): Boolean {

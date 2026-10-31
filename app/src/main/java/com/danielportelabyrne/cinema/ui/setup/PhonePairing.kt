@@ -349,10 +349,26 @@ class PhonePairing(
         return try {
             val plain = RestoreBundle.open(sealed, pin)
             RestoreFormat.apply(String(plain, Charsets.UTF_8), settings, jellyfin, seerr)
+            importStremioWatchlistIfEmpty()
             null
         } catch (e: RestoreException) {
             e.message ?: "That file could not be restored."
         }
+    }
+
+    /**
+     * A restored TV that has Stremio linked but no watchlist yet fills it from the Stremio library, the same films the
+     * Import button would add (the ones not watched yet), so nobody has to press Import again. Runs off the request.
+     */
+    private fun importStremioWatchlistIfEmpty() {
+        val key = settings.stremioKey ?: return
+        if (settings.watchlist.isNotEmpty()) return
+        Thread {
+            val films = runCatching { stremio.films(key) }.getOrNull() ?: return@Thread
+            settings.addToWatchlist(films.filter { !it.watched }.map {
+                com.danielportelabyrne.cinema.data.movies.WatchlistFilm(it.imdbId, it.name, it.year, it.poster)
+            })
+        }.apply { isDaemon = true }.start()
     }
 
     /** Seals the current settings and sign-ins with the PIN, and sends them as the download. */
