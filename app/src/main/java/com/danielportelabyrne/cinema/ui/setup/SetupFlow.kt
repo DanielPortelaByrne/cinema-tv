@@ -40,6 +40,9 @@ import com.danielportelabyrne.cinema.ui.room.DownloadClientSignInSheet
 import com.danielportelabyrne.cinema.ui.room.InfoSheet
 import com.danielportelabyrne.cinema.ui.CinemaContentScrollView
 import com.danielportelabyrne.cinema.ui.room.JellyfinConnectSheet
+import com.danielportelabyrne.cinema.ui.phone.bindPhone
+import com.danielportelabyrne.cinema.ui.phone.fieldIdFor
+import com.danielportelabyrne.cinema.ui.phone.phoneRow
 import com.danielportelabyrne.cinema.ui.room.SheetAction
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -748,7 +751,9 @@ class SetupFlow(
                 background = GradientDrawable().apply { cornerRadius = px(52).toFloat(); setColor(rest) }
                 setOnFocusChangeListener { v, focused -> (v.background as GradientDrawable).setColor(if (focused) 0xFF7A5C42.toInt() else rest) }
             }
-            column.addView(edit, insertAt(), LinearLayout.LayoutParams(px(1100), px(104)).apply { topMargin = px(20) })
+            // The phone button beside the box, and the box follows the phone while it is connected.
+            column.addView(phoneRow(activity, edit, px(1100), px(104), px(18)), insertAt(), LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(20) })
+            bindPhone(edit, fieldIdFor(hint), hint, secret = password)
             focusables += edit
             return edit
         }

@@ -13,6 +13,8 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.danielportelabyrne.cinema.R
 import com.danielportelabyrne.cinema.data.movies.ClientKind
+import com.danielportelabyrne.cinema.ui.phone.bindPhone
+import com.danielportelabyrne.cinema.ui.phone.phoneRow
 import kotlin.concurrent.thread
 
 /**
@@ -52,8 +54,11 @@ class DownloadClientSignInSheet(private val activity: android.app.Activity, priv
         }
         val user = field("${kind.label} username", false)
         val password = field("Password", true)
-        if (kind.needsUsername) card.addView(user, LinearLayout.LayoutParams(-1, px(52)))
-        card.addView(password, LinearLayout.LayoutParams(-1, px(52)).apply { if (kind.needsUsername) topMargin = px(10) })
+        // The card is 492 px of content wide: the box, a gap, and the phone button that is as tall as the box is.
+        bindPhone(user, "client-sheet-username", "${kind.label} username")
+        bindPhone(password, "client-sheet-password", "Password", secret = true)
+        if (kind.needsUsername) card.addView(phoneRow(activity, user, px(430), px(52), px(10)), LinearLayout.LayoutParams(-2, -2))
+        card.addView(phoneRow(activity, password, px(430), px(52), px(10)), LinearLayout.LayoutParams(-2, -2).apply { if (kind.needsUsername) topMargin = px(10) })
 
         val status = label("", 13f, ContextCompat.getColor(activity, R.color.butter)).apply { setPadding(0, px(10), 0, 0) }
         card.addView(status)

@@ -14,6 +14,8 @@ import androidx.core.content.ContextCompat
 import com.danielportelabyrne.cinema.R
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.movies.SeerrClient
+import com.danielportelabyrne.cinema.ui.phone.bindPhone
+import com.danielportelabyrne.cinema.ui.phone.phoneRow
 import kotlin.concurrent.thread
 
 /**
@@ -57,8 +59,11 @@ class SeerrSignInSheet(
         }
         val user = field("Jellyfin username", false)
         val password = field("Password", true)
-        card.addView(user, LinearLayout.LayoutParams(-1, px(52)))
-        card.addView(password, LinearLayout.LayoutParams(-1, px(52)).apply { topMargin = px(10) })
+        // The card is 492 px of content wide: the box, a gap, and the phone button that is as tall as the box is.
+        bindPhone(user, "seerr-sheet-username", "Jellyfin username")
+        bindPhone(password, "seerr-sheet-password", "Password", secret = true)
+        card.addView(phoneRow(activity, user, px(430), px(52), px(10)), LinearLayout.LayoutParams(-2, -2))
+        card.addView(phoneRow(activity, password, px(430), px(52), px(10)), LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(10) })
         thread { jellyfin.userName()?.let { name -> activity.runOnUiThread { if (user.text.isNullOrBlank()) { user.setText(name); password.requestFocus() } } } }
 
         val status = label("", 13f, ContextCompat.getColor(activity, R.color.butter)).apply { setPadding(0, px(10), 0, 0) }

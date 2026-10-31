@@ -11,6 +11,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.danielportelabyrne.cinema.R
 import com.danielportelabyrne.cinema.design.Cinema
+import com.danielportelabyrne.cinema.ui.phone.PhoneInput
+import com.danielportelabyrne.cinema.ui.phone.PhoneTextTarget
 
 /**
  * The search bar every search screen uses, so they all look and behave the same: a lead (an icon, or a page's own mark),
@@ -38,6 +40,12 @@ class SearchField(
     var onMic: (() -> Unit)? = null
     /** Pressed the phone: the page opens its phone typing. */
     var onPhone: (() -> Unit)? = null
+
+    /**
+     * The phone target this bar stands for. When its text changes on the TV (the keyboard, the microphone), the phone's
+     * box follows. Set by the page that owns the bar.
+     */
+    var phoneTarget: PhoneTextTarget? = null
 
     init {
         orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false
@@ -86,6 +94,7 @@ class SearchField(
         hint.text = if (listening) "LISTENING" else hintText
         Cinema.style(hint, 18, if (listening) Cinema.TERRA else Cinema.MUTED, weight = if (listening) 600 else 400, tracking = if (listening) 0.14f else 0.04f)
         background = Cinema.glass(context, 56f, if (listening) Cinema.alpha(Cinema.STRIPE_TERRA, 0.16f) else 0x17FFF2DE)
+        if (!listening) phoneTarget?.let { PhoneInput.textChanged(it) }
     }
 
     private fun placeCaret(after: Boolean) {
@@ -101,17 +110,32 @@ class SearchField(
     }
 
     companion object {
-        /** A round glass button with the phone icon, cream when focused. */
+        /**
+         * A round glass button with the phone icon, cream when focused. A small saffron dot at its corner shows while a
+         * phone is connected, the same on every screen that has one.
+         */
         fun phoneButton(context: Context): View {
             val icon = Cinema.icon(context, R.drawable.ic_cin_phone, Cinema.CREAM)
+            val dot = View(context).apply {
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Cinema.SAFFRON) }
+                visibility = if (PhoneInput.isConnected) View.VISIBLE else View.GONE
+            }
+            val listener: (Boolean) -> Unit = { on -> dot.visibility = if (on) View.VISIBLE else View.GONE }
             return android.widget.FrameLayout(context).apply {
                 background = Cinema.glass(context, 42f, Cinema.GLASS_STRONG)
                 isFocusable = true; isClickable = true; contentDescription = "Type on your phone"
                 addView(icon, android.widget.FrameLayout.LayoutParams(Cinema.px(context, 40), Cinema.px(context, 40), Gravity.CENTER))
+                addView(dot, android.widget.FrameLayout.LayoutParams(Cinema.px(context, 16), Cinema.px(context, 16), Gravity.TOP or Gravity.END).apply {
+                    topMargin = Cinema.px(context, 10); marginEnd = Cinema.px(context, 10)
+                })
                 setOnFocusChangeListener { _, focused ->
                     background = Cinema.glass(context, 42f, if (focused) Cinema.CREAM else Cinema.GLASS_STRONG)
                     icon.setColorFilter(if (focused) Cinema.INK else Cinema.CREAM)
                 }
+                addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(v: View) { PhoneInput.addConnectionListener(listener); listener(PhoneInput.isConnected) }
+                    override fun onViewDetachedFromWindow(v: View) { PhoneInput.removeConnectionListener(listener) }
+                })
             }
         }
     }
