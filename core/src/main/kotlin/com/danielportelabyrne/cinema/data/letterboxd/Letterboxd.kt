@@ -43,7 +43,7 @@ data class LbProfile(
 /** A film's Letterboxd page, as the film page and the paused screen use it. [histogram] counts ratings from ½ to ★★★★★. */
 data class LbFilmInfo(
     val slug: String, val average: Double?, val ratings: Long?, val reviews: Long?, val tmdbId: Long?, val isTv: Boolean,
-    val backdrop: String?, val page: FilmPage, val histogram: List<Long> = emptyList()
+    val backdrop: String?, val page: FilmPage, val histogram: List<Long> = emptyList(), val imdb: String? = null
 )
 
 /** What one member has logged for one film: their rating, whether they liked it, their review, and whether they watched it at all. */
@@ -182,7 +182,8 @@ object Lb {
             regex(""""reviewCount":\s*(\d+)""").find(html)?.groupValues?.get(1)?.toLongOrNull(),
             tmdb?.groupValues?.get(2)?.toLongOrNull(), tmdb?.groupValues?.get(1) == "tv",
             regex("""data-backdrop="([^"]+)"""").find(html)?.groupValues?.get(1)?.replace("&amp;", "&"),
-            LetterboxdParser.parse(html)
+            LetterboxdParser.parse(html),
+            imdb = regex("""imdb\.com/title/(tt\d+)""").find(html)?.groupValues?.get(1)
         )
     }
 

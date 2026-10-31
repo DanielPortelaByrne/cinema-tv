@@ -1,5 +1,6 @@
 package com.danielportelabyrne.cinema.data.letterboxd
 
+import com.danielportelabyrne.cinema.ui.Perf
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
@@ -26,6 +27,7 @@ class PageCache(
         if (closed) return
         reads.execute {
             val saved = saved(path)
+            Perf.mark("lb page $path ${if (saved == null) "miss" else "saved"}")
             saved?.let { done(it.html) }
             if (saved == null || clock() - saved.at > maxAgeMs) refresh(path) { fresh ->
                 if (fresh == null) { if (saved == null) failed() }
@@ -66,8 +68,12 @@ class PageCache(
             if (closed) { done(null); return }
             pending[path]?.let { it.add(done); return }
             pending[path] = mutableListOf(done)
+            val queued = Perf.now()
             network.execute {
+                Perf.took("lb fetch wait $path", Perf.now() - queued)
+                val started = Perf.now()
                 val page = runCatching { fetch(path)?.let { Page(it, clock()) } }.getOrNull()
+                Perf.took("lb fetch $path ${if (page == null) "failed" else "ok"}", Perf.now() - started)
                 if (page != null) {
                     runCatching {
                         val target = file(path)

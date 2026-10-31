@@ -1125,22 +1125,32 @@ class MoviesPanel(
      */
     private fun lbOpen(f: com.danielportelabyrne.cinema.data.letterboxd.LbFilm, poster: String?) {
         val gen = generation
+        val key = "lb:" + f.slug
         CinemaToast.show(activity, "Opening ${f.name}…", Toast.LENGTH_SHORT)
-        slowPool.execute {
-            val info = lb.pageNow("/film/${f.slug}/", 7 * 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR)
-                ?.let { com.danielportelabyrne.cinema.data.letterboxd.Lb.film(it) }
-            if (jellyfin.isConnected) jellyfin.library()
-            activity.runOnUiThread {
-                if (gen != generation || !isVisible) return@runOnUiThread
-                val p = info?.page
-                val t = lbTitle(f, poster).copy(
-                    kind = if (info?.isTv == true) Kind.SHOW else Kind.MOVIE, tmdbId = info?.tmdbId?.toString(),
-                    overview = p?.synopsis, runtimeMin = p?.runtimeMin, genres = p?.genres.orEmpty().take(3), year = f.year ?: p?.year,
-                    // Letterboxd resizes its backdrops on request: ask for the full 1920 rather than its 1200 default.
-                    backdropUrl = info?.backdrop?.replace("-1200-1200-675-675-crop", "-1920-1920-1080-1080-crop"))
-                openDetail(entry(t), emptyList())
-            }
+        // The title opens at once from what the list gives. The film's own page (synopsis, running time, IMDb and TMDB ids)
+        // fills it in when it arrives, from the saved copy if there is one, else from Letterboxd, and only if the title is still open.
+        fun show(info: com.danielportelabyrne.cinema.data.letterboxd.LbFilmInfo?) {
+            if (gen != generation || !isVisible) return
+            val p = info?.page
+            val t = lbTitle(f, poster).copy(
+                kind = if (info?.isTv == true) Kind.SHOW else Kind.MOVIE, tmdbId = info?.tmdbId?.toString(), imdbId = info?.imdb,
+                overview = p?.synopsis, runtimeMin = p?.runtimeMin, genres = p?.genres.orEmpty().take(3), year = f.year ?: p?.year,
+                // Letterboxd resizes its backdrops on request: ask for the full 1920 rather than its 1200 default.
+                backdropUrl = info?.backdrop?.replace("-1200-1200-675-675-crop", "-1920-1920-1080-1080-crop"))
+            if (info == null) { openDetail(entry(t), emptyList()); return }
+            // A title already on screen is redrawn with its details; focus stays where it was on the list.
+            if (!detailOpen || detailEntry?.title?.key != key) return
+            val keep = returnFocus
+            openDetail(entry(t), emptyList())
+            returnFocus = keep
         }
+        show(null)
+        lb.load("/film/${f.slug}/", 7 * 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR,
+            { com.danielportelabyrne.cinema.data.letterboxd.Lb.film(it) }, { gen == generation }) { info ->
+            activity.runOnUiThread { if (info != null) show(info) }
+        }
+        // The library is only used for the "in library" badge: refresh it in the background, never on the way to the title.
+        if (jellyfin.isConnected) slowPool.execute { jellyfin.library() }
     }
 
     /** A row of Letterboxd posters under [heading]: [note] is the line a focused poster shows, [chip] its corner tag. */
@@ -1148,8 +1158,10 @@ class MoviesPanel(
         heading: String, caption: String?, films: List<com.danielportelabyrne.cinema.data.letterboxd.LbFilm>, gen: Int,
         into: LinearLayout = content, line: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> String? = { it.stars },
         chip: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> String? = { null }, empty: String = "Nothing here yet",
-        badges: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> List<Pair<String, Bitmap?>> = { emptyList() }
+        badges: (com.danielportelabyrne.cinema.data.letterboxd.LbFilm) -> List<Pair<String, Bitmap?>> = { emptyList() },
+        onShown: (List<com.danielportelabyrne.cinema.data.letterboxd.LbFilm>) -> Unit = {}
     ): Row {
+        Perf.mark("lb row \"$heading\" films=${films.size}")
         val row = row(heading, caption, into = into)
         row.inner.minimumHeight = Cinema.px(activity, 488)
         if (films.isEmpty()) { row.inner.addView(note(empty)); return row }
@@ -1181,7 +1193,7 @@ class MoviesPanel(
                                     val bottom = maxOf(bounds.bottom, bounds.top + Cinema.px(activity, 488))
                                     val visible = bounds.top < page.scrollY + page.height && bottom > page.scrollY &&
                                         left < row.scroller.scrollX + row.scroller.width - row.scroller.paddingRight && right > row.scroller.scrollX
-                                    val done: (Bitmap) -> Unit = { b -> if (gen == generation) { v.setShadedPoster(b); frost?.refresh() } }
+                                    val done: (Bitmap) -> Unit = { b -> if (gen == generation) { v.setShadedPoster(b); frost?.refresh(); Perf.mark("lb poster drawn ${f.slug}") } }
                                     if (visible) images.loadShadedPosterPriority(url, Cinema.px(activity, 260), tag, done)
                                     else images.loadShadedPoster(url, emptyMap(), Cinema.px(activity, 260), tag, done)
                                 }
@@ -1191,7 +1203,7 @@ class MoviesPanel(
                 }
                 if (i < EAGER_POSTERS) load() else row.deferred += v to load
             }
-            if (from == 0) lbFocusIfLost(row)
+            if (from == 0) { lbFocusIfLost(row); onShown(shown) }
             if (to < shown.size) android.view.Choreographer.getInstance().postFrameCallback { addFrom(to) }
             else row.scroller.post { if (gen == generation) row.loadNear() }
         }
@@ -1244,6 +1256,7 @@ class MoviesPanel(
     /** Letterboxd home: the followed members as cards, what they watched lately, and their watchlists and likes. */
     private fun buildLetterboxd(gen: Int) {
         val users = lb.following
+        Perf.mark("lb home open members=${users.size}")
         val head = FrameLayout(activity).apply { clipChildren = false }
         head.addView(lbHeader(listOf("Letterboxd", "Following ${users.size}"), "Your film diary", 76), FrameLayout.LayoutParams(-2, -2).apply { leftMargin = pageStart })
         val search = CinemaButton(activity, CinemaButton.Kind.GLASS, "Search lists", R.drawable.ic_cin_search, small = true).apply { setOnClickListener { go(Dest.LbSearch, remember = true) } }
@@ -1294,8 +1307,9 @@ class MoviesPanel(
                 chip = { f -> merged.firstOrNull { it.second.film.slug == f.slug }?.first?.let { lbName(it).substringBefore(' ') } })
         }
         users.forEachIndexed { i, u ->
-            lb.load("/$u/", 2 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.profile(it, u) }) { p ->
+            lb.load("/$u/", 2 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.profile(it, u) }, { gen == generation }) { p ->
                 if (gen != generation || p == null) return@load
+                Perf.mark("lb profile $u")
                 lbNames[u.lowercase()] = p.name.substringBefore(' ').ifBlank { u }
                 lbStats[u] = p.stats.filter { it.second.lowercase() in setOf("films", "this year", "lists", "following") }.take(3)
                 val card = cards[i]
@@ -1315,8 +1329,9 @@ class MoviesPanel(
                     }
                 }
             }
-            lb.load("/$u/films/diary/", 30 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.MINUTE, { com.danielportelabyrne.cinema.data.letterboxd.Lb.diary(it) }) { d ->
+            lb.load("/$u/films/diary/", 30 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.MINUTE, { com.danielportelabyrne.cinema.data.letterboxd.Lb.diary(it) }, { gen == generation }) { d ->
                 if (gen != generation) return@load
+                Perf.mark("lb diary $u entries=${d?.size}")
                 diaries[u] = d.orEmpty()
                 if (!recentScheduled) {
                     recentScheduled = true
@@ -1335,11 +1350,11 @@ class MoviesPanel(
             perPerson.addView(watch); perPerson.addView(likes)
             lbFilmRow("${lbName(u)}’s watchlist", null, emptyList(), gen, watch, empty = "Loading…")
             lbFilmRow("${lbName(u)} liked", null, emptyList(), gen, likes, empty = "Loading…")
-            lb.load("/$u/watchlist/", com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }) { f ->
+            lb.load("/$u/watchlist/", com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }, { gen == generation }) { f ->
                 if (gen != generation) return@load
                 watch.removeAllViews(); lbFilmRow("${lbName(u)}’s watchlist", null, f.orEmpty().take(20), gen, into = watch, line = { null }, empty = if (f == null) "Couldn't load this watchlist just now" else "Nothing here yet")
             }
-            lb.load("/$u/likes/films/", com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }) { f ->
+            lb.load("/$u/likes/films/", com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }, { gen == generation }) { f ->
                 if (gen != generation) return@load
                 likes.removeAllViews(); lbFilmRow("${lbName(u)} liked", null, f.orEmpty().take(20), gen, into = likes, line = { it.stars?.let { s -> "$s  ♥" } ?: "♥" }, empty = if (f == null) "Couldn't load liked films just now" else "Nothing here yet")
             }
@@ -1381,7 +1396,7 @@ class MoviesPanel(
         content.addView(tabRow, LinearLayout.LayoutParams(-2, Cinema.px(activity, 62)).apply { marginStart = pageStart - Cinema.px(activity, 26); topMargin = Cinema.px(activity, 44) })
         val holder = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(holder, LinearLayout.LayoutParams(-1, -2))
-        val tabNames = listOf("Watchlist", "Liked", "Diary", "Reviews", "Lists")
+        val tabNames = listOf("Watchlist", "Liked", "Diary", "Reviews", "Lists", "Liked lists")
         var shown = -1
         val paints = ArrayList<() -> Unit>()
         fun show(i: Int) {
@@ -1393,13 +1408,14 @@ class MoviesPanel(
             val H = com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR
             fun ready(): Boolean = gen == generation && shown == i
             when (i) {
-                0 -> lb.load("/$user/watchlist/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }) { f -> if (!ready()) return@load; holder.removeAllViews(); lbFilmRow("Watchlist", null, f.orEmpty(), gen, holder, line = { null }) }
-                1 -> lb.load("/$user/likes/films/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }) { f -> if (!ready()) return@load; holder.removeAllViews(); lbFilmRow("Liked films", null, f.orEmpty(), gen, holder, line = { it.stars?.let { s -> "$s  ♥" } ?: "♥" }) }
-                2 -> lb.load("/$user/films/diary/", H / 2, { com.danielportelabyrne.cinema.data.letterboxd.Lb.diary(it) }) { d -> if (!ready()) return@load; holder.removeAllViews()
+                0 -> lb.load("/$user/watchlist/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }, { ready() }) { f -> if (!ready()) return@load; holder.removeAllViews(); lbFilmRow("Watchlist", null, f.orEmpty(), gen, holder, line = { null }) }
+                1 -> lb.load("/$user/likes/films/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.films(it) }, { ready() }) { f -> if (!ready()) return@load; holder.removeAllViews(); lbFilmRow("Liked films", null, f.orEmpty(), gen, holder, line = { it.stars?.let { s -> "$s  ♥" } ?: "♥" }) }
+                2 -> lb.load("/$user/films/diary/", H / 2, { com.danielportelabyrne.cinema.data.letterboxd.Lb.diary(it) }, { ready() }) { d -> if (!ready()) return@load; holder.removeAllViews()
                     lbFilmRow("Diary", null, d.orEmpty().map { it.film.copy(rating = it.rating) }, gen, holder,
                         line = { f -> listOfNotNull(f.stars, d.orEmpty().firstOrNull { it.film.slug == f.slug }?.date?.let { lbDay(it) }).joinToString("  ·  ").ifBlank { null } }) }
-                3 -> lb.load("/$user/films/reviews/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.reviews(it) }) { r -> if (!ready()) return@load; holder.removeAllViews(); lbReviewRow("Reviews", r.orEmpty(), gen, holder, byFilm = true) }
-                4 -> lb.load("/$user/lists/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.lists(it) }) { l -> if (!ready()) return@load; holder.removeAllViews(); lbListRow("Lists", null, l.orEmpty(), gen, holder) }
+                3 -> lb.load("/$user/films/reviews/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.reviews(it) }, { ready() }) { r -> if (!ready()) return@load; holder.removeAllViews(); lbReviewRow("Reviews", r.orEmpty(), gen, holder, byFilm = true) }
+                4 -> lb.load("/$user/lists/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.lists(it) }, { ready() }) { l -> if (!ready()) return@load; holder.removeAllViews(); lbListRow("Lists", null, l.orEmpty(), gen, holder) }
+                5 -> lb.load("/$user/likes/lists/", H, { com.danielportelabyrne.cinema.data.letterboxd.Lb.lists(it) }, { ready() }) { l -> if (!ready()) return@load; holder.removeAllViews(); lbListRow("Liked lists", null, l.orEmpty(), gen, holder) }
             }
         }
         tabNames.forEachIndexed { i, name ->
@@ -1424,7 +1440,7 @@ class MoviesPanel(
         }
         show(0)
 
-        lb.load("/$user/", 2 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.profile(it, user) }) { p ->
+        lb.load("/$user/", 2 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.profile(it, user) }, { gen == generation }) { p ->
             if (gen != generation) return@load
             if (p == null) { names.addView(note("Couldn't reach Letterboxd just now")); return@load }
             lbNames[user.lowercase()] = p.name.substringBefore(' ').ifBlank { user }
@@ -1553,6 +1569,11 @@ class MoviesPanel(
         var ratingsDone = 0
         val watched = HashMap<String, HashMap<String, Boolean>>()
         var watchesDone = 0
+        // Watch status asked for so far: "member/slug" keys, and how many asks (a row asks for its films as it is built).
+        val watchAsked = HashSet<String>()
+        var watchesAsked = 0
+        // Set once renderSoon exists below: a watch that arrives asks for a redraw.
+        var onWatchArrived: () -> Unit = {}
         val pictures = HashMap<String, Bitmap>()
         val accountChips = HashMap<String, TextView>()
         val refreshers = ArrayList<() -> Unit>()
@@ -1596,19 +1617,59 @@ class MoviesPanel(
             if (attempt < 20) ui.postDelayed({ refocus(slug, attempt + 1) }, 100)
         }
 
+        /**
+         * Whether each followed member has watched each of [wanted]'s films, from their own page for it (Not Found means not).
+         * A row asks for its films as it is built, so a film is looked up when it is about to be seen; a film is asked once.
+         */
+        fun loadWatchesFor(wanted: List<LbFilm>) {
+            members.forEach { u ->
+                wanted.forEach { f ->
+                    if (!watchAsked.add("$u/${f.slug}")) return@forEach
+                    watchesAsked++
+                    lb.load("/$u/film/${f.slug}/", 6 * H, { Lb.member(it, u) }, stillHere) { m ->
+                        if (gen != generation) return@load
+                        watchesDone++
+                        if (m != null) watched.getOrPut(u) { HashMap() }[f.slug] = m.watched
+                        onWatchArrived()
+                    }
+                }
+            }
+        }
+
         /** Draws the list, twelve films to a row, under the order and filter chosen. */
-        fun render() {
-            if (!loaded || gen != generation) return
-            val keepFocus = overlay.findFocus()?.takeIf { rows.hasFocus() }?.tag as? String
-            rows.removeAllViews()
-            val visible = shown()
+        /** The line under the title: how many films, and what is still arriving. */
+        fun renderMeta(visibleCount: Int) {
             meta.text = listOfNotNull(
                 listCount?.let { "$it films" },
                 if (films.size < (listCount ?: 0)) "first ${films.size} shown" else null,
-                if (visible.size != films.size) "${visible.size} after the filter" else null,
+                if (visibleCount != films.size) "$visibleCount after the filter" else null,
                 if (order == LbOrder.RATED && ratingsDone < films.size) "ratings $ratingsDone of ${films.size}" else null,
-                if (watchesDone < members.size * films.size) "checking who watched" else null
+                if (watchesDone < watchesAsked) "checking who watched" else null
             ).joinToString("  ·  ")
+        }
+
+        // The films the rows were last drawn for, in their order: the same again, the cards are only given their new notes and badges.
+        var drawnFor: String? = null
+
+        fun render() {
+            if (!loaded || gen != generation) return
+            val visible = shown()
+            Perf.mark("lb list render visible=${visible.size} watches=$watchesDone/${members.size * films.size}")
+            val drawing = "$order|" + visible.joinToString(",") { it.slug }
+            if (visible.isNotEmpty() && drawing == drawnFor) {
+                visible.forEach { f ->
+                    rows.findViewWithTag<PosterCard>(f.slug)?.let { card ->
+                        card.watchers(badgesFor(f))
+                        card.subline?.text = noteFor(f) ?: subline(lbTitle(f, null))
+                    }
+                }
+                renderMeta(visible.size)
+                return
+            }
+            drawnFor = drawing
+            val keepFocus = overlay.findFocus()?.takeIf { rows.hasFocus() }?.tag as? String
+            rows.removeAllViews()
+            renderMeta(visible.size)
             if (visible.isEmpty()) { rows.addView(note("Every film here is hidden by the filter.").apply { setPadding(pageStart, Cinema.px(activity, 40), 0, 0) }); return }
             // Each film's place in the order shown, so a sorted list counts from one as it is seen.
             val place = visible.withIndex().associate { it.value.slug to it.index + 1 }
@@ -1616,7 +1677,7 @@ class MoviesPanel(
             visible.chunked(12).forEachIndexed { r, chunk ->
                 val from = r * 12 + 1
                 lbFilmRow(if (visible.size > 12) "$from–${from + chunk.size - 1}" else "In order", null, chunk, gen, into = rows,
-                    line = { f -> noteFor(f) }, chip = { f -> place[f.slug]?.toString() }, badges = { f -> badgesFor(f) })
+                    line = { f -> noteFor(f) }, chip = { f -> place[f.slug]?.toString() }, badges = { f -> badgesFor(f) }, onShown = { loadWatchesFor(it) })
             }
             keepFocus?.let { refocus(it, 0) }
         }
@@ -1625,12 +1686,18 @@ class MoviesPanel(
         fun renderSoon() {
             if (renderQueued) return
             renderQueued = true
-            ui.postDelayed({ renderQueued = false; render() }, 800)
+            // While ratings are still arriving in "Highest rated" order, each one can move films: redraw less often, so the list holds still.
+            val settling = order == LbOrder.RATED && ratingsDone < films.size
+            ui.postDelayed({ renderQueued = false; render() }, if (settling) 2500L else 800L)
         }
+
+        onWatchArrived = { renderSoon() }
 
         /** A control has changed: every control shows its state again, and the list is drawn to match. */
         fun change() {
             refreshers.forEach { it() }
+            // A filter on watched films needs every film's watch status, not only the rows that have been built.
+            if (hide != LbHide.NONE) loadWatchesFor(films)
             render()
         }
 
@@ -1642,20 +1709,6 @@ class MoviesPanel(
                     lbNames[u.lowercase()] = p.name.substringBefore(' ').ifBlank { u }
                     accountChips[u]?.text = lbName(u)
                     p.avatar?.let { a -> images.loadPriority(a, maxWidth = Cinema.px(activity, 96), tag = pageTag) { b -> if (gen == generation) { pictures[u] = b; renderSoon() } } }
-                }
-            }
-        }
-
-        /** Whether each followed member has watched each film, from their own page for it (Not Found means not). */
-        fun loadWatches() {
-            members.forEach { u ->
-                films.forEach { f ->
-                    lb.load("/$u/film/${f.slug}/", 6 * H, { Lb.member(it, u) }, stillHere) { m ->
-                        if (gen != generation) return@load
-                        watchesDone++
-                        if (m != null) watched.getOrPut(u) { HashMap() }[f.slug] = m.watched
-                        renderSoon()
-                    }
                 }
             }
         }
@@ -1680,11 +1733,13 @@ class MoviesPanel(
 
         /** A labelled row of controls: [label] at its left, then the chips in [strip], which scrolls if they run out. */
         fun addControlRow(label: String, strip: LinearLayout): LinearLayout {
-            val line = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            line.addView(Cinema.text(activity, label, 17, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(Cinema.px(activity, 360), -2))
+            // The label sits over its choices, which run along the full width: no gap between a short label and its chips.
+            val line = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+            line.addView(Cinema.text(activity, label, 15, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true),
+                LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 4) })
             line.addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(strip) },
-                LinearLayout.LayoutParams(0, -2, 1f))
-            controls.addView(line, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 16) })
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 10) })
+            controls.addView(line, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 22) })
             return line
         }
 
@@ -1725,7 +1780,7 @@ class MoviesPanel(
             films = l.films()
             loaded = true
             render()
-            loadWatches()
+            loadWatchesFor(films.take(12))
             if (order == LbOrder.RATED) loadRatings()
             // The fan's five first, ahead of the rows' posters, which queue on the shelf workers.
             val first = films.take(5)
