@@ -1873,7 +1873,9 @@ class MoviesPanel(
         }
         fun listSearch(term: String, current: () -> Boolean, done: (List<com.danielportelabyrne.cinema.data.letterboxd.LbList>?) -> Unit) {
             // A query the owner has typed past is dropped: its page is not fetched, or its browser load stops, so the latest one is not held up.
-            lb.load("/search/lists/${java.net.URLEncoder.encode(term, "UTF-8").replace("+", "%20")}/", 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR,
+            // Letterboxd's search page arrives with an empty results table and fills it by script from /s/search/..., after the page
+            // has loaded, so reading the page gave "No lists found". The /s/ address returns the results themselves.
+            lb.load("/s/search/lists/${java.net.URLEncoder.encode(term, "UTF-8").replace("+", "%20")}/", 24 * com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR,
                 { Lb.lists(it) }, stillWanted = current) { l -> if (current()) done(l) }
         }
         // A phrase that matches no list at once: each of its words is searched, and the lists that match the most of them come first.
