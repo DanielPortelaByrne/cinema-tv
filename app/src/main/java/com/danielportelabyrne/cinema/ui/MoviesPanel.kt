@@ -104,6 +104,8 @@ import com.danielportelabyrne.cinema.data.search.VoiceState
 import com.danielportelabyrne.cinema.data.settings.Integration
 import com.danielportelabyrne.cinema.design.cinema.MicButton
 import com.danielportelabyrne.cinema.design.cinema.SearchField
+import com.danielportelabyrne.cinema.ui.phone.PhoneInput
+import com.danielportelabyrne.cinema.ui.phone.PhoneTextTarget
 import com.danielportelabyrne.cinema.data.settings.LibraryOrder
 import com.danielportelabyrne.cinema.design.cinema.RibbonView
 import com.danielportelabyrne.cinema.design.cinema.StripeDrawable
@@ -354,7 +356,7 @@ class MoviesPanel(
 
     /** Back closes a title's page, then steps back through where the viewer has been, then lets the panel close. */
     fun back(): Boolean {
-        if (phonePanel != null) { closePhoneTyping(); return true }
+        if (PhoneInput.hideQr()) return true
         if (voiceActive) { voice?.cancel(); return true }
         if (streamLoading != null) { closeStreamLoading(); return true }
         if (detailOpen) { closeDetail(restoreFocus = true); return true }
@@ -1903,13 +1905,13 @@ class MoviesPanel(
         }
         keyboard.onLeave = { leaveKeyboard(field) }
         place(keyboard, left, Cinema.px(activity, 240), Cinema.px(activity, 980), Cinema.px(activity, 476))
-        // Typing from a phone: what is sent goes into the query, as if typed here.
-        fun typedFromPhone(text: String) {
-            lbTyped = (lbTyped + text).take(Qwerty.MAX_LENGTH)
+        // Typing from a phone: the full text it sends is the query, live as it is typed.
+        val lbPhoneTarget = phoneTargetFor("lb-search", "Search lists", Qwerty.MAX_LENGTH, { lbTyped }, { text ->
+            lbTyped = text.take(Qwerty.MAX_LENGTH)
             field.render(lbTyped, null)
             pending?.let { ui.removeCallbacks(it) }
-            runQuery(lbTyped.trim())
-        }
+            pending = Runnable { runQuery(lbTyped.trim()) }.also { ui.postDelayed(it, 450) }
+        }, { pending?.let { ui.removeCallbacks(it) }; runQuery(lbTyped.trim()) })
         // Speaking the query: the words said replace it, and the search runs when they are done.
         // The same listening screen as the global search: the keyboard gives way to it while the microphone listens.
         // As on the global search: the listening view spans the page, and the bar says LISTENING in the same place.
@@ -1948,69 +1950,47 @@ class MoviesPanel(
             ensureVoice().start()
         }
         // The field's icons, as on the global search: a phone to type from, and the microphone to speak with.
-        field.onPhone = { openPhoneTyping(::typedFromPhone) }
+        field.onPhone = { PhoneInput.toggleQr() }
+        usePhoneTarget(field, lbPhoneTarget)
         field.onMic = { startListSpeech() }
         showIdle()
         keyboard.keys.firstOrNull { it.contentDescription == "q" }?.let { requestFocusRobust(overlay as ViewGroup, it) }
     }
 
-    /** A round glass button with the phone icon: types from a phone. Cream when focused. */
-    private fun phoneIconButton(onClick: () -> Unit): View {
-        val icon = Cinema.icon(activity, R.drawable.ic_cin_phone, Cinema.CREAM)
-        return FrameLayout(activity).apply {
-            background = Cinema.glass(activity, 42f, Cinema.GLASS_STRONG)
-            isFocusable = true; isClickable = true; contentDescription = "Type on your phone"
-            addView(icon, FrameLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40), Gravity.CENTER))
-            setOnFocusChangeListener { _, focused ->
-                background = Cinema.glass(activity, 42f, if (focused) Cinema.CREAM else Cinema.GLASS_STRONG)
-                icon.setColorFilter(if (focused) Cinema.INK else Cinema.CREAM)
-            }
-            setOnClickListener { onClick() }
-        }
+    /** The same round phone button as the search bar and every field, so they look and light up alike. Types from a phone. */
+    private fun phoneIconButton(onClick: () -> Unit): View =
+        SearchField.phoneButton(activity).apply { setOnClickListener { onClick() } }
+
+    /** A phone target whose behaviour is given as closures, for the search screens. */
+    private fun phoneTargetFor(
+        id: String, name: String, max: Int, current: () -> String, apply: (String) -> Unit, done: () -> Unit,
+    ): PhoneTextTarget = object : PhoneTextTarget {
+        override val fieldId = id
+        override val label = name
+        override val maxLength = max
+        override fun currentText() = current()
+        override fun applyFromPhone(text: String) = apply(text)
+        override fun phoneDone() = done()
     }
 
-    private var phoneTyping: PhoneTyping? = null
-    private var phonePanel: View? = null
+    private var phoneTarget: PhoneTextTarget? = null
 
     /**
-     * Opens a QR code that a phone scans to a page with one text box: what it sends goes to [onText] here, and the page
-     * stays open for more. Closed with its Done button or Back.
+     * Makes [target] the field a connected phone types into, now that this search is on screen. [field] (when the screen
+     * has a search bar) passes on text the TV's keyboard or microphone types, so the phone's box follows.
      */
-    private fun openPhoneTyping(onText: (String) -> Unit) {
+    private fun usePhoneTarget(field: SearchField?, target: PhoneTextTarget) {
         closePhoneTyping()
-        // A small card in the corner that takes no focus: the keyboard keeps it. Its code goes once a phone has opened the page,
-        // and the page stays connected until the search is closed.
-        lateinit var code: android.widget.ImageView
-        lateinit var status: TextView
-        lateinit var card: LinearLayout
-        val session = PhoneTyping(activity, onText) {
-            code.visibility = View.GONE
-            status.text = "Phone connected. Type on your phone; each send lands in the search box."
-            // Connected: the card has done its job, so it fades away after a few seconds and the phone keeps typing into the box.
-            card.postDelayed({ card.animate().alpha(0f).setDuration(600).withEndAction { card.visibility = View.GONE }.start() }, 4000)
-        }
-        val address = session.start()
-        if (address == null) { CinemaToast.show(activity, "Connect the TV to Wi-Fi to type from your phone", Toast.LENGTH_LONG); return }
-        phoneTyping = session
-        card = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
-            background = Cinema.glass(activity, 28f, 0xF2120D0A.toInt()); setPadding(Cinema.px(activity, 26), Cinema.px(activity, 22), Cinema.px(activity, 26), Cinema.px(activity, 22))
-            isFocusable = false; isClickable = false
-        }
-        card.addView(Cinema.eyebrow(activity, listOf("Type from your phone"), 15))
-        code = android.widget.ImageView(activity).apply { setImageBitmap(com.danielportelabyrne.cinema.ui.setup.PhoneQr.bitmap(address, 8)) }
-        card.addView(code, LinearLayout.LayoutParams(Cinema.px(activity, 260), Cinema.px(activity, 260)).apply { topMargin = Cinema.px(activity, 16) })
-        status = Cinema.text(activity, "Scan the code with your phone's camera. Its text lands in the box you are typing in.", 19, Cinema.MUTED)
-        card.addView(status, LinearLayout.LayoutParams(Cinema.px(activity, 380), -2).apply { topMargin = Cinema.px(activity, 14) })
-        val panel = FrameLayout(activity).apply { isFocusable = false; isClickable = false; clipChildren = false }
-        panel.addView(card, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { marginEnd = Cinema.px(activity, 60); bottomMargin = Cinema.px(activity, 60) })
-        (overlay as ViewGroup).addView(panel, FrameLayout.LayoutParams(-1, -1))
-        phonePanel = panel
+        phoneTarget = target
+        field?.phoneTarget = target
+        PhoneInput.focus(target)
     }
 
+    /** The search that was using the phone is leaving: let the phone go, and take its code card away. */
     private fun closePhoneTyping() {
-        phoneTyping?.stop(); phoneTyping = null
-        phonePanel?.let { (it.parent as? ViewGroup)?.removeView(it) }; phonePanel = null
+        phoneTarget?.let { PhoneInput.blur(it) }
+        phoneTarget = null
+        PhoneInput.hideQr()
     }
 
     /** Runs a list search for a suggestion pressed on the search page (set by [buildLbSearch]). */
@@ -2089,18 +2069,25 @@ class MoviesPanel(
             // Usernames have no spaces: Space types an underscore, which they may contain.
             lbTyped = (if (key == Qwerty.Key.Space) Qwerty.type(lbTyped, Qwerty.Key.Char('_')) else Qwerty.type(lbTyped, key)).take(30)
             typed.text = lbTyped
+            phoneTarget?.let { PhoneInput.textChanged(it) }
             pending?.let { ui.removeCallbacks(it) }
             if (lbTyped.length >= 2) pending = Runnable { showPreview(lbTyped) }.also { ui.postDelayed(it, 900) } else preview.visibility = View.INVISIBLE
         }
         place(keyboard, left, Cinema.px(activity, 320), Cinema.px(activity, 980), Cinema.px(activity, 476))
-        // Typing from a phone: the username sent becomes the one looked up here.
-        fun usernameFromPhone(text: String) {
-            lbTyped = (lbTyped + (com.danielportelabyrne.cinema.data.letterboxd.FollowPage.normalize(text) ?: text.trim().lowercase())).take(30)
+        // Typing from a phone: the username typed there is the one looked up here, live. Usernames have no spaces, so a
+        // space becomes an underscore as on the keyboard; Done turns a pasted profile link or @name into the username.
+        val followPhoneTarget = phoneTargetFor("follow-username", "Letterboxd username", 30, { lbTyped }, { text ->
+            lbTyped = text.lowercase().replace(' ', '_').take(30)
             typed.text = lbTyped
             pending?.let { ui.removeCallbacks(it) }
+            if (lbTyped.length >= 2) pending = Runnable { showPreview(lbTyped) }.also { ui.postDelayed(it, 500) } else preview.visibility = View.INVISIBLE
+        }, {
+            com.danielportelabyrne.cinema.data.letterboxd.FollowPage.normalize(lbTyped)?.let { lbTyped = it.take(30); typed.text = lbTyped }
+            pending?.let { ui.removeCallbacks(it) }
             if (lbTyped.length >= 2) showPreview(lbTyped)
-        }
-        place(phoneIconButton { openPhoneTyping(::usernameFromPhone) }, Cinema.px(activity, 1240), Cinema.px(activity, 0), Cinema.px(activity, 84), Cinema.px(activity, 84))
+        })
+        usePhoneTarget(null, followPhoneTarget)
+        place(phoneIconButton { PhoneInput.toggleQr() }, Cinema.px(activity, 1240), Cinema.px(activity, 0), Cinema.px(activity, 84), Cinema.px(activity, 84))
         // People the followed members follow, to choose without typing.
         val suggestions = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(suggestions, LinearLayout.LayoutParams(-1, -2))
@@ -2913,7 +2900,8 @@ class MoviesPanel(
         val field = SearchField(activity, icon, prompt = "Search films, series and documentaries", hintText = "Say a title, actor or theme")
         val caret = field.caret; val query = field.query; val hint = field.hint; val mic = field.mic
         field.onMic = { startVoice(held = false) }
-        field.onPhone = { openPhoneTyping(::phoneTextIntoSearch) }
+        field.onPhone = { PhoneInput.toggleQr() }
+        usePhoneTarget(field, phoneTargetFor("search", "Search", Qwerty.MAX_LENGTH, { searchText }, ::phoneTextIntoSearch, ::phoneSearchNow))
         place(field, left, Cinema.px(activity, 64), activity.resources.displayMetrics.widthPixels - left - pageEnd, Cinema.px(activity, 112))
         caret.animate().alpha(0f).setDuration(530).withEndAction(object : Runnable {
             override fun run() { if (caret.isAttachedToWindow) caret.animate().alpha(if (caret.alpha < 0.5f) 1f else 0f).setDuration(530).withEndAction(this).start() }
@@ -2978,14 +2966,21 @@ class MoviesPanel(
         (s.field as? SearchField)?.render(searchText, partial)
     }
 
-    /** Text a phone sent to the global search box: typed on as if from the keyboard, and searched once it settles. */
+    /** The text a phone is typing for the global search box: it is the query, live, and the search runs once it settles. */
     private fun phoneTextIntoSearch(text: String) {
-        searchText = (searchText + text).take(Qwerty.MAX_LENGTH)
+        searchText = text.take(Qwerty.MAX_LENGTH)
         showQuery()
         val ui = searchUi?.field ?: return
         searchPending?.let { ui.removeCallbacks(it) }
         val q = searchText.trim()
         searchPending = Runnable { runSearch(q) }.also { ui.postDelayed(it, 500) }
+    }
+
+    /** The phone's Done on the global search: search now, without waiting for the pause. */
+    private fun phoneSearchNow() {
+        val ui = searchUi?.field ?: return
+        searchPending?.let { ui.removeCallbacks(it) }
+        runSearch(searchText.trim())
     }
 
     /** One list card on the search page's right side: poster, name, "Film · 2026", chevron. */

@@ -23,6 +23,7 @@ import com.danielportelabyrne.cinema.ui.JellyfinPlayback
 import com.danielportelabyrne.cinema.ui.MoviesPanel
 import com.danielportelabyrne.cinema.ui.Perf
 import com.danielportelabyrne.cinema.ui.PlayerActivity
+import com.danielportelabyrne.cinema.ui.phone.PhoneInput
 import com.danielportelabyrne.cinema.ui.room.InfoSheet
 import com.danielportelabyrne.cinema.ui.room.JellyfinConnectSheet
 import com.danielportelabyrne.cinema.ui.room.SeerrSignInSheet
@@ -42,6 +43,8 @@ class CinemaActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_cinema)
+        // The phone typing session lives as long as this screen does; every text field in the app shares it.
+        PhoneInput.attach(this)
         overlay = findViewById(R.id.moviesOverlay)
         infoSheet = InfoSheet(findViewById(R.id.infoSheet))
         val platform = AndroidPlatform(this)
@@ -188,6 +191,7 @@ class CinemaActivity : AppCompatActivity() {
     override fun onDestroy() {
         if (::moviesPanel.isInitialized) moviesPanel.close()
         if (::setup.isInitialized) setup.shutdown()
+        PhoneInput.detach(this)
         super.onDestroy()
     }
 
