@@ -4,6 +4,7 @@ import android.content.Context
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
@@ -69,6 +70,14 @@ fun phoneRow(context: Context, edit: EditText, editWidth: Int, height: Int, gap:
         addView(edit, LinearLayout.LayoutParams(editWidth, height))
         val button = SearchField.phoneButton(context).apply { setOnClickListener { PhoneInput.toggleQr() } }
         addView(button, LinearLayout.LayoutParams(height, height).apply { marginStart = gap })
+        // A text box keeps Right for its cursor, so the button beside it would be out of reach: Right at the end of the
+        // text moves to it. (Left from the button comes back to the box.)
+        edit.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && event.action == KeyEvent.ACTION_DOWN && edit.selectionEnd >= edit.text.length) {
+                button.requestFocus()
+                true
+            } else false
+        }
     }
 
 /** An id for a field made from its hint, so the phone can tell one box from another ("Server address" becomes "server-address"). */
