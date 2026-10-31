@@ -3351,8 +3351,9 @@ class MoviesPanel(
         heroSeasonButton?.let { buttons.addView(it, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap }) }
         buttons.addView(restart, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
         buttons.addView(stream, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
-        // Add to the owner's watchlist (its row in My library), or take it off again. A title with no IMDb id has none.
-        t.imdbId?.let { id ->
+        // Add to the owner's watchlist (its row in My library), or take it off again. The watchlist is keyed by IMDb id, so a title
+        // known only by its TMDB id (a suggestion, say) asks Seerr for it, and the button appears once it has come back.
+        fun addWatchButton(id: String) {
             // An icon only, square like the other buttons: a bookmark, with a tick in it once the title is on the watchlist.
             val watch = CinemaButton(activity, CinemaButton.Kind.GLASS, "", R.drawable.ic_cin_watchlist).apply { setPadding(0, 0, 0, 0); makeIconOnly() }
             fun paintWatch() {
@@ -3368,7 +3369,20 @@ class MoviesPanel(
                 paintWatch()
                 CinemaToast.show(activity, if (on) "Removed ${t.name} from your watchlist" else "Added ${t.name} to your watchlist")
             }
-            buttons.addView(watch, LinearLayout.LayoutParams(h, h).apply { marginStart = gap })
+            val params = LinearLayout.LayoutParams(h, h).apply { marginStart = gap }
+            // Placed before "Clear stale request", wherever it is in the row by now.
+            val at = buttons.indexOfChild(clearStale)
+            if (at >= 0) buttons.addView(watch, at, params) else buttons.addView(watch, params)
+        }
+        val knownImdb = t.imdbId
+        val tmdb = t.tmdbId?.toLongOrNull()
+        if (knownImdb != null) addWatchButton(knownImdb)
+        else if (tmdb != null && seerr.isSignedIn) {
+            val forTitle = t
+            worker.execute {
+                val id = runCatching { seerr.imdbId(forTitle.kind, tmdb) }.getOrNull() ?: return@execute
+                activity.runOnUiThread { if (buttons.isAttachedToWindow || buttons.parent != null) addWatchButton(id) }
+            }
         }
         buttons.addView(clearStale, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
         // Anything on disk can be taken off it, a series or a film, from its own page.

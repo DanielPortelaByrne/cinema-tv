@@ -26,6 +26,15 @@ data class ClientLogin(val baseUrl: String, val username: String, val password: 
 class CinemaSettings(platform: Platform) {
     private val prefs = platform.preferences("cinema_settings")
     private val secrets = platform.secretStore()
+    /** The Letterboxd page keeps who is followed in its own preferences; they are read and written here for the restore file. */
+    private val followPrefs = platform.preferences(com.danielportelabyrne.cinema.data.letterboxd.LetterboxdPages.PREFS)
+
+    /** The Letterboxd members followed, in the order they were added. The Letterboxd page owns them; a restore file carries them. */
+    var letterboxdFollowing: List<String>
+        get() = try {
+            followPrefs.getString("users", null)?.let { s -> org.json.JSONArray(s).let { a -> (0 until a.length()).map { a.getString(it) } } }.orEmpty()
+        } catch (_: Exception) { emptyList() }
+        set(v) { followPrefs.edit().putString("users", org.json.JSONArray(v).toString()).apply() }
 
     /** First-run setup has been finished (or skipped past Jellyfin) at least once. */
     var setupDone: Boolean

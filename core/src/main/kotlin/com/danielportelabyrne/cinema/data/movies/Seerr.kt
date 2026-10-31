@@ -42,6 +42,11 @@ object SeerrApi {
 
     fun path(kind: Kind, tmdbId: Long) = (if (kind == Kind.MOVIE) "/api/v1/movie/" else "/api/v1/tv/") + tmdbId
 
+    /** The IMDb id in a title's details (`externalIds.imdbId`), or null when Seerr has none for it. */
+    fun imdbId(json: String): String? = try {
+        JSONObject(json).optJSONObject("externalIds")?.optString("imdbId")?.trim()?.takeIf { it.startsWith("tt") && it.length > 2 }
+    } catch (_: Exception) { null }
+
     /** Seerr's media status numbers: 1 unknown, 2 pending, 3 processing, 4 partly available, 5 available. */
     fun parseAvailability(json: String): Availability = try {
         val info = JSONObject(json).optJSONObject("mediaInfo")
@@ -194,6 +199,9 @@ class SeerrClient(platform: Platform) {
     fun availability(kind: Kind, tmdbId: Long): Availability = titleState(kind, tmdbId)?.availability ?: Availability.NONE
 
     fun titleState(kind: Kind, tmdbId: Long): TitleRequestState? = title(kind, tmdbId)?.let { SeerrApi.titleState(it) }
+
+    /** The IMDb id for a title known only by its TMDB id, so it can go on the watchlist. Blocks; null when not found or not signed in. */
+    fun imdbId(kind: Kind, tmdbId: Long): String? = title(kind, tmdbId)?.let { SeerrApi.imdbId(it) }
 
     private fun title(kind: Kind, tmdbId: Long): String? = SeerrApi.path(kind, tmdbId).let { p -> titles.get(base + p) { get(p) } }
 
