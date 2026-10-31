@@ -28,6 +28,8 @@ class RestoreFormatTest {
         settings.requestHelperUrl = "http://10.0.0.6:9000"
         settings.stremioKey = "stremio-key"
         settings.subsonic = SubsonicConfig("http://10.0.0.7:4533", "daniel", "music-pw", "")
+        settings.setClientUser("http://10.0.0.11:8090", "admin")
+        settings.setClientPassword("http://10.0.0.11:8090", "qbit-pw")
         jellyfin.restoreSession(JellyfinSession("http://10.0.0.8:8096", "jf-token", "user-1"))
         seerr.restoreSession(SeerrSession("http://10.0.0.9:5055", "connect.sid=s%3Aabc"))
 
@@ -44,6 +46,8 @@ class RestoreFormatTest {
         assertEquals("http://10.0.0.6:9000", freshSettings.requestHelperUrl)
         assertEquals("stremio-key", freshSettings.stremioKey)
         assertEquals("music-pw", freshSettings.subsonic?.password)
+        assertEquals("admin", freshSettings.clientUser("http://10.0.0.11:8090"))
+        assertEquals("qbit-pw", freshSettings.clientPassword("http://10.0.0.11:8090"))
         assertEquals("jf-token", freshJellyfin.savedSession()?.token)
         assertEquals("user-1", freshJellyfin.savedSession()?.userId)
         assertEquals("connect.sid=s%3Aabc", freshSeerr.savedSession()?.cookie)
