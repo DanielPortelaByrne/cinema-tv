@@ -30,7 +30,9 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
     private val pages = PageCache(dir, { path ->
         val cancelled = { wanted[path]?.let { !it() } == true }
         if (cancelled()) null else {
+            val waitStart = android.os.SystemClock.elapsedRealtime()
             val lane = pageLanes.take()
+            com.danielportelabyrne.cinema.ui.Perf.took("lb lane wait $path", android.os.SystemClock.elapsedRealtime() - waitStart)
             try { lane.page(path, cancelled)?.let { slim(it) } } finally { pageLanes.put(lane) }
         }
     })
@@ -42,7 +44,7 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
 
     /** Usernames followed here, in the order they were added. Empty until the owner follows someone. */
     var following: List<String>
-        get() = prefs.getString("users", null)?.let { s -> (0 until JSONArray(s).length()).map { JSONArray(s).getString(it) } } ?: DEFAULT
+        get() = prefs.getString("users", null)?.let { s -> JSONArray(s).let { a -> (0 until a.length()).map { a.getString(it) } } } ?: DEFAULT
         private set(value) { prefs.edit().putString("users", JSONArray(value).toString()).apply() }
 
     fun follow(user: String) { if (following.none { it.equals(user, true) }) following = following + user }
@@ -66,10 +68,12 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
             val digest by lazy { java.security.MessageDigest.getInstance("SHA-256").digest(html.toByteArray())
                 .joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') } }
             @Suppress("UNCHECKED_CAST")
+            val snapshotStart = android.os.SystemClock.elapsedRealtime()
             val hit = synchronized(parsed) { parsed[key]?.takeIf { it.html == html }?.value as? T } ?: runCatching {
                 java.io.ObjectInputStream(snapshot.inputStream().buffered()).use { it.readObject() as Snapshot }
                     .takeIf { it.digest == digest }?.value as? T
             }.getOrNull()
+            com.danielportelabyrne.cinema.ui.Perf.took("lb snapshot $path ${if (hit == null) "miss" else "hit"}", android.os.SystemClock.elapsedRealtime() - snapshotStart)
             val parseStart = android.os.SystemClock.elapsedRealtime()
             val value = hit ?: runCatching { parse(html) }.getOrNull()
             com.danielportelabyrne.cinema.ui.Perf.took("letterboxd parse $path", android.os.SystemClock.elapsedRealtime() - parseStart)
@@ -111,13 +115,18 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
     fun posterUrl(slug: String): String? {
         if (!postersLoaded) loadPosters()
         posters[slug]?.let { return it }
-        val json = posterWeb.json("/film/$slug/poster/std/230/") ?: return null
+        val lookupStart = android.os.SystemClock.elapsedRealtime()
+        val json = posterWeb.json("/film/$slug/poster/std/230/") ?: run {
+            com.danielportelabyrne.cinema.ui.Perf.took("lb poster $slug lookup failed", android.os.SystemClock.elapsedRealtime() - lookupStart)
+            return null
+        }
         // Plain JSON, or (through the browser) the same JSON shown as text inside a page.
         val url = runCatching { JSONObject(json).optString("url2x").ifBlank { null } }.getOrNull()
             ?: Regex("\"url2x\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.get(1)?.replace("\\/", "/")
             ?: return null
         posters[slug] = url
         savePostersSoon()
+        com.danielportelabyrne.cinema.ui.Perf.took("lb poster $slug lookup", android.os.SystemClock.elapsedRealtime() - lookupStart)
         return url
     }
 

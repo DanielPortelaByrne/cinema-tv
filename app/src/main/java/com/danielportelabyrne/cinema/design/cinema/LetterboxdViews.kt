@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Outline
+import android.graphics.Path
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
@@ -63,7 +64,11 @@ class AvatarView(context: Context, private val sizeMock: Int) : FrameLayout(cont
     }
 
     override fun dispatchDraw(canvas: Canvas) {
+        // The picture (and the initial) is cut to the circle here, so nothing spills past the rim whatever the outline does.
+        canvas.save()
+        canvas.clipPath(Path().apply { addOval(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW) })
         super.dispatchDraw(canvas)
+        canvas.restore()
         if (!drawRing) return
         val c = width / 2f
         val gap = Cinema.pxf(context, 4)
