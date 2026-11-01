@@ -596,6 +596,17 @@ class MoviesPanel(
         return true
     }
 
+    /**
+     * Focus is on no card at all (a page was just rebuilt under the card that had it, or its rows are still loading): Down,
+     * Up and Right pick up the page's content instead of letting the search run over the whole screen, whose nearest
+     * candidate is the rail. Left still goes to the rail. False when this does not apply.
+     */
+    fun recoverFocus(direction: Int): Boolean {
+        if (!isVisible || direction == View.FOCUS_LEFT || streamLoading != null) return false
+        focusContent()
+        return true
+    }
+
     private fun focusContent() {
         val previous = lastContentFocus?.takeIf { it.isAttachedToWindow && it.isShown && it.isEnabled && it.isFocusable }
         if (previous?.requestFocus() == true) return
@@ -715,7 +726,8 @@ class MoviesPanel(
         content.removeAllViews(); page.scrollTo(0, 0); heroSet = false; pending.clear(); lastContentFocus = null
         // The rail floats over the page, so nothing is reserved for a top bar. A page that opens on a featured title
         // starts at the very top, so its picture runs up to the screen edge; the others start a little way down.
-        val opensOnHero = current === Dest.Home || current === Dest.Films || current === Dest.Series || current === Dest.Docs || current === Dest.Library
+        val opensOnHero = current === Dest.Home || current === Dest.Films || current === Dest.Series || current === Dest.Docs || current === Dest.Library ||
+            current is Dest.OnService || current is Dest.InGenre
         // Search lays itself out in screen coordinates, straight from the mockup.
         content.setPadding(0, if (opensOnHero || current === Dest.Search) 0 else Cinema.px(activity, 52), 0, dp(48))
         if (current !== Dest.Search) { if (voiceActive) voice?.cancel(); searchUi = null }
@@ -731,8 +743,8 @@ class MoviesPanel(
             Dest.Library -> buildLibrary(gen)
             Dest.Downloads -> buildDownloads(gen)
             Dest.Search -> buildSearch()
-            is Dest.OnService -> { pageTitle("On ${d.service.label}"); buildHero(); shelves(Catalog.servicePage(d.service), gen) }
-            is Dest.InGenre -> { pageTitle(d.genre.label); buildHero(); shelves(Catalog.genrePage(d.genre), gen) }
+            is Dest.OnService -> { buildHero(); heroTag("Streaming on", d.service.label); shelves(Catalog.servicePage(d.service), gen) }
+            is Dest.InGenre -> { buildHero(); heroTag("Genre", d.genre.label); shelves(Catalog.genrePage(d.genre), gen) }
             Dest.Letterboxd -> buildLetterboxd(gen)
             is Dest.LbPerson -> buildLbPerson(d.user, gen)
             is Dest.LbListPage -> buildLbList(d.path, gen)
@@ -744,6 +756,17 @@ class MoviesPanel(
             Dest.Settings -> Unit
         }
         Perf.took("movies.build (main thread)", Perf.now() - buildStart)
+    }
+
+    /**
+     * Names the service or genre a page is about, laid over the top corner of the hero. It used to be a title row above the
+     * hero, which pushed the featured picture down the screen and left these pages starting lower than Films and Series.
+     */
+    private fun heroTag(kicker: String, name: String) {
+        val tag = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        tag.addView(Cinema.text(activity, kicker, 17, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
+        tag.addView(Cinema.text(activity, name, 38, Cinema.CREAM, serif = true, weight = 500), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 2) })
+        (heroFrame as FrameLayout).addView(tag, FrameLayout.LayoutParams(-2, -2).apply { marginStart = pageStart; topMargin = Cinema.px(activity, 20) })
     }
 
     private fun pageTitle(text: String) {
@@ -824,7 +847,11 @@ class MoviesPanel(
                         row.inner.addView(if (ranked) rankCard(i + 1, e, related, defer) else card(e, related, defer = defer), cardParams(i, wide = ranked))
                     }
                     if (to < entries.size) android.view.Choreographer.getInstance().postFrameCallback { addFrom(to) }
-                    else { Perf.took("shelf '${spec.heading}' ui add ${entries.size} (spread)", Perf.now() - uiAt); row.scroller.post { row.loadNear() }; page.post { fillNear() } }
+                    else {
+                        // A genre shelf ends with the way into that genre's own page.
+                        moreCard(spec)?.let { row.inner.addView(it, cardParams(entries.size)) }
+                        Perf.took("shelf '${spec.heading}' ui add ${entries.size} (spread)", Perf.now() - uiAt); row.scroller.post { row.loadNear() }; page.post { fillNear() }
+                    }
                 }
                 addFrom(0)
             }
@@ -2223,7 +2250,8 @@ class MoviesPanel(
                     open = { playbackStarted = true; JellyfinPlayback.play(activity, jellyfin, item, listOfNotNull(item.displayTitle, item.episodeLabel()).joinToString(" · "), item.resumeKey) },
                     still = null, stillUrl = if (item.hasBackdrop) jellyfin.backdropUrl(item.id) else JellyfinApi.episodeImageUrl(JellyfinApi.cleanBase(jellyfin.server), item.id, 640))
             }
-            val all = (streams + films).sortedByDescending { it.lastMs }.take(12)
+            // One card a title: a series shows only the episode watched most recently.
+            val all = com.danielportelabyrne.cinema.data.latestPerTitle(streams + films, { it.title }, { it.lastMs }).take(12)
             activity.runOnUiThread {
                 if (gen != generation) return@runOnUiThread
                 row.inner.removeAllViews()
@@ -4001,6 +4029,40 @@ class MoviesPanel(
         }, FrameLayout.LayoutParams(-1, -1))
         card.onFocus = { lit -> if (lit) reveal(card) }
         card.setOnClickListener { onSelect() }
+        return card
+    }
+
+    /**
+     * The last card of a genre shelf ("More Thriller"), which opens that genre's page: its trending, film, series and
+     * per-service shelves. Until now the only way there was a theme in Search. None on the genre's own page, where it would
+     * only lead back to itself, nor on a Top 10 row, which is exactly ten titles.
+     */
+    private fun moreCard(spec: ShelfSpec): View? {
+        val code = spec.genre?.takeUnless { spec.ranked } ?: return null
+        val genre = (Catalog.GENRES + Genre("doc", "Documentaries")).firstOrNull { it.code == code } ?: return null
+        if ((current as? Dest.InGenre)?.genre?.code == code) return null
+        val seed = Catalog.GENRES.indexOfFirst { it.code == code }.coerceAtLeast(0)
+        val colour = tileColours[seed % tileColours.size]
+        val label = "More ${genre.label}"
+        val ink = if (colour == Cinema.STRIPE_SAFFRON) Cinema.INK else Cinema.CREAM
+        val card = PosterCard(activity, 260, 390, titled = false, radiusPx = 22f)
+        card.contentDescription = label
+        card.poster.background = MotifDrawable(colour, Cinema.pxf(activity, 22), seed)
+        card.poster.foreground = null
+        // "More" over the name over an arrow. The name is one line that shrinks to fit the card, so "Documentaries" stays whole.
+        val column = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.START
+            setPadding(Cinema.px(activity, 26), 0, Cinema.px(activity, 20), Cinema.px(activity, 26))
+        }
+        column.addView(Cinema.text(activity, "More", 20, ink, weight = 600, tracking = 0.18f, caps = true))
+        val name = Cinema.text(activity, genre.label, 40, ink, serif = true, weight = 500).apply { maxLines = 1; includeFontPadding = false }
+        androidx.core.widget.TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+            name, Cinema.px(activity, 20), Cinema.px(activity, 40), 1, android.util.TypedValue.COMPLEX_UNIT_PX)
+        column.addView(name, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 6) })
+        column.addView(Cinema.text(activity, "\u2192", 40, ink, weight = 400), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 10) })
+        card.poster.addView(column, FrameLayout.LayoutParams(-1, -1))
+        card.onFocus = { lit -> if (lit) reveal(card) }
+        card.setOnClickListener { go(Dest.InGenre(genre), remember = true) }
         return card
     }
 

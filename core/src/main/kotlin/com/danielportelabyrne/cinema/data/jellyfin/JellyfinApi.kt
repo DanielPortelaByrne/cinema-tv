@@ -110,9 +110,12 @@ object JellyfinApi {
     fun recentlyPlayedUrl(base: String, userId: String): String =
         "$base/Items?userId=${enc(userId)}&Recursive=true&IncludeItemTypes=Movie,Episode&SortBy=DatePlayed&SortOrder=Descending&Limit=300"
 
-    /** Films and episodes part-watched, most recently watched first. The server leaves out anything already finished. */
+    /**
+     * Films and episodes part-watched, most recently watched first. The server leaves out anything already finished. Asks for
+     * more than the row shows because several episodes of one series each count, and the row keeps only the latest of each.
+     */
     fun resumeUrl(base: String, userId: String): String =
-        "$base/Users/${enc(userId)}/Items/Resume?Limit=12&Recursive=true&MediaTypes=Video" +
+        "$base/Users/${enc(userId)}/Items/Resume?Limit=40&Recursive=true&MediaTypes=Video" +
             "&Fields=RunTimeTicks,ProviderIds,Overview,Genres,DateCreated,DateLastMediaAdded"
 
     /** Gives each film and series its latest play, an episode counting for its series. */

@@ -249,7 +249,10 @@ class CinemaActivity : AppCompatActivity() {
                     ((direction == View.FOCUS_DOWN && focused.canScrollVertically(1)) || (direction == View.FOCUS_UP && focused.canScrollVertically(-1)))
                 if (!editingText && !scrolling) {
                     if (focused == null || focused === target || target.findFocus() == null) {
-                        // Focus strayed behind, or the container itself took it (slow devices): hand it to a child.
+                        // Focus strayed behind, or the container itself took it (slow devices, a page rebuilt under the card that
+                        // had it): hand it to a child. On a Movies page that child is one of its cards, not whatever the search
+                        // finds first, which for Down was the rail.
+                        if (target === overlay && moviesPanel.recoverFocus(direction)) return true
                         (FocusFinder.getInstance().findNextFocus(target, null, direction) ?: target).requestFocus()
                     } else if (target === overlay && moviesPanel.navigate(focused, direction)) {
                         // The rail and the loading screen move focus themselves.

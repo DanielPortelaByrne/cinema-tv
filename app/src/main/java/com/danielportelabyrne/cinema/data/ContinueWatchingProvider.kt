@@ -91,7 +91,8 @@ class ContinueWatchingProvider : ContentProvider() {
         val jellyfin = library.map { item ->
             Row(ContinueWatchingContract.jellyfinKey(item.id), item.displayTitle, item.displaySubtitle, item.resumeMs, (item.runtimeMin ?: 0) * 60_000L, item.playedMs ?: 0L)
         }
-        return (streams + jellyfin).sortedByDescending { it.lastMs }.take(12)
+        // One row a title: a series shows only the episode watched most recently.
+        return latestPerTitle(streams + jellyfin, { it.title }, { it.lastMs }).take(12)
     }
 
     private fun art(context: Context, key: String): File? {
