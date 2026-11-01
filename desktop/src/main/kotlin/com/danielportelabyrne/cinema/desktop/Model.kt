@@ -196,6 +196,18 @@ class CinemaModel(
 
     val player = Player(client, onState = { s -> scope.launch(ui) { playerState = s } }, onClosed = { scope.launch(ui) { afterPlayback() } })
 
+    init {
+        client.onLibraryChanged = {
+            val latest = client.loadedLibrary()
+            scope.launch(ui) {
+                library = latest
+                libraryVersion++
+                shelves = shelves?.copy(films = latest.filter { it.isMovie }.take(30), series = latest.filter { it.isSeries }.take(30))
+            }
+        }
+        client.startLibraryPolling()
+    }
+
     fun start() {
         Catalog.country = settings.region
         stack.clear()
