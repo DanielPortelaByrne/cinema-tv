@@ -1,6 +1,7 @@
 package com.danielportelabyrne.cinema
 
 import com.danielportelabyrne.cinema.design.cinema.CinemaToast
+import com.danielportelabyrne.cinema.design.cinema.SplashView
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.os.Bundle
 import android.view.FocusFinder
@@ -38,10 +39,15 @@ class CinemaActivity : AppCompatActivity() {
     private lateinit var overlay: ViewGroup
     private lateinit var setup: SetupFlow
     private lateinit var jellyfin: JellyfinClient
+    private var splash: SplashView? = null
+    private var quietOpen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_cinema)
+        // A restored screen, a Continue watching launch or a debug smoke test goes straight in; otherwise the first Movies open after the app starts plays the opening.
+        quietOpen = savedInstanceState != null || intent?.action == ContinueWatchingContract.actionResume(packageName) ||
+            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && intent?.extras?.keySet()?.any { it.startsWith("debug_") } == true)
         overlay = findViewById(R.id.moviesOverlay)
         infoSheet = InfoSheet(findViewById(R.id.infoSheet))
         val platform = AndroidPlatform(this)
@@ -52,7 +58,7 @@ class CinemaActivity : AppCompatActivity() {
         val seerr = SeerrClient(AndroidPlatform(this))
         setup = SetupFlow(this, findViewById(R.id.setupHost), infoSheet, jellyfin, seerr, settings) { changed ->
             if (changed) { moviesPanel.reload(); if (moviesPanel.isVisible) moviesPanel.hide() }
-            if (!moviesPanel.isVisible) moviesPanel.show()
+            if (!moviesPanel.isVisible) openMovies()
             else returnFocus?.takeIf { it.isAttachedToWindow }?.requestFocus()
             returnFocus = null
         }
@@ -98,7 +104,7 @@ class CinemaActivity : AppCompatActivity() {
                 !settings.setupDone || !jellyfin.hasServer -> setup.startFirstRun()
                 // The server is known but the sign-in was lost (a token rejected, or the app data partly wiped): say so.
                 !jellyfin.isConnected -> setup.startSignBackIn()
-                else -> moviesPanel.show()
+                else -> openMovies()
             }
             handleDebugIntent(intent)
             handleResumeIntent(intent)
@@ -116,6 +122,25 @@ class CinemaActivity : AppCompatActivity() {
                 runOnUiThread { if (!isDestroyed) start() }
             }.start()
         } else start()
+    }
+
+    /**
+     * Opens the Movies page. The first time after the app starts it opens behind the branded opening: that plays first,
+     * holds at full strength while the page is built underneath it, then fades over the finished page (building keeps
+     * the main thread busy, which stalled the animation while the sound carried on). Every later open, a restored screen
+     * and animations switched off in the system settings go straight in.
+     */
+    private fun openMovies() {
+        if (quietOpen || openingPlayed) { quietOpen = false; moviesPanel.show(); return }
+        openingPlayed = true
+        splash = SplashView.show(findViewById<ViewGroup>(R.id.cinemaRoot), skip = false,
+            covered = { if (!isDestroyed && !moviesPanel.isVisible) moviesPanel.show() }, done = { splash = null })
+        if (splash == null) moviesPanel.show()
+    }
+
+    private companion object {
+        /** Set once the opening has played in this process, so reopening the app or returning to Movies does not repeat it. */
+        var openingPlayed = false
     }
 
     private class TestAccount(val server: String, val username: String, val password: String)
@@ -192,6 +217,12 @@ class CinemaActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // While the opening plays, any key skips it (volume keys still work); nothing underneath sees the key.
+        splash?.takeIf { it.isShowing }?.let {
+            if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || event.keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) return super.dispatchKeyEvent(event)
+            if (event.action == KeyEvent.ACTION_DOWN) it.skip()
+            return true
+        }
         // The remote's voice key, if the TV hands it to apps at all: it opens Search and listens while held.
         if (event.keyCode == KeyEvent.KEYCODE_SEARCH || event.keyCode == KeyEvent.KEYCODE_VOICE_ASSIST || event.keyCode == KeyEvent.KEYCODE_ASSIST) {
             if (::moviesPanel.isInitialized && moviesPanel.isVisible && !infoSheet.isVisible && !setup.isVisible &&
