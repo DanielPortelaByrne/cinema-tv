@@ -196,6 +196,12 @@ class CinemaModel(
 
     val player = Player(client, onState = { s -> scope.launch(ui) { playerState = s } }, onClosed = { scope.launch(ui) { afterPlayback() } })
 
+    init {
+        client.onReachabilityChanged = { reachable -> scope.launch(ui) {
+            toast(if (reachable) "Jellyfin server connection restored" else "Can't reach the Jellyfin server")
+        } }
+    }
+
     fun start() {
         Catalog.country = settings.region
         stack.clear()

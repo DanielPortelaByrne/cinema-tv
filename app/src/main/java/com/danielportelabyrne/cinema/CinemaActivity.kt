@@ -55,6 +55,13 @@ class CinemaActivity : AppCompatActivity() {
         val preset = Preset.load(platform)?.also { it.applySettings(platform, settings) }
         Catalog.country = settings.region
         jellyfin = JellyfinClient(AndroidPlatform(this))
+        jellyfin.onReachabilityChanged = { reachable -> runOnUiThread {
+            if (!isFinishing && !isDestroyed) CinemaToast.show(
+                this,
+                if (reachable) "Jellyfin server connection restored" else "Can't reach the Jellyfin server",
+                Toast.LENGTH_LONG,
+            )
+        } }
         val seerr = SeerrClient(AndroidPlatform(this))
         setup = SetupFlow(this, findViewById(R.id.setupHost), infoSheet, jellyfin, seerr, settings) { changed ->
             if (changed) { moviesPanel.reload(); if (moviesPanel.isVisible) moviesPanel.hide() }
