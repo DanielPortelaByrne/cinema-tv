@@ -292,7 +292,7 @@ class SeerrClient(platform: Platform) {
         put("audio", "any")   // this player decodes Dolby Digital Plus and DTS, so those releases need not be passed over
         // Torrents the owner's Stremio add-ons offered, found from this TV: the service picks among them with its own results.
         if (candidates.isNotEmpty()) put("candidates", org.json.JSONArray(candidates.map { c ->
-            JSONObject().put("title", c.title).put("infoHash", c.infoHash).put("seeders", c.seeders).put("size", c.size)
+            c.candidateJson()
         }))
     }
 

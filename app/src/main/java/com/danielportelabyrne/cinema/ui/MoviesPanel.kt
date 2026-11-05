@@ -379,6 +379,16 @@ class MoviesPanel(
             }
             return
         }
+        // "stream:<imdb>:<name>[:<season>:<episode>]": press Stream now on that title, for timing startup on a device.
+        if (name.startsWith("stream:")) {
+            val p = name.removePrefix("stream:").split(":")
+            val imdb = p.getOrNull(0) ?: return
+            val episode = p.getOrNull(2)?.toIntOrNull()?.let { s -> p.getOrNull(3)?.toIntOrNull()?.let { s to it } }
+            val t = Title(imdb, if (episode == null) Kind.MOVIE else Kind.SHOW, p.getOrNull(1) ?: imdb, null, null, null, emptyList(),
+                null, null, null, null, imdb, null)
+            streamNow(entry(t), page, episode)
+            return
+        }
         // "loading": the stream loading screen as it first appears, without asking the server for anything.
         if (name == "loading") {
             go(Dest.Films)
@@ -894,6 +904,45 @@ class MoviesPanel(
     private val stremio = com.danielportelabyrne.cinema.data.stremio.StremioClient()
     /** Most torrents from the add-ons passed on to the stream service, best seeded first. */
     private val STREAM_CANDIDATES = 60
+    private val ADDON_ANSWER_MS = 8 * 60_000L
+    private val ADDON_PREFETCH_DELAY_MS = 700L
+
+    /** What the add-ons offered lately for a title or episode, so Play does not wait for them again. */
+    private val addonAnswerCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, java.util.concurrent.Future<com.danielportelabyrne.cinema.data.stremio.AddonAnswers>>>()
+    private val addonPool = java.util.concurrent.Executors.newFixedThreadPool(2)
+    private var addonPrefetch = Runnable {}
+
+    /** The add-ons' answer for [imdb] (and [episode]): the one asked in the last few minutes, or a new request. */
+    private fun addonAnswersFor(imdb: String, episode: Pair<Int, Int>?): java.util.concurrent.Future<com.danielportelabyrne.cinema.data.stremio.AddonAnswers> {
+        val key = imdb + (episode?.let { ":${it.first}:${it.second}" } ?: "")
+        val now = android.os.SystemClock.elapsedRealtime()
+        addonAnswerCache[key]?.let { (at, f) ->
+            val empty = f.isDone && runCatching { f.get().let { it.torrents.isEmpty() && it.links.isEmpty() } }.getOrDefault(true)
+            if (now - at < ADDON_ANSWER_MS && !empty) return f
+        }
+        addonAnswerCache.entries.removeIf { now - it.value.first >= ADDON_ANSWER_MS }
+        val f = addonPool.submit(java.util.concurrent.Callable { stremio.addonAnswers(stremioAddons(), imdb, episode) })
+        addonAnswerCache[key] = now to f
+        return f
+    }
+
+    /**
+     * Whether a direct link really serves the film: it answers a one-byte request, and is not a short placeholder
+     * (a debrid service's "still downloading" clip). Off the main thread; gives up after a few seconds.
+     */
+    private fun linkAnswers(url: String, headers: Map<String, String>): Boolean = try {
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 4000; c.readTimeout = 4000; c.instanceFollowRedirects = true
+        c.setRequestProperty("Range", "bytes=0-0")
+        headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
+        try {
+            val total = c.getHeaderField("Content-Range")?.substringAfter('/')?.toLongOrNull()
+                ?: c.contentLengthLong.takeIf { c.responseCode == 200 && it > 0 }
+            val ok = c.responseCode in 200..299 && (total == null || total >= 50L * 1024 * 1024)
+            android.util.Log.i("StreamNow", "link check: HTTP ${c.responseCode}, ${total?.let { it / (1024 * 1024) }} MiB -> $ok")
+            ok
+        } finally { c.disconnect() }
+    } catch (ex: Exception) { android.util.Log.w("StreamNow", "link check failed: ${ex.javaClass.simpleName}"); false }
 
     /** Results in the search preview, beside the keyboard: films and series in turn. */
     private val PREVIEW_ROWS = 6
@@ -3385,7 +3434,10 @@ class MoviesPanel(
         }
         setupPrimary(primary, e, clearStale, restart) { openDetail(e, related) }
         // A film that can only be streamed: have the stream service search for it now, so Stream now starts quicker.
-        if (!inLibrary && t.kind == Kind.MOVIE && seerr.isSignedIn) slowPool.execute { seerr.prepareStream(t.name, t.year, runtimeMin = t.runtimeMin) }
+        if (!inLibrary && t.kind == Kind.MOVIE && seerr.isSignedIn) {
+            slowPool.execute { seerr.prepareStream(t.name, t.year, runtimeMin = t.runtimeMin) }
+            t.imdbId?.let { addonAnswersFor(it, null) }   // and ask the add-ons now, as Stremio does when a page opens
+        }
         detailEntry = e
         // A series' progress lives on its episode cards, so its page is drawn again; a film just redoes its buttons.
         detailButtons = if (t.kind == Kind.SHOW) ({ val back = returnFocus; closeDetail(restoreFocus = false); openDetail(e, related); returnFocus = back })
@@ -3572,10 +3624,36 @@ class MoviesPanel(
         }
         slowPool.execute {
             // What the owner's Stremio add-ons offer for it, asked from this TV so their addresses never leave it.
-            val candidates = e.title.imdbId?.let { imdb ->
-                stremio.addonStreams(stremioAddons(), imdb, episode).sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
-            }.orEmpty()
-            android.util.Log.i("StreamNow", "add-ons offered ${candidates.size} for ${e.title.name} (${stremioAddons().size} ported, imdb ${e.title.imdbId != null})")
+            // The service's own search runs meanwhile (skipped if the page already asked for it).
+            slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null) }
+            val addons = if (e.title.imdbId != null) stremioAddons() else emptyList()
+            val asked = Perf.now()
+            val answers = e.title.imdbId?.let { imdb -> runCatching { addonAnswersFor(imdb, episode).get() }.getOrNull() }
+                ?: com.danielportelabyrne.cinema.data.stremio.AddonAnswers.NONE
+            val candidates = answers.torrents.sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
+            android.util.Log.i("StreamNow", "add-ons offered ${answers.torrents.size} torrents, ${answers.links.size} links " +
+                "(${answers.links.count { !it.uncached }} cached) in ${Perf.now() - asked} ms for ${e.title.name} " +
+                "(${addons.size} add-ons, ${addons.count { it.streams }} stream, imdb ${e.title.imdbId != null})")
+            // A direct link as good as the best torrent plays at once, as Stremio does with a debrid service.
+            val runtimeSec = ((e.title.runtimeMin ?: if (episode == null) 110 else 45) * 60L)
+            val links = com.danielportelabyrne.cinema.data.stream.DirectLinks.choose(answers.links, answers.torrents,
+                com.danielportelabyrne.cinema.data.stream.DeviceProfile.detect(activity),
+                com.danielportelabyrne.cinema.data.stream.NetworkEstimator(activity).current(), runtimeSec)
+            val working = links.firstOrNull { linkAnswers(it.candidate.url!!, it.candidate.headers) }
+            if (working != null) {
+                android.util.Log.i("StreamNow", "playing a direct link from ${working.candidate.provider}: ${working.candidate.meta.qualityLabel()}")
+                activity.runOnUiThread {
+                    Perf.end("stream.press->startReply", "DIRECT")
+                    if (token != streamToken) return@runOnUiThread
+                    screen.message("Found a copy. Starting the player…")
+                    remember(e.title, streamed = true)
+                    PlayerActivity.launch(activity, listOf(working) + links.filter { it !== working }, label, e.title.imdbId,
+                        artUrl = e.title.backdropUrl ?: e.title.posterUrl,
+                        meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode)
+                    ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
+                }
+                return@execute
+            }
             val result = seerr.startStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null, candidates)
             activity.runOnUiThread {
                 Perf.end("stream.press->startReply", result.status.name)
@@ -3894,6 +3972,12 @@ class MoviesPanel(
                 if (lit) FastFocus.reveal(card, null, dp(24), dp(56), 0)
                 // An episode that would be streamed: search for it while the viewer looks at it.
                 if (lit && mine == null && !look.unaired && seerr.isSignedIn) slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, s.number, ep.number) }
+                // The add-ons are asked once the viewer has rested on the episode, not for every card passed while scrolling.
+                ui.removeCallbacks(addonPrefetch)
+                if (lit && mine == null && !look.unaired) e.title.imdbId?.let { imdb ->
+                    addonPrefetch = Runnable { addonAnswersFor(imdb, s.number to ep.number) }
+                    ui.postDelayed(addonPrefetch, ADDON_PREFETCH_DELAY_MS)
+                }
             }
             return Shown(card, mine, { look }, ::latest) { look = latest(); rebind() }
         }

@@ -469,7 +469,7 @@ class PlayerActivity : AppCompatActivity() {
         handler.removeCallbacks(autoplayTick)
         nextCard.hideCard(); cancelNext.isEnabled = false
         // Leaving during the credits: this episode is finished, so Jellyfin and the resume list should say so.
-        if (creditsCard && !ended) { reportToJellyfin("Stopped", atEnd = true); resumePrefs.edit().remove(imdbId ?: "").apply() }
+        if (creditsCard && !ended) { reportToJellyfin("Stopped", atEnd = true); resumePrefs.edit().remove(resumeKey() ?: "").apply() }
         creditsCard = false
         record(failed = false)
         // Reuse the player and activity: a long viewing session never builds an activity stack.
@@ -500,7 +500,7 @@ class PlayerActivity : AppCompatActivity() {
             .setConnectTimeoutMs(if (slow) 60_000 else 15_000).setReadTimeoutMs(if (slow) 60_000 else 15_000)
         // A Jellyfin title picks up where the server says the viewer left off; anything else, where this TV last did.
         val serverStart = jf?.startMs
-        val resume = if (forcedStart) 0L else com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.resumePosition(serverStart, resumePrefs.getLong(imdbId ?: "", 0L))
+        val resume = if (forcedStart) 0L else com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.resumePosition(serverStart, resumePrefs.getLong(resumeKey() ?: "", 0L))
         // Retry transient network errors more patiently for streams: a stalled torrent recovers far more often than it dies.
         val retries = if (slow) STREAM_LOAD_RETRIES else DEFAULT_LOAD_RETRIES
         player.setMediaSource(DefaultMediaSourceFactory(this, extractorsFor(item)).setDataSourceFactory(http)
@@ -621,7 +621,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 Player.STATE_READY -> { closeBuffer(); seeking = false }
                 Player.STATE_ENDED -> if (!ended) {
-                    closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); recordStreamProgress(atEnd = true); resumePrefs.edit().remove(imdbId ?: "").apply()
+                    closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); recordStreamProgress(atEnd = true); resumePrefs.edit().remove(resumeKey() ?: "").apply()
                     continueStore.save(ResumeItem(title, null, packageName, null, player.duration, player.duration, null, System.currentTimeMillis()), null)
                     if (!foreground) autoplay.cancel()
                     autoplay.end(SystemClock.elapsedRealtime())
@@ -722,7 +722,7 @@ class PlayerActivity : AppCompatActivity() {
                 runOnUiThread {
                     info?.let { i ->
                         streamSeeds = i.takeIf { it.has("seeds") }?.optInt("seeds"); streamPeers = i.takeIf { it.has("peers") }?.optInt("peers")
-                        i.takeIf { it.has("progress") }?.let { streamDownloaded = it.optDouble("progress").toFloat() }
+                        i.takeIf { it.has("progress") }?.let { streamDownloaded = if (it.optBoolean("seekAnywhere")) 1f else it.optDouble("progress").toFloat() }
                         streamSpeed = i.takeIf { it.has("speed") }?.optLong("speed"); i.takeIf { it.has("size") }?.optLong("size")?.takeIf { it > 0 }?.let { itemSizeBytes = it }
                     }
                     handler.postDelayed(this, 5000)
@@ -905,7 +905,7 @@ class PlayerActivity : AppCompatActivity() {
         // `speed` and `size` come from newer stream services only; without them the chips show a dash.
         val speed = info?.takeIf { it.has("speed") }?.optLong("speed")
         val progress = info?.takeIf { it.has("progress") }?.optDouble("progress")?.toFloat()
-        progress?.let { streamDownloaded = it }
+        progress?.let { streamDownloaded = if (info?.optBoolean("seekAnywhere") == true) 1f else it }
         if (phase == "failed") {
             screen?.message("Couldn't start this film. Try again in a minute.")
             handler.postDelayed({ if (!isFinishing) finish() }, 3500)
@@ -1030,9 +1030,15 @@ class PlayerActivity : AppCompatActivity() {
         } catch (e: Exception) { Log.w(TAG, "Frame capture failed: ${e.javaClass.simpleName}"); onDone(null) }
     }
 
+    /**
+     * Where this TV keeps the resume point: the film's IMDb id, or for a streamed episode the series id with the season
+     * and episode. A series has one IMDb id, so keyed by it alone every episode opened where another was left.
+     */
+    private fun resumeKey(): String? = imdbId?.let { id -> streamEpisode?.let { "$id:${it.first}:${it.second}" } ?: id }
+
     private fun saveResume() {
         if (live) return
-        val id = imdbId ?: return
+        val id = resumeKey() ?: return
         if (started && !ended && player.duration > 0) {
             val p = player.currentPosition
             if (p > 60_000 && p < player.duration * 0.95) resumePrefs.edit().putLong(id, p).apply()

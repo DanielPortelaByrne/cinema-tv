@@ -34,12 +34,35 @@ class StremioTest {
             {"infoHash":"nothash","title":"No hash\n👤 9 💾 1 GB"},
             {"infoHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","title":"No seeders\n💾 1 GB"},
             {"url":"https://example.com/file.mkv","title":"Direct link"}]}""")
-        assertEquals(listOf("7e0916bccb092c678f749671816468379ab978bd", "1a817ab6c0000000000000000000000000000000"), streams.map { it.infoHash })
-        assertEquals(listOf(6, 12), streams.map { it.seeders })
+        assertEquals(listOf("7e0916bccb092c678f749671816468379ab978bd", "1a817ab6c0000000000000000000000000000000", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), streams.map { it.infoHash })
+        assertEquals(listOf(6, 12, null), streams.map { it.seeders })
         assertEquals("Sharp.Objects.S01E05.Closer.1080p.HEVC", streams[0].title)
         assertEquals((737.2 * 1024 * 1024).toLong(), streams[0].size)
         assertEquals((1.5 * 1024 * 1024 * 1024).toLong(), streams[1].size)
         assertEquals(emptyList<AddonStream>(), AddonStreams.parse("not json"))
+    }
+
+    @Test fun preservesEpisodeFileAndTrackersThroughTheBackendRequest() {
+        val stream = AddonStreams.parse("""{"streams":[{"infoHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "description":"Sharp Objects S01 Complete\n👥 1,234 💾 8 GiB", "fileIdx":4,
+            "sources":["tracker:udp://tracker.example:1337/announce"],
+            "behaviorHints":{"filename":"Sharp.Objects.S01E05.mkv","videoSize":1234567890}}]}""").single()
+        assertEquals("Sharp.Objects.S01E05.mkv", stream.title)
+        assertEquals(1234, stream.seeders)
+        assertEquals(1234567890L, stream.size)
+        val candidate = stream.candidateJson()
+        assertEquals(4, candidate.getInt("fileIdx"))
+        assertEquals("tracker:udp://tracker.example:1337/announce", candidate.getJSONArray("sources").getString(0))
+    }
+
+    @Test fun missingDisplayMetadataDoesNotDiscardATorrent() {
+        val stream = AddonStreams.parse("""{"streams":[{"infoHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "description":"Sharp.Objects.S01E05.mkv","fileIdx":0}]}""").single()
+        assertNull(stream.seeders)
+        assertNull(stream.size)
+        assertEquals(0, stream.candidateJson().getInt("fileIdx"))
+        assertTrue(AddonStreams.parse("""{"streams":[{"infoHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "description":"Sharp Objects","fileIdx":-1}]}""").isEmpty())
     }
 
     @Test fun portedAddonsSurviveSavingAndReading() {

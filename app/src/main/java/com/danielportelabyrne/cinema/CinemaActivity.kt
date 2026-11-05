@@ -52,6 +52,8 @@ class CinemaActivity : AppCompatActivity() {
         infoSheet = InfoSheet(findViewById(R.id.infoSheet))
         val platform = AndroidPlatform(this)
         val settings = CinemaSettings(platform)
+        val addonSync = com.danielportelabyrne.cinema.data.stremio.StremioAddonSync(
+            com.danielportelabyrne.cinema.data.stremio.StremioClient()::addons, android.os.SystemClock::elapsedRealtime)
         val preset = Preset.load(platform)?.also { it.applySettings(platform, settings) }
         Catalog.country = settings.region
         jellyfin = JellyfinClient(AndroidPlatform(this))
@@ -86,7 +88,8 @@ class CinemaActivity : AppCompatActivity() {
             onOpenSettings = { moviesPanel.hide(); setup.openSettings() },
             integrationOn = { settings.isOn(it) },
             music = { settings.subsonic },
-            stremioAddons = { settings.stremioAddons },
+            // Asked off the main thread when something is streamed: follows the linked account, not only a manual "Port".
+            stremioAddons = { addonSync.current(settings.stremioKey, settings.stremioAddons) { settings.stremioAddons = it } },
             streamProgress = { settings.streamProgress },
             recentSearches = { settings.recentSearches(it) },
             saveRecentSearches = { keyboard, terms -> settings.setRecentSearches(keyboard, terms) },
