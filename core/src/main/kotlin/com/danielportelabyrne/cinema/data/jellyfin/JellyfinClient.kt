@@ -10,6 +10,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "Jellyfin"
@@ -134,8 +136,22 @@ class JellyfinClient(platform: Platform) {
     private val libraryFlight = SingleFlight<List<JellyfinItem>>()
     @Volatile private var restored = false
     private val refreshing = AtomicBoolean(false)
+    @Volatile private var libraryPoll: ScheduledFuture<*>? = null
 
     @Volatile var onLibraryChanged: (() -> Unit)? = null
+
+    /** Periodically re-fetch the Jellyfin library while the app is running, so new server-scanned content appears. */
+    @Synchronized fun startLibraryPolling(intervalMs: Long = LIBRARY_POLL_MS) {
+        if (libraryPoll?.isCancelled == false) return
+        libraryPoll = libraryPoller.scheduleWithFixedDelay({
+            if (isConnected && !reachability.backingOff) userId?.let(::refreshLater)
+        }, intervalMs, intervalMs, TimeUnit.MILLISECONDS)
+    }
+
+    @Synchronized fun stopLibraryPolling() {
+        libraryPoll?.cancel(false)
+        libraryPoll = null
+    }
 
     /** When the library was last fetched (0 = never). Lets a page tell whether badges need another look. */
     val libraryLoadedAt: Long get() = libraryAt
@@ -357,8 +373,10 @@ class JellyfinClient(platform: Platform) {
         /** Debug builds only: overrides the address for this process, to time the app with the server unreachable. */
         @Volatile var debugServer: String? = null
         private const val LIBRARY_TTL_MS = 5 * 60_000L
+        private const val LIBRARY_POLL_MS = 5 * 60_000L
         private const val UNREACHABLE_BACKOFF_MS = 30_000L
         private val refresher = Executors.newSingleThreadExecutor { r -> Thread(r, "library-refresh").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
+        private val libraryPoller = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "library-poll").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
     }
 
     // --- Plumbing --------------------------------------------------------------------------------

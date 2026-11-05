@@ -200,6 +200,15 @@ class CinemaModel(
         client.onReachabilityChanged = { reachable -> scope.launch(ui) {
             toast(if (reachable) "Jellyfin server connection restored" else "Can't reach the Jellyfin server")
         } }
+        client.onLibraryChanged = {
+            val latest = client.loadedLibrary()
+            scope.launch(ui) {
+                library = latest
+                libraryVersion++
+                shelves = shelves?.copy(films = latest.filter { it.isMovie }.take(30), series = latest.filter { it.isSeries }.take(30))
+            }
+        }
+        client.startLibraryPolling()
     }
 
     fun start() {
