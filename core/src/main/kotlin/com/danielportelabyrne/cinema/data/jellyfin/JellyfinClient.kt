@@ -353,6 +353,18 @@ class JellyfinClient(platform: Platform) {
 
     /** When a request last found the server unreachable. Callers then stop queuing up behind a server that is not there. */
     private val reachability = Reachability(UNREACHABLE_BACKOFF_MS)
+    @Volatile private var reportedUnreachable = false
+
+    /** Called when a request first detects the server is unreachable, and again when it responds. */
+    @Volatile var onReachabilityChanged: ((Boolean) -> Unit)? = null
+
+    private fun reached() {
+        reachability.reached()
+        if (reportedUnreachable) {
+            reportedUnreachable = false
+            onReachabilityChanged?.invoke(true)
+        }
+    }
 
     /** True for a short while after the server could not be reached. */
     val backingOff: Boolean get() = reachability.backingOff
@@ -397,7 +409,7 @@ class JellyfinClient(platform: Platform) {
             if (json != null) { connection.doOutput = true; connection.setRequestProperty("Content-Type", "application/json") }
             connection.exchange {
                 // Connecting separately tells a server that never answers (asleep) from one that is only slow to reply.
-                connection.connect(); connected = true; reachability.reached()
+                connection.connect(); connected = true; reached()
                 if (json != null) connection.outputStream.use { it.write(json.toByteArray()) }
                 val code = connection.responseCode
                 Outcome(when {
@@ -408,6 +420,10 @@ class JellyfinClient(platform: Platform) {
             }
         } catch (e: Exception) {
             val unreachable = reachability.failed(e, duringConnect = !connected)
+            if (unreachable && !reportedUnreachable) {
+                reportedUnreachable = true
+                onReachabilityChanged?.invoke(false)
+            }
             Log.w(TAG, "$method ${url.substringBefore('?')} failed: ${e.javaClass.simpleName} after ${Perf.now() - at} ms" + if (unreachable) " (unreachable)" else "")
             Outcome(null, unreachable)
         }

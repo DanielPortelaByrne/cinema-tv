@@ -381,6 +381,16 @@ class MoviesPanel(
             }
             return
         }
+        // "stream:<imdb>:<name>[:<season>:<episode>]": press Stream now on that title, for timing startup on a device.
+        if (name.startsWith("stream:")) {
+            val p = name.removePrefix("stream:").split(":")
+            val imdb = p.getOrNull(0) ?: return
+            val episode = p.getOrNull(2)?.toIntOrNull()?.let { s -> p.getOrNull(3)?.toIntOrNull()?.let { s to it } }
+            val t = Title(imdb, if (episode == null) Kind.MOVIE else Kind.SHOW, p.getOrNull(1) ?: imdb, null, null, null, emptyList(),
+                null, null, null, null, imdb, null)
+            streamNow(entry(t), page, episode)
+            return
+        }
         // "loading": the stream loading screen as it first appears, without asking the server for anything.
         if (name == "loading") {
             go(Dest.Films)
@@ -598,6 +608,17 @@ class MoviesPanel(
         return true
     }
 
+    /**
+     * Focus is on no card at all (a page was just rebuilt under the card that had it, or its rows are still loading): Down,
+     * Up and Right pick up the page's content instead of letting the search run over the whole screen, whose nearest
+     * candidate is the rail. Left still goes to the rail. False when this does not apply.
+     */
+    fun recoverFocus(direction: Int): Boolean {
+        if (!isVisible || direction == View.FOCUS_LEFT || streamLoading != null) return false
+        focusContent()
+        return true
+    }
+
     private fun focusContent() {
         val previous = lastContentFocus?.takeIf { it.isAttachedToWindow && it.isShown && it.isEnabled && it.isFocusable }
         if (previous?.requestFocus() == true) return
@@ -717,7 +738,8 @@ class MoviesPanel(
         content.removeAllViews(); page.scrollTo(0, 0); heroSet = false; pending.clear(); lastContentFocus = null
         // The rail floats over the page, so nothing is reserved for a top bar. A page that opens on a featured title
         // starts at the very top, so its picture runs up to the screen edge; the others start a little way down.
-        val opensOnHero = current === Dest.Home || current === Dest.Films || current === Dest.Series || current === Dest.Docs || current === Dest.Library
+        val opensOnHero = current === Dest.Home || current === Dest.Films || current === Dest.Series || current === Dest.Docs || current === Dest.Library ||
+            current is Dest.OnService || current is Dest.InGenre
         // Search lays itself out in screen coordinates, straight from the mockup.
         content.setPadding(0, if (opensOnHero || current === Dest.Search) 0 else Cinema.px(activity, 52), 0, dp(48))
         if (current !== Dest.Search) { if (voiceActive) voice?.cancel(); searchUi = null }
@@ -733,8 +755,8 @@ class MoviesPanel(
             Dest.Library -> buildLibrary(gen)
             Dest.Downloads -> buildDownloads(gen)
             Dest.Search -> buildSearch()
-            is Dest.OnService -> { pageTitle("On ${d.service.label}"); buildHero(); shelves(Catalog.servicePage(d.service), gen) }
-            is Dest.InGenre -> { pageTitle(d.genre.label); buildHero(); shelves(Catalog.genrePage(d.genre), gen) }
+            is Dest.OnService -> { buildHero(); heroTag("Streaming on", d.service.label); shelves(Catalog.servicePage(d.service), gen) }
+            is Dest.InGenre -> { buildHero(); heroTag("Genre", d.genre.label); shelves(Catalog.genrePage(d.genre), gen) }
             Dest.Letterboxd -> buildLetterboxd(gen)
             is Dest.LbPerson -> buildLbPerson(d.user, gen)
             is Dest.LbListPage -> buildLbList(d.path, gen)
@@ -746,6 +768,17 @@ class MoviesPanel(
             Dest.Settings -> Unit
         }
         Perf.took("movies.build (main thread)", Perf.now() - buildStart)
+    }
+
+    /**
+     * Names the service or genre a page is about, laid over the top corner of the hero. It used to be a title row above the
+     * hero, which pushed the featured picture down the screen and left these pages starting lower than Films and Series.
+     */
+    private fun heroTag(kicker: String, name: String) {
+        val tag = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        tag.addView(Cinema.text(activity, kicker, 17, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
+        tag.addView(Cinema.text(activity, name, 38, Cinema.CREAM, serif = true, weight = 500), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 2) })
+        (heroFrame as FrameLayout).addView(tag, FrameLayout.LayoutParams(-2, -2).apply { marginStart = pageStart; topMargin = Cinema.px(activity, 20) })
     }
 
     private fun pageTitle(text: String) {
@@ -826,7 +859,11 @@ class MoviesPanel(
                         row.inner.addView(if (ranked) rankCard(i + 1, e, related, defer) else card(e, related, defer = defer), cardParams(i, wide = ranked))
                     }
                     if (to < entries.size) android.view.Choreographer.getInstance().postFrameCallback { addFrom(to) }
-                    else { Perf.took("shelf '${spec.heading}' ui add ${entries.size} (spread)", Perf.now() - uiAt); row.scroller.post { row.loadNear() }; page.post { fillNear() } }
+                    else {
+                        // A genre shelf ends with the way into that genre's own page.
+                        moreCard(spec)?.let { row.inner.addView(it, cardParams(entries.size)) }
+                        Perf.took("shelf '${spec.heading}' ui add ${entries.size} (spread)", Perf.now() - uiAt); row.scroller.post { row.loadNear() }; page.post { fillNear() }
+                    }
                 }
                 addFrom(0)
             }
@@ -869,6 +906,45 @@ class MoviesPanel(
     private val stremio = com.danielportelabyrne.cinema.data.stremio.StremioClient()
     /** Most torrents from the add-ons passed on to the stream service, best seeded first. */
     private val STREAM_CANDIDATES = 60
+    private val ADDON_ANSWER_MS = 8 * 60_000L
+    private val ADDON_PREFETCH_DELAY_MS = 700L
+
+    /** What the add-ons offered lately for a title or episode, so Play does not wait for them again. */
+    private val addonAnswerCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, java.util.concurrent.Future<com.danielportelabyrne.cinema.data.stremio.AddonAnswers>>>()
+    private val addonPool = java.util.concurrent.Executors.newFixedThreadPool(2)
+    private var addonPrefetch = Runnable {}
+
+    /** The add-ons' answer for [imdb] (and [episode]): the one asked in the last few minutes, or a new request. */
+    private fun addonAnswersFor(imdb: String, episode: Pair<Int, Int>?): java.util.concurrent.Future<com.danielportelabyrne.cinema.data.stremio.AddonAnswers> {
+        val key = imdb + (episode?.let { ":${it.first}:${it.second}" } ?: "")
+        val now = android.os.SystemClock.elapsedRealtime()
+        addonAnswerCache[key]?.let { (at, f) ->
+            val empty = f.isDone && runCatching { f.get().let { it.torrents.isEmpty() && it.links.isEmpty() } }.getOrDefault(true)
+            if (now - at < ADDON_ANSWER_MS && !empty) return f
+        }
+        addonAnswerCache.entries.removeIf { now - it.value.first >= ADDON_ANSWER_MS }
+        val f = addonPool.submit(java.util.concurrent.Callable { stremio.addonAnswers(stremioAddons(), imdb, episode) })
+        addonAnswerCache[key] = now to f
+        return f
+    }
+
+    /**
+     * Whether a direct link really serves the film: it answers a one-byte request, and is not a short placeholder
+     * (a debrid service's "still downloading" clip). Off the main thread; gives up after a few seconds.
+     */
+    private fun linkAnswers(url: String, headers: Map<String, String>): Boolean = try {
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 4000; c.readTimeout = 4000; c.instanceFollowRedirects = true
+        c.setRequestProperty("Range", "bytes=0-0")
+        headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
+        try {
+            val total = c.getHeaderField("Content-Range")?.substringAfter('/')?.toLongOrNull()
+                ?: c.contentLengthLong.takeIf { c.responseCode == 200 && it > 0 }
+            val ok = c.responseCode in 200..299 && (total == null || total >= 50L * 1024 * 1024)
+            android.util.Log.i("StreamNow", "link check: HTTP ${c.responseCode}, ${total?.let { it / (1024 * 1024) }} MiB -> $ok")
+            ok
+        } finally { c.disconnect() }
+    } catch (ex: Exception) { android.util.Log.w("StreamNow", "link check failed: ${ex.javaClass.simpleName}"); false }
 
     /** Results in the search preview, beside the keyboard: films and series in turn. */
     private val PREVIEW_ROWS = 6
@@ -2225,7 +2301,8 @@ class MoviesPanel(
                     open = { playbackStarted = true; JellyfinPlayback.play(activity, jellyfin, item, listOfNotNull(item.displayTitle, item.episodeLabel()).joinToString(" · "), item.resumeKey) },
                     still = null, stillUrl = if (item.hasBackdrop) jellyfin.backdropUrl(item.id) else JellyfinApi.episodeImageUrl(JellyfinApi.cleanBase(jellyfin.server), item.id, 640))
             }
-            val all = (streams + films).sortedByDescending { it.lastMs }.take(12)
+            // One card a title: a series shows only the episode watched most recently.
+            val all = com.danielportelabyrne.cinema.data.latestPerTitle(streams + films, { it.title }, { it.lastMs }).take(12)
             activity.runOnUiThread {
                 if (gen != generation) return@runOnUiThread
                 row.inner.removeAllViews()
@@ -3359,7 +3436,10 @@ class MoviesPanel(
         }
         setupPrimary(primary, e, clearStale, restart) { openDetail(e, related) }
         // A film that can only be streamed: have the stream service search for it now, so Stream now starts quicker.
-        if (!inLibrary && t.kind == Kind.MOVIE && seerr.isSignedIn) slowPool.execute { seerr.prepareStream(t.name, t.year, runtimeMin = t.runtimeMin) }
+        if (!inLibrary && t.kind == Kind.MOVIE && seerr.isSignedIn) {
+            slowPool.execute { seerr.prepareStream(t.name, t.year, runtimeMin = t.runtimeMin) }
+            t.imdbId?.let { addonAnswersFor(it, null) }   // and ask the add-ons now, as Stremio does when a page opens
+        }
         detailEntry = e
         // A series' progress lives on its episode cards, so its page is drawn again; a film just redoes its buttons.
         detailButtons = if (t.kind == Kind.SHOW) ({ val back = returnFocus; closeDetail(restoreFocus = false); openDetail(e, related); returnFocus = back })
@@ -3546,10 +3626,36 @@ class MoviesPanel(
         }
         slowPool.execute {
             // What the owner's Stremio add-ons offer for it, asked from this TV so their addresses never leave it.
-            val candidates = e.title.imdbId?.let { imdb ->
-                stremio.addonStreams(stremioAddons(), imdb, episode).sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
-            }.orEmpty()
-            android.util.Log.i("StreamNow", "add-ons offered ${candidates.size} for ${e.title.name} (${stremioAddons().size} ported, imdb ${e.title.imdbId != null})")
+            // The service's own search runs meanwhile (skipped if the page already asked for it).
+            slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null) }
+            val addons = if (e.title.imdbId != null) stremioAddons() else emptyList()
+            val asked = Perf.now()
+            val answers = e.title.imdbId?.let { imdb -> runCatching { addonAnswersFor(imdb, episode).get() }.getOrNull() }
+                ?: com.danielportelabyrne.cinema.data.stremio.AddonAnswers.NONE
+            val candidates = answers.torrents.sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
+            android.util.Log.i("StreamNow", "add-ons offered ${answers.torrents.size} torrents, ${answers.links.size} links " +
+                "(${answers.links.count { !it.uncached }} cached) in ${Perf.now() - asked} ms for ${e.title.name} " +
+                "(${addons.size} add-ons, ${addons.count { it.streams }} stream, imdb ${e.title.imdbId != null})")
+            // A direct link as good as the best torrent plays at once, as Stremio does with a debrid service.
+            val runtimeSec = ((e.title.runtimeMin ?: if (episode == null) 110 else 45) * 60L)
+            val links = com.danielportelabyrne.cinema.data.stream.DirectLinks.choose(answers.links, answers.torrents,
+                com.danielportelabyrne.cinema.data.stream.DeviceProfile.detect(activity),
+                com.danielportelabyrne.cinema.data.stream.NetworkEstimator(activity).current(), runtimeSec)
+            val working = links.firstOrNull { linkAnswers(it.candidate.url!!, it.candidate.headers) }
+            if (working != null) {
+                android.util.Log.i("StreamNow", "playing a direct link from ${working.candidate.provider}: ${working.candidate.meta.qualityLabel()}")
+                activity.runOnUiThread {
+                    Perf.end("stream.press->startReply", "DIRECT")
+                    if (token != streamToken) return@runOnUiThread
+                    screen.message("Found a copy. Starting the player…")
+                    remember(e.title, streamed = true)
+                    PlayerActivity.launch(activity, listOf(working) + links.filter { it !== working }, label, e.title.imdbId,
+                        artUrl = e.title.backdropUrl ?: e.title.posterUrl,
+                        meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode)
+                    ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
+                }
+                return@execute
+            }
             val result = seerr.startStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null, candidates)
             activity.runOnUiThread {
                 Perf.end("stream.press->startReply", result.status.name)
@@ -3868,6 +3974,12 @@ class MoviesPanel(
                 if (lit) FastFocus.reveal(card, null, dp(24), dp(56), 0)
                 // An episode that would be streamed: search for it while the viewer looks at it.
                 if (lit && mine == null && !look.unaired && seerr.isSignedIn) slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, s.number, ep.number) }
+                // The add-ons are asked once the viewer has rested on the episode, not for every card passed while scrolling.
+                ui.removeCallbacks(addonPrefetch)
+                if (lit && mine == null && !look.unaired) e.title.imdbId?.let { imdb ->
+                    addonPrefetch = Runnable { addonAnswersFor(imdb, s.number to ep.number) }
+                    ui.postDelayed(addonPrefetch, ADDON_PREFETCH_DELAY_MS)
+                }
             }
             return Shown(card, mine, { look }, ::latest) { look = latest(); rebind() }
         }
@@ -4003,6 +4115,40 @@ class MoviesPanel(
         }, FrameLayout.LayoutParams(-1, -1))
         card.onFocus = { lit -> if (lit) reveal(card) }
         card.setOnClickListener { onSelect() }
+        return card
+    }
+
+    /**
+     * The last card of a genre shelf ("More Thriller"), which opens that genre's page: its trending, film, series and
+     * per-service shelves. Until now the only way there was a theme in Search. None on the genre's own page, where it would
+     * only lead back to itself, nor on a Top 10 row, which is exactly ten titles.
+     */
+    private fun moreCard(spec: ShelfSpec): View? {
+        val code = spec.genre?.takeUnless { spec.ranked } ?: return null
+        val genre = (Catalog.GENRES + Genre("doc", "Documentaries")).firstOrNull { it.code == code } ?: return null
+        if ((current as? Dest.InGenre)?.genre?.code == code) return null
+        val seed = Catalog.GENRES.indexOfFirst { it.code == code }.coerceAtLeast(0)
+        val colour = tileColours[seed % tileColours.size]
+        val label = "More ${genre.label}"
+        val ink = if (colour == Cinema.STRIPE_SAFFRON) Cinema.INK else Cinema.CREAM
+        val card = PosterCard(activity, 260, 390, titled = false, radiusPx = 22f)
+        card.contentDescription = label
+        card.poster.background = MotifDrawable(colour, Cinema.pxf(activity, 22), seed)
+        card.poster.foreground = null
+        // "More" over the name over an arrow. The name is one line that shrinks to fit the card, so "Documentaries" stays whole.
+        val column = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.START
+            setPadding(Cinema.px(activity, 26), 0, Cinema.px(activity, 20), Cinema.px(activity, 26))
+        }
+        column.addView(Cinema.text(activity, "More", 20, ink, weight = 600, tracking = 0.18f, caps = true))
+        val name = Cinema.text(activity, genre.label, 40, ink, serif = true, weight = 500).apply { maxLines = 1; includeFontPadding = false }
+        androidx.core.widget.TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+            name, Cinema.px(activity, 20), Cinema.px(activity, 40), 1, android.util.TypedValue.COMPLEX_UNIT_PX)
+        column.addView(name, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 6) })
+        column.addView(Cinema.text(activity, "\u2192", 40, ink, weight = 400), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 10) })
+        card.poster.addView(column, FrameLayout.LayoutParams(-1, -1))
+        card.onFocus = { lit -> if (lit) reveal(card) }
+        card.setOnClickListener { go(Dest.InGenre(genre), remember = true) }
         return card
     }
 

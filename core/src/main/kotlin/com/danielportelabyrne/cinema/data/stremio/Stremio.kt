@@ -104,24 +104,79 @@ object StremioApi {
     fun bare(film: StremioFilm) = Title(film.imdbId, Kind.MOVIE, film.name, film.year, null, null, emptyList(), null, null, film.poster, null, film.imdbId, null)
 }
 
-/** One torrent an add-on offered: its release [title], the torrent's [infoHash], its [seeders] and its [size] in bytes. */
-data class AddonStream(val title: String, val infoHash: String, val seeders: Int, val size: Long)
+/** One add-on torrent. Seeder count and size are optional display metadata, not protocol requirements. */
+data class AddonStream(val title: String, val infoHash: String, val seeders: Int?, val size: Long?,
+                       val fileIdx: Int? = null, val sources: List<String> = emptyList()) {
+    fun candidateJson(): JSONObject = JSONObject().put("title", title).put("infoHash", infoHash)
+        .put("seeders", seeders).put("size", size).apply {
+            fileIdx?.let { put("fileIdx", it) }
+            if (sources.isNotEmpty()) put("sources", JSONArray(sources))
+        }
+}
+
+/**
+ * One direct http(s) stream an add-on offered (a debrid service, a hosted file). [text] is the add-on's name and
+ * description lines, which carry the quality. [headers] are ones the add-on says the request needs.
+ */
+data class AddonLink(val addon: String, val title: String, val url: String, val headers: Map<String, String>,
+                     val text: String, val size: Long?, val uncached: Boolean)
+
+/** Everything the add-ons offered for one title: torrents for the stream service, and links the TV can play itself. */
+data class AddonAnswers(val torrents: List<AddonStream>, val links: List<AddonLink>) {
+    companion object { val NONE = AddonAnswers(emptyList(), emptyList()) }
+}
 
 object AddonStreams {
-    /** The torrents in an add-on's answer. Only those with a readable hash, a release name, seeders and a size are kept. */
+    /**
+     * The direct links in an add-on's answer. Links a debrid add-on marks as not yet downloaded ("[RD download]",
+     * "⏳", "uncached") are kept but flagged, since they play a placeholder or nothing at all.
+     */
+    fun links(json: String, addon: String): List<AddonLink> = try {
+        val a = JSONObject(json).optJSONArray("streams") ?: JSONArray()
+        (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            val url = o.optString("url").takeIf { it.startsWith("https://") || it.startsWith("http://") } ?: return@mapNotNull null
+            val name = o.optString("name")
+            val description = o.optString("description").ifBlank { o.optString("title") }
+            val hints = o.optJSONObject("behaviorHints")
+            val request = hints?.optJSONObject("proxyHeaders")?.optJSONObject("request")
+            val headers = request?.keys()?.asSequence()?.mapNotNull { k -> (request.opt(k) as? String)?.let { k to it } }?.toMap().orEmpty()
+            val title = hints?.optString("filename").orEmpty().ifBlank { description.lineSequence().firstOrNull()?.trim().orEmpty() }.ifBlank { name }
+            val size = (hints?.opt("videoSize") as? Number)?.toLong()?.takeIf { it > 0 } ?: displayedSize(description)
+            val uncached = Regex("download\\]|⏳|uncached|not cached", RegexOption.IGNORE_CASE).containsMatchIn("$name $description")
+            AddonLink(addon, title, url, headers, "$name\n$description", size, uncached)
+        }
+    } catch (_: Exception) { emptyList() }
+
+    private fun displayedSize(text: String): Long? = Regex("💾\\s*([\\d.,]+)\\s*(GiB|MiB|GB|MB)", RegexOption.IGNORE_CASE).find(text)?.let { m ->
+        val amount = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
+        (amount * if (m.groupValues[2].startsWith("G", true)) 1024.0 * 1024 * 1024 else 1024.0 * 1024).toLong()
+    }
+
+    /** Preserve the exact torrent file and peer discovery hints; missing display metadata remains unknown. */
     fun parse(json: String): List<AddonStream> = try {
         val a = JSONObject(json).optJSONArray("streams") ?: JSONArray()
         (0 until a.length()).mapNotNull { i ->
             val o = a.optJSONObject(i) ?: return@mapNotNull null
             val hash = o.optString("infoHash").lowercase()
-            val text = o.optString("title")
-            val name = text.lineSequence().firstOrNull()?.trim().orEmpty()
-            val seeds = Regex("👤\\s*(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull()
-            val size = Regex("💾\\s*([\\d.,]+)\\s*(GB|MB)").find(text)
-            if (!Regex("[0-9a-f]{40}").matches(hash) || name.isEmpty() || seeds == null || size == null) return@mapNotNull null
-            val amount = size.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@mapNotNull null
-            val unit = if (size.groupValues[2] == "GB") 1024.0 * 1024 * 1024 else 1024.0 * 1024
-            AddonStream(name, hash, seeds, (amount * unit).toLong())
+            val text = o.optString("description").ifBlank { o.optString("title") }
+            val hints = o.optJSONObject("behaviorHints")
+            val name = hints?.optString("filename").orEmpty().ifBlank { text.lineSequence().firstOrNull()?.trim().orEmpty() }
+            val seeds = (o.opt("seeders") as? Number)?.toInt()?.takeIf { it >= 0 }
+                ?: Regex("(?:👤|👥|[Ss]eeders?\\s*:)\\s*([\\d,]+)").find(text)?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()
+            val size = Regex("💾\\s*([\\d.,]+)\\s*(GiB|MiB|GB|MB)", RegexOption.IGNORE_CASE).find(text)
+            val bytes = (hints?.opt("videoSize") as? Number)?.toLong()?.takeIf { it > 0 }
+                ?: size?.let { match ->
+                    val amount = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@let null
+                    (amount * if (match.groupValues[2].startsWith("G", true)) 1024.0 * 1024 * 1024 else 1024.0 * 1024).toLong()
+                }
+            if (!Regex("[0-9a-f]{40}").matches(hash) || name.isEmpty()) return@mapNotNull null
+            val fileIdx = if (o.has("fileIdx") && !o.isNull("fileIdx")) {
+                val value = o.opt("fileIdx") as? Number ?: return@mapNotNull null
+                value.toInt().takeIf { it in 0..65535 && it.toDouble() == value.toDouble() } ?: return@mapNotNull null
+            } else null
+            val sources = o.optJSONArray("sources")?.let { s -> (0 until s.length()).mapNotNull { s.opt(it) as? String }.take(32) }.orEmpty()
+            AddonStream(name, hash, seeds, bytes, fileIdx, sources)
         }
     } catch (_: Exception) { emptyList() }
 }
@@ -151,25 +206,44 @@ class StremioClient(private val send: (method: String, url: String, body: String
         send("POST", "https://api.strem.io/api/datastoreGet", libraryRequest(authKey))?.let { r -> try { JSONObject(r).has("error") } catch (_: Exception) { false } } ?: false
 
     /** What one add-on offers for a film ([episode] null) or an episode (season, episode), asked from this device. */
-    fun addonStreams(addon: StremioAddon, imdb: String, episode: Pair<Int, Int>?): List<AddonStream> {
+    fun addonStreams(addon: StremioAddon, imdb: String, episode: Pair<Int, Int>?): List<AddonStream> = addonAnswer(addon, imdb, episode).torrents
+
+    /** One add-on's whole answer for a film ([episode] null) or an episode: its torrents and its direct links. */
+    fun addonAnswer(addon: StremioAddon, imdb: String, episode: Pair<Int, Int>?): AddonAnswers {
         val base = addon.transportUrl.removeSuffix("/manifest.json")
         val kind = if (episode == null) "movie" else "series"
         val id = if (episode == null) imdb else "$imdb:${episode.first}:${episode.second}"
-        return send("GET", "$base/stream/$kind/$id.json", null)?.let { AddonStreams.parse(it) }.orEmpty()
+        val reply = send("GET", "$base/stream/$kind/$id.json", null) ?: return AddonAnswers.NONE
+        return AddonAnswers(AddonStreams.parse(reply), AddonStreams.links(reply, addon.name))
     }
 
+    fun addonStreams(addons: List<StremioAddon>, imdb: String, episode: Pair<Int, Int>?, seconds: Long = 25): List<AddonStream> =
+        addonAnswers(addons, imdb, episode, seconds * 1000).torrents
+
     /**
-     * What every add-on that streams offers, asked at once. An add-on that has not answered within [seconds] is left out,
-     * so one slow add-on cannot hold the others back.
+     * What every add-on that streams offers, asked at once. Waiting stops when all have answered, [maxMs] has passed, or
+     * [graceMs] after the first useful answer: a slow add-on cannot hold Play back once others have offered something.
      */
-    fun addonStreams(addons: List<StremioAddon>, imdb: String, episode: Pair<Int, Int>?, seconds: Long = 25): List<AddonStream> {
+    fun addonAnswers(addons: List<StremioAddon>, imdb: String, episode: Pair<Int, Int>?, maxMs: Long = 12_000, graceMs: Long = 4_000,
+                     clock: () -> Long = System::currentTimeMillis): AddonAnswers {
         val streamers = addons.filter { it.streams }
-        if (streamers.isEmpty()) return emptyList()
-        val pool = java.util.concurrent.Executors.newFixedThreadPool(streamers.size)
-        return try {
-            pool.invokeAll(streamers.map { a -> java.util.concurrent.Callable { addonStreams(a, imdb, episode) } }, seconds, java.util.concurrent.TimeUnit.SECONDS)
-                .flatMap { f -> if (f.isCancelled) emptyList() else try { f.get() } catch (_: Exception) { emptyList() } }
+        if (streamers.isEmpty()) return AddonAnswers.NONE
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(streamers.size.coerceAtMost(16))
+        val done = java.util.concurrent.ExecutorCompletionService<AddonAnswers>(pool)
+        streamers.forEach { a -> done.submit { addonAnswer(a, imdb, episode) } }
+        val torrents = mutableListOf<AddonStream>(); val links = mutableListOf<AddonLink>()
+        val start = clock(); var deadline = start + maxMs
+        try {
+            repeat(streamers.size) {
+                val wait = deadline - clock()
+                if (wait <= 0) return@repeat
+                val answer = try { done.poll(wait, java.util.concurrent.TimeUnit.MILLISECONDS)?.get() } catch (_: Exception) { AddonAnswers.NONE }
+                    ?: return@repeat   // timed out
+                torrents += answer.torrents; links += answer.links
+                if (answer.torrents.isNotEmpty() || answer.links.isNotEmpty()) deadline = minOf(deadline, clock() + graceMs)
+            }
         } finally { pool.shutdownNow() }
+        return AddonAnswers(torrents, links)
     }
 
     fun filmPage(film: StremioFilm): Title =

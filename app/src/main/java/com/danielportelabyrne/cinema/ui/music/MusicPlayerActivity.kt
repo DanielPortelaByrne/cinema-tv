@@ -58,6 +58,7 @@ class MusicPlayerActivity : Activity() {
     private lateinit var client: SubsonicClient
     private lateinit var tracks: List<MusicTrack>
     private lateinit var player: ExoPlayer
+    private var mediaSession: androidx.media3.session.MediaSession? = null
     private val ui = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val images by lazy { RemoteImages.shared(this) }
@@ -109,6 +110,7 @@ class MusicPlayerActivity : Activity() {
         }
         player = ExoPlayer.Builder(this, renderers).setMediaSourceFactory(DefaultMediaSourceFactory(signing)).build()
         player.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
+        mediaSession = androidx.media3.session.MediaSession.Builder(this, player).setId("music-${System.identityHashCode(this)}").build()
         player.setMediaItems(tracks.map { item(it) }, queue.start.coerceIn(0, tracks.lastIndex), 0L)
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { showTrack() }
@@ -355,6 +357,7 @@ class MusicPlayerActivity : Activity() {
 
     override fun onDestroy() {
         Choreographer.getInstance().removeFrameCallback(tick)
+        mediaSession?.release(); mediaSession = null
         if (::player.isInitialized) player.release()
         worker.shutdown()
         super.onDestroy()

@@ -1,6 +1,8 @@
 package com.danielportelabyrne.cinema
 
 import com.danielportelabyrne.cinema.design.cinema.CinemaToast
+import com.danielportelabyrne.cinema.design.cinema.OpeningState
+import com.danielportelabyrne.cinema.design.cinema.SplashView
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.os.Bundle
 import android.view.FocusFinder
@@ -38,21 +40,35 @@ class CinemaActivity : AppCompatActivity() {
     private lateinit var overlay: ViewGroup
     private lateinit var setup: SetupFlow
     private lateinit var jellyfin: JellyfinClient
+    private var splash: SplashView? = null
+    private var quietOpen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_cinema)
+        // A restored screen, a Continue watching launch or a debug smoke test goes straight in; otherwise the first Movies open after the app starts plays the opening.
+        quietOpen = savedInstanceState != null || intent?.action == ContinueWatchingContract.actionResume(packageName) ||
+            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && intent?.extras?.keySet()?.any { it.startsWith("debug_") } == true)
         overlay = findViewById(R.id.moviesOverlay)
         infoSheet = InfoSheet(findViewById(R.id.infoSheet))
         val platform = AndroidPlatform(this)
         val settings = CinemaSettings(platform)
+        val addonSync = com.danielportelabyrne.cinema.data.stremio.StremioAddonSync(
+            com.danielportelabyrne.cinema.data.stremio.StremioClient()::addons, android.os.SystemClock::elapsedRealtime)
         val preset = Preset.load(platform)?.also { it.applySettings(platform, settings) }
         Catalog.country = settings.region
         jellyfin = JellyfinClient(AndroidPlatform(this))
+        jellyfin.onReachabilityChanged = { reachable -> runOnUiThread {
+            if (!isFinishing && !isDestroyed) CinemaToast.show(
+                this,
+                if (reachable) "Jellyfin server connection restored" else "Can't reach the Jellyfin server",
+                Toast.LENGTH_LONG,
+            )
+        } }
         val seerr = SeerrClient(AndroidPlatform(this))
         setup = SetupFlow(this, findViewById(R.id.setupHost), infoSheet, jellyfin, seerr, settings) { changed ->
             if (changed) { moviesPanel.reload(); if (moviesPanel.isVisible) moviesPanel.hide() }
-            if (!moviesPanel.isVisible) moviesPanel.show()
+            if (!moviesPanel.isVisible) openMovies()
             else returnFocus?.takeIf { it.isAttachedToWindow }?.requestFocus()
             returnFocus = null
         }
@@ -73,7 +89,8 @@ class CinemaActivity : AppCompatActivity() {
             onOpenSettings = { moviesPanel.hide(); setup.openSettings() },
             integrationOn = { settings.isOn(it) },
             music = { settings.subsonic },
-            stremioAddons = { settings.stremioAddons },
+            // Asked off the main thread when something is streamed: follows the linked account, not only a manual "Port".
+            stremioAddons = { addonSync.current(settings.stremioKey, settings.stremioAddons) { settings.stremioAddons = it } },
             streamProgress = { settings.streamProgress },
             recentSearches = { settings.recentSearches(it) },
             saveRecentSearches = { keyboard, terms -> settings.setRecentSearches(keyboard, terms) },
@@ -98,7 +115,7 @@ class CinemaActivity : AppCompatActivity() {
                 !settings.setupDone || !jellyfin.hasServer -> setup.startFirstRun()
                 // The server is known but the sign-in was lost (a token rejected, or the app data partly wiped): say so.
                 !jellyfin.isConnected -> setup.startSignBackIn()
-                else -> moviesPanel.show()
+                else -> openMovies()
             }
             handleDebugIntent(intent)
             handleResumeIntent(intent)
@@ -116,6 +133,52 @@ class CinemaActivity : AppCompatActivity() {
                 runOnUiThread { if (!isDestroyed) start() }
             }.start()
         } else start()
+    }
+
+    /**
+     * Opens the Movies page. When the opening is due (see [OpeningState]) it opens behind it: the opening plays first,
+     * holds at full strength while the page is built underneath it, then fades over the finished page (building keeps
+     * the main thread busy, which stalled the animation while the sound carried on). Otherwise, a restored screen and
+     * animations switched off in the system settings go straight in.
+     */
+    private fun openMovies() {
+        if (quietOpen || !OpeningState.due(this)) { quietOpen = false; moviesPanel.show(); return }
+        splash = SplashView.show(findViewById<ViewGroup>(R.id.cinemaRoot), skip = false,
+            covered = { if (!isDestroyed) openingHeld() }, done = { splash = null })
+        if (splash == null) moviesPanel.show()
+    }
+
+    /** The opening has reached its held frame: record it if Cinema is really on screen, and build the page under it. */
+    private fun openingHeld() {
+        if (hasWindowFocus()) OpeningState.markShown(this)
+        if (!moviesPanel.isVisible) moviesPanel.show()
+    }
+
+    private var startedOnce = false
+
+    /**
+     * Set when Cinema comes back to the front (after the TV was switched off, the opening plays over the page it was
+     * left on). The opening waits for the window to actually have focus.
+     */
+    private var openingWaiting = false
+
+    override fun onStart() {
+        super.onStart()
+        if (!startedOnce) { startedOnce = true; return }
+        openingWaiting = true
+    }
+
+    /**
+     * The opening plays once Cinema's window is really in front. The launcher can bring Cinema back to the top without it
+     * being on screen (as it does when the TV wakes), and playing then put the sound over the launcher.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus || !openingWaiting) return
+        openingWaiting = false
+        if (::moviesPanel.isInitialized && moviesPanel.isVisible && !setup.isVisible && !infoSheet.isVisible && splash == null && OpeningState.due(this)) {
+            splash = SplashView.show(findViewById<ViewGroup>(R.id.cinemaRoot), skip = false, covered = { if (!isDestroyed) openingHeld() }, done = { splash = null })
+        }
     }
 
     private class TestAccount(val server: String, val username: String, val password: String)
@@ -192,6 +255,12 @@ class CinemaActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // While the opening plays, any key skips it (volume keys still work); nothing underneath sees the key.
+        splash?.takeIf { it.isShowing }?.let {
+            if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || event.keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) return super.dispatchKeyEvent(event)
+            if (event.action == KeyEvent.ACTION_DOWN) it.skip()
+            return true
+        }
         // The remote's voice key, if the TV hands it to apps at all: it opens Search and listens while held.
         if (event.keyCode == KeyEvent.KEYCODE_SEARCH || event.keyCode == KeyEvent.KEYCODE_VOICE_ASSIST || event.keyCode == KeyEvent.KEYCODE_ASSIST) {
             if (::moviesPanel.isInitialized && moviesPanel.isVisible && !infoSheet.isVisible && !setup.isVisible &&
@@ -218,7 +287,10 @@ class CinemaActivity : AppCompatActivity() {
                     ((direction == View.FOCUS_DOWN && focused.canScrollVertically(1)) || (direction == View.FOCUS_UP && focused.canScrollVertically(-1)))
                 if (!editingText && !scrolling) {
                     if (focused == null || focused === target || target.findFocus() == null) {
-                        // Focus strayed behind, or the container itself took it (slow devices): hand it to a child.
+                        // Focus strayed behind, or the container itself took it (slow devices, a page rebuilt under the card that
+                        // had it): hand it to a child. On a Movies page that child is one of its cards, not whatever the search
+                        // finds first, which for Down was the rail.
+                        if (target === overlay && moviesPanel.recoverFocus(direction)) return true
                         (FocusFinder.getInstance().findNextFocus(target, null, direction) ?: target).requestFocus()
                     } else if (target === overlay && moviesPanel.navigate(focused, direction)) {
                         // The rail and the loading screen move focus themselves.

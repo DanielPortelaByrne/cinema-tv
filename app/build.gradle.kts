@@ -101,6 +101,8 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
+    // Publishes what is playing to the system, so the Google Home / Google TV phone app can show it and pause it.
+    implementation("androidx.media3:media3-session:1.5.1")
     // Live channels and Jellyfin's converted films are HLS streams; without this module the player crashes on them.
     implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
     implementation("androidx.media3:media3-exoplayer-dash:1.5.1")   // some free channels are DASH (.mpd) streams
