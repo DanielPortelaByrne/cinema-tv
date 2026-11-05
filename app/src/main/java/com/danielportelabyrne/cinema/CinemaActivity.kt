@@ -1,6 +1,7 @@
 package com.danielportelabyrne.cinema
 
 import com.danielportelabyrne.cinema.design.cinema.CinemaToast
+import com.danielportelabyrne.cinema.design.cinema.OpeningState
 import com.danielportelabyrne.cinema.design.cinema.SplashView
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.os.Bundle
@@ -135,22 +136,49 @@ class CinemaActivity : AppCompatActivity() {
     }
 
     /**
-     * Opens the Movies page. The first time after the app starts it opens behind the branded opening: that plays first,
+     * Opens the Movies page. When the opening is due (see [OpeningState]) it opens behind it: the opening plays first,
      * holds at full strength while the page is built underneath it, then fades over the finished page (building keeps
-     * the main thread busy, which stalled the animation while the sound carried on). Every later open, a restored screen
-     * and animations switched off in the system settings go straight in.
+     * the main thread busy, which stalled the animation while the sound carried on). Otherwise, a restored screen and
+     * animations switched off in the system settings go straight in.
      */
     private fun openMovies() {
-        if (quietOpen || openingPlayed) { quietOpen = false; moviesPanel.show(); return }
-        openingPlayed = true
+        if (quietOpen || !OpeningState.due(this)) { quietOpen = false; moviesPanel.show(); return }
         splash = SplashView.show(findViewById<ViewGroup>(R.id.cinemaRoot), skip = false,
-            covered = { if (!isDestroyed && !moviesPanel.isVisible) moviesPanel.show() }, done = { splash = null })
+            covered = { if (!isDestroyed) openingHeld() }, done = { splash = null })
         if (splash == null) moviesPanel.show()
     }
 
-    private companion object {
-        /** Set once the opening has played in this process, so reopening the app or returning to Movies does not repeat it. */
-        var openingPlayed = false
+    /** The opening has reached its held frame: record it if Cinema is really on screen, and build the page under it. */
+    private fun openingHeld() {
+        if (hasWindowFocus()) OpeningState.markShown(this)
+        if (!moviesPanel.isVisible) moviesPanel.show()
+    }
+
+    private var startedOnce = false
+
+    /**
+     * Set when Cinema comes back to the front (after the TV was switched off, the opening plays over the page it was
+     * left on). The opening waits for the window to actually have focus.
+     */
+    private var openingWaiting = false
+
+    override fun onStart() {
+        super.onStart()
+        if (!startedOnce) { startedOnce = true; return }
+        openingWaiting = true
+    }
+
+    /**
+     * The opening plays once Cinema's window is really in front. The launcher can bring Cinema back to the top without it
+     * being on screen (as it does when the TV wakes), and playing then put the sound over the launcher.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus || !openingWaiting) return
+        openingWaiting = false
+        if (::moviesPanel.isInitialized && moviesPanel.isVisible && !setup.isVisible && !infoSheet.isVisible && splash == null && OpeningState.due(this)) {
+            splash = SplashView.show(findViewById<ViewGroup>(R.id.cinemaRoot), skip = false, covered = { if (!isDestroyed) openingHeld() }, done = { splash = null })
+        }
     }
 
     private class TestAccount(val server: String, val username: String, val password: String)

@@ -85,6 +85,7 @@ class PlayerActivity : AppCompatActivity() {
     private var titleLabel: TextView? = null
     private var art: String? = null
     private lateinit var player: ExoPlayer
+    private var mediaSession: androidx.media3.session.MediaSession? = null
     private lateinit var view: PlayerView
     private lateinit var trackSelector: DefaultTrackSelector
     private lateinit var captionsButton: TextView
@@ -226,6 +227,12 @@ class PlayerActivity : AppCompatActivity() {
                 // A torrent stream arrives unevenly: start quickly, then hold a deep buffer so one slow stretch doesn't stop playback.
                 if (streamOnly()) setLoadControl(streamLoadControl())
             }.build()
+        // Audio focus makes this the TV's active media app; the session is what the phone's Home app reads and controls.
+        player.setAudioAttributes(androidx.media3.common.AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+        // Each player screen has its own session id: Media3 refuses a second session with the same id in one process,
+        // and a new player can open before the last one is destroyed (or while music plays in the background).
+        mediaSession = androidx.media3.session.MediaSession.Builder(this, player).setId("video-${System.identityHashCode(this)}").build()
         view = PlayerView(this).apply {
             player = this@PlayerActivity.player
             setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
@@ -282,7 +289,11 @@ class PlayerActivity : AppCompatActivity() {
         handler.postDelayed(bitrateTick, 1000)
         handler.postDelayed(creditsTick, 1000)
         if (streamOnly()) handler.postDelayed(statsTick, 5000)
-        intent.getStringExtra(EXTRA_META)?.let { m -> runCatching { chrome?.setMeta(metaFrom(JSONObject(m))) } }
+        intent.getStringExtra(EXTRA_META)?.let { m -> runCatching {
+            val meta = metaFrom(JSONObject(m))
+            chrome?.setMeta(meta)
+            sessionSubtitle = subtitleFor(meta.year, meta.genres); refreshSessionMetadata()
+        } }
         val report = jf
         // A stream or a JustWatch title carries its IMDb id; a library item's ids arrive with its details below.
         lbSource = Triple(imdbId, null, false)
@@ -505,7 +516,12 @@ class PlayerActivity : AppCompatActivity() {
         val retries = if (slow) STREAM_LOAD_RETRIES else DEFAULT_LOAD_RETRIES
         player.setMediaSource(DefaultMediaSourceFactory(this, extractorsFor(item)).setDataSourceFactory(http)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(retries))
-            .createMediaSource(MediaItem.fromUri(Uri.parse(item.url))), resume)
+            .createMediaSource(MediaItem.Builder().setUri(Uri.parse(item.url))
+                .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
+                    .setTitle(title.ifBlank { null }).setSubtitle(sessionSubtitle).setArtist(sessionSubtitle)
+                    .setArtworkUri(art?.takeIf { it.isNotBlank() }?.let { Uri.parse(it) })
+                    .apply { sessionArt?.let { setArtworkData(it, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) } }.build())
+                .build()), resume)
         prepareAt = SystemClock.elapsedRealtime()
         Perf.mark("player.prepare")
         player.prepare()
@@ -731,6 +747,22 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private var sessionSubtitle: String? = null
+    private var sessionArt: ByteArray? = null
+
+    /** The "2024 · Drama" line under the title on the phone's now-playing card. */
+    private fun subtitleFor(year: Int?, genres: List<String>): String? =
+        listOfNotNull(year?.toString(), genres.firstOrNull()?.takeIf { it.isNotBlank() }).joinToString(" · ").ifBlank { null }
+
+    /** Adds the subtitle and artwork to what the TV publishes. ExoPlayer applies a metadata-only change without restarting playback. */
+    private fun refreshSessionMetadata() {
+        if (!::player.isInitialized || releasingPlayer) return
+        val current = player.currentMediaItem ?: return
+        val md = current.mediaMetadata.buildUpon().setSubtitle(sessionSubtitle).setArtist(sessionSubtitle)
+        sessionArt?.let { md.setArtworkData(it, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+        player.replaceMediaItem(player.currentMediaItemIndex, current.buildUpon().setMediaMetadata(md.build()).build())
+    }
+
     private fun metaFrom(o: JSONObject) = PlayerMeta(
         title = o.optString("title").ifBlank { title }, year = o.optInt("year", 0).takeIf { it > 0 },
         genres = o.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty(),
@@ -739,6 +771,15 @@ class PlayerActivity : AppCompatActivity() {
 
     /** What the Jellyfin item says about the film: details, chapters, trickplay tiles and file size. */
     private fun showItem(item: JellyfinItem) {
+        sessionSubtitle = subtitleFor(item.year, item.genres); refreshSessionMetadata()
+        // An episode usually has no backdrop, only its own still.
+        val artUrl = if (item.hasBackdrop) jellyfin.backdropUrl(item.id)
+            else com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.episodeImageUrl(com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.cleanBase(jellyfin.server), item.id, 640)
+        chromeImages.load(artUrl, jellyfin.playbackHeaders(), maxWidth = 640) { b ->
+            Log.i("CinemaPlayer", "Session artwork ${b.width}x${b.height}")
+            sessionArt = java.io.ByteArrayOutputStream().also { b.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+            refreshSessionMetadata()
+        }
         val c = chrome ?: return
         c.setMeta(PlayerMeta(title, item.year, item.genres, item.runtimeMin, item.officialRating, item.communityRating, item.overview))
         itemChapters = item.chapters; itemTrickplay = item.trickplay; itemSizeBytes = item.sizeBytes
@@ -1127,6 +1168,7 @@ class PlayerActivity : AppCompatActivity() {
             record(failed = false)
             releasingPlayer = true
             player.removeListener(listener)
+            mediaSession?.release(); mediaSession = null
             player.release()
         }
         reporter.shutdown() // let the final stop report finish, then release its thread

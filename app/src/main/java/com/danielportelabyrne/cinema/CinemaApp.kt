@@ -13,6 +13,7 @@ class CinemaApp : Application() {
         super.onCreate()
         Perf.enabled = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         Perf.clock = SystemClock::elapsedRealtime
+        com.danielportelabyrne.cinema.design.cinema.OpeningState.watchScreen(this)
         Log.sink = Log.Sink { level, tag, message, error ->
             when (level) {
                 'D' -> AndroidLog.d(tag, message, error)
