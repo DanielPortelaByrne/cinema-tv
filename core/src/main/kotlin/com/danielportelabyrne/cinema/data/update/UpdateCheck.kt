@@ -14,14 +14,17 @@ object UpdateCheck {
     const val LATEST_URL = "https://api.github.com/repos/DanielPortelaByrne/cinema-tv/releases/latest"
     const val APK_NAME = "cinema-tv.apk"
 
-    /** The release in GitHub's answer, or null when it is not a Cinema build or has no app file attached. */
-    fun parse(json: String, assetName: String = APK_NAME): AvailableUpdate? {
+    /**
+     * The release in GitHub's answer, or null when it is not a Cinema build or has no app file attached. Files only come
+     * over https, unless [allowHttp] (a test serving a release from the same machine).
+     */
+    fun parse(json: String, assetName: String = APK_NAME, allowHttp: Boolean = false): AvailableUpdate? {
         val o = try { JSONObject(json) } catch (_: Exception) { return null }
         val build = buildOf(o.optString("tag_name")) ?: return null
         if (o.optBoolean("draft") || o.optBoolean("prerelease")) return null
         val assets = o.optJSONArray("assets") ?: return null
         val asset = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }.firstOrNull { it.optString("name") == assetName } ?: return null
-        val url = asset.optString("browser_download_url").takeIf { it.startsWith("https://") } ?: return null
+        val url = asset.optString("browser_download_url").takeIf { it.startsWith("https://") || (allowHttp && it.startsWith("http://")) } ?: return null
         return AvailableUpdate(build, o.optString("name").ifBlank { "Cinema build $build" }, url, asset.optLong("size"),
             o.optString("body").trim().ifBlank { null })
     }

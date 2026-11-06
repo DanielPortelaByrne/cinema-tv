@@ -70,6 +70,68 @@ jobs:
           gh release create "build-${{ github.run_number }}" cinema-tv.apk --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" --title "Cinema build ${{ github.run_number }}" --notes-file notes.md --latest
 
+  # The Steam Deck's Flatpak, with the same build number, attached to the same release: Cinema for Linux finds it there
+  # and installs it itself. Its own jobs, so a slow or failed Flatpak never holds up the TVs' release.
+  desktop:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the Linux jars
+        run: ./gradlew --no-daemon :desktop:linuxBundle -Pcinema.linux=true -Pcinema.desktopOnly=true -Pcinema.versionCode=${{ github.run_number }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-linux
+          path: desktop/build/linux
+          retention-days: 7
+
+  flatpak:
+    needs: desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-desktop-linux
+          path: desktop/build/linux
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: Cinema.flatpak
+          manifest-path: flatpak/io.github.danielportelabyrne.Cinema.yml
+          cache-key: flatpak-builder-release
+          restore-cache: true
+          upload-artifact: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-flatpak
+          path: Cinema.flatpak
+          retention-days: 7
+
+  publish-flatpak:
+    needs: [publish, flatpak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-flatpak
+          path: artifacts
+      - name: Attach the Flatpak to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "build-${{ github.run_number }}" artifacts/Cinema.flatpak --repo "${{ github.repository }}" --clobber
+
   build-launcher:
     runs-on: ubuntu-latest
     timeout-minutes: 30

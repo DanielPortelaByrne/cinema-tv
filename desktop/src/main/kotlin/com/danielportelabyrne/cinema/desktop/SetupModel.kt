@@ -389,7 +389,26 @@ class SetupModel(private val m: CinemaModel) {
         list += SetupRow("Helper services", if (extras.isEmpty()) "None" else extras.joinToString(" and ").replaceFirstChar { it.uppercase() }, listOf(RowButton("Change") { advancedStep() }))
         list += SetupRow("Controller", m.pads().ifEmpty { listOf("None found. The keyboard works too: arrows, Enter and Esc.") }.joinToString(" · "), emptyList())
         list += SetupRow("Reset", "Forget every server, sign-in and setting on this device", listOf(RowButton("Reset everything", danger = true) { confirmReset() }))
-        list += SetupRow("Cinema for Linux", "Version 1.0 · video plays in mpv", listOf(RowButton("Quit Cinema", danger = true) { m.quit() }))
+        val up = m.updates.updater
+        fun how() = if (up.auto) "updates install by themselves" else "you're asked before each update"
+        val waiting = up.waiting.takeIf { it > 0 }?.let { " · build $it starts next time" }.orEmpty()
+        lateinit var updates: SetupRow
+        updates = SetupRow("Updates", "Cinema build ${up.currentBuild} · ${how()}$waiting", listOf(
+            RowButton("Check for updates") {
+                updates.detail = "Checking for a newer build…"
+                m.updates.checkNow { u, reached ->
+                    updates.detail = when {
+                        u != null -> listOfNotNull("Build ${u.build} is ready", com.danielportelabyrne.cinema.data.update.UpdateCheck.headline(u)).joinToString(" · ")
+                        !reached -> "Couldn't reach GitHub just now · build ${up.currentBuild}"
+                        else -> "Up to date · build ${up.currentBuild} · ${how()}"
+                    }
+                    if (u != null) m.updates.offer(u)
+                }
+            },
+            RowButton(if (up.auto) "Turn off automatic" else "Turn on automatic") { up.auto = !up.auto; overview() },
+        ))
+        list += updates
+        list += SetupRow("Cinema for Linux", "Build ${up.currentBuild} · video plays in mpv", listOf(RowButton("Quit Cinema", danger = true) { m.quit() }))
         rows = list
         primary("Done", "check") { close() }
     }

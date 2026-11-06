@@ -39,8 +39,18 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
+// The build number (CI passes its run number; a build made by hand is 0), which the app compares with GitHub's releases.
+val cinemaBuild = providers.gradleProperty("cinema.versionCode").orElse("0")
+val buildInfo by tasks.registering {
+    val out = layout.buildDirectory.dir("generated/build-info")
+    inputs.property("build", cinemaBuild)
+    outputs.dir(out)
+    doLast { out.get().file("cinema-build.txt").asFile.apply { parentFile.mkdirs(); writeText(cinemaBuild.get()) } }
+}
+
 // The app's own typefaces, shared with the TV build.
 tasks.processResources {
+    from(buildInfo)
     from("../app/src/main/res/font") { into("fonts") }
     // ...and its icons and logo (Android vector drawables, which Compose for Desktop reads as they are).
     from("../app/src/main/res/drawable") { include("ic_cin_*.xml", "cinema_mark.xml", "ic_gear.xml"); into("icons") }

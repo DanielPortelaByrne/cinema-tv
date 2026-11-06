@@ -193,6 +193,8 @@ class CinemaModel(
     var onQuit: () -> Unit = {}
 
     val setup = SetupModel(this)
+    /** Cinema updating itself from its GitHub releases (see DeckUpdates). */
+    val updates = com.danielportelabyrne.cinema.desktop.update.DeckUpdates(this)
 
     val player = Player(client, onState = { s -> scope.launch(ui) { playerState = s } }, onClosed = { scope.launch(ui) { afterPlayback() } })
 
@@ -216,6 +218,7 @@ class CinemaModel(
         stack.clear()
         if (client.isConnected || settings.setupDone) { stack += Route.Browse; refresh(); loadStorage() }
         else { stack += Route.Setup; setup.startFirstRun() }
+        updates.onStart()
     }
 
     fun <T> bg(work: () -> T, then: (T) -> Unit) {

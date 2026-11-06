@@ -24,6 +24,7 @@ finish-args:
   - --device=all               # the GPU, and game controllers (/dev/input, hidraw for the Deck's own controls)
   - --env=JAVA_HOME=/app/jre
   - --talk-name=org.freedesktop.ScreenSaver   # keep the screen awake during a film
+  - --talk-name=org.freedesktop.Flatpak       # install its own updates (flatpak-spawn --host flatpak install)
 
 cleanup:
   - /include
