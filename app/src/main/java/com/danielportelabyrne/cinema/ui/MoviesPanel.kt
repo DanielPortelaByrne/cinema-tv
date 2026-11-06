@@ -4361,9 +4361,28 @@ class MoviesPanel(
         if (spotlight) words.addView(Cinema.text(activity, "Spotlight", 16, Cinema.SAFFRON, weight = 700, tracking = 0.2f, caps = true),
             LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = Cinema.px(activity, 6) })
         val nameSize = when { spotlight -> 50; w >= STILL_W -> 30; else -> 25 }
-        words.addView(Cinema.text(activity, t.name, nameSize, Cinema.CREAM, serif = true, weight = 500).apply {
+        val name = Cinema.text(activity, t.name, nameSize, Cinema.CREAM, serif = true, weight = 500).apply {
             maxLines = if (spotlight) 2 else 1; ellipsize = android.text.TextUtils.TruncateAt.END
-        })
+        }
+        // The title's own logo, as on its poster, when one exists; the name in type until it arrives, or if there is none.
+        val logoW = if (spotlight) w / 2 else w * 3 / 5
+        val logoH = when { spotlight -> 150; w >= STILL_W -> 92; else -> 72 }
+        val logo = android.widget.ImageView(activity).apply {
+            scaleType = android.widget.ImageView.ScaleType.FIT_START; adjustViewBounds = true; visibility = View.GONE
+            maxWidth = Cinema.px(activity, if (spotlight) w / 2 else w * 3 / 5); maxHeight = Cinema.px(activity, logoH)
+            contentDescription = t.name
+        }
+        val nameSlot = FrameLayout(activity)
+        nameSlot.addView(name, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
+        nameSlot.addView(logo, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { bottomMargin = Cinema.px(activity, if (spotlight) 12 else 8) })
+        words.addView(nameSlot, LinearLayout.LayoutParams(-2, -2))
+        t.imdbId?.takeIf { it.startsWith("tt") }?.let { imdb ->
+            images.loadLogo(LOGO_URL.format(imdb), Cinema.px(activity, logoW.coerceAtLeast(1)), pageTag) { b ->
+                logo.setImageBitmap(b); logo.visibility = View.VISIBLE
+                if (com.danielportelabyrne.cinema.design.Motion.animationsOn(logo)) { logo.alpha = 0f; logo.animate().alpha(1f).setDuration(220).start(); name.animate().alpha(0f).setDuration(220).withEndAction { name.visibility = View.GONE }.start() }
+                else name.visibility = View.GONE
+            }
+        }
         subline(t).takeIf { it.isNotBlank() }?.let {
             words.addView(Cinema.text(activity, it, if (spotlight) 20 else 16, Cinema.alpha(Cinema.CREAM, 0.72f)).apply { maxLines = 1 },
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 4) })
@@ -4455,6 +4474,8 @@ class MoviesPanel(
         const val STILL_W = 520; const val STILL_H = 292
         const val SMALL_STILL_W = 400; const val SMALL_STILL_H = 225
         const val SPOTLIGHT_W = 880; const val SPOTLIGHT_H = 495
+        /** Title logos (transparent PNGs) by IMDb id, from the artwork service Stremio uses. No key; 404 when there is none. */
+        const val LOGO_URL = "https://images.metahub.space/logo/medium/%s/img"
         const val HERO_HEIGHT = 762      // mockup px: the first row's heading sits at 812
         const val HERO_TURN_MS = 9_000L  // the featured title turns this often
         const val RAIL_WIDTH = 92        // mockup px, collapsed

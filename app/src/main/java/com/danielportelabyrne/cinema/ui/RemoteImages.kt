@@ -59,6 +59,10 @@ class RemoteImages private constructor(context: Context) {
     fun loadShadedPoster(url: String, headers: Map<String, String>, maxWidth: Int, tag: Any?, done: (Bitmap) -> Unit) =
         load(url, headers, maxWidth, tag, SHADED, false, done)
 
+    /** A title logo: a transparent PNG, so it keeps its alpha channel (posters and stills are opaque and decode smaller). */
+    fun loadLogo(url: String, maxWidth: Int, tag: Any?, done: (Bitmap) -> Unit) =
+        load(url, emptyMap(), maxWidth, tag, LOGO, false, done)
+
     fun loadShadedPosterPriority(url: String, maxWidth: Int, tag: Any?, done: (Bitmap) -> Unit) {
         val at = Perf.now()
         load(url, emptyMap(), maxWidth, tag, SHADED, true) { b ->
@@ -82,6 +86,7 @@ class RemoteImages private constructor(context: Context) {
     companion object {
         @Volatile private var shared: RemoteImages? = null
         private const val SHADED = "shaded"
+        private const val LOGO = "logo"
         private const val TAG = "Images"
 
         fun shared(context: Context): RemoteImages = shared ?: synchronized(this) {
@@ -119,7 +124,7 @@ class RemoteImages private constructor(context: Context) {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             if (bounds.outWidth <= 0) return null
-            val o = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+            val o = BitmapFactory.Options().apply { inPreferredConfig = if (variant == LOGO) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565 }
             if (maxWidth > 0 && bounds.outWidth > maxWidth) {
                 var sample = 1
                 while (bounds.outWidth / (sample * 2) >= maxWidth) sample *= 2
