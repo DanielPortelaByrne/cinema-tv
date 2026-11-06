@@ -26,4 +26,11 @@ class IntegrationTest {
     @Test fun keys_are_stable() {
         assertEquals("integration_letterboxd", Integration.LETTERBOXD.key)
     }
+
+    @Test fun suggestashow_is_off_until_a_server_is_set_up() {
+        val settings = CinemaSettings(MemoryPlatform())
+        assertFalse(settings.isOn(Integration.SUGGESTASHOW))
+        settings.suggestashowUrl = "192.168.1.20:8099/"
+        assertEquals("http://192.168.1.20:8099", settings.suggestashowUrl)
+    }
 }

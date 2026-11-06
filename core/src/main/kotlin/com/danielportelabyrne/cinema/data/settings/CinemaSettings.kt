@@ -63,6 +63,11 @@ class CinemaSettings(platform: Platform) {
         get() = prefs.getString("stream_service", null)?.takeIf { it.isNotBlank() }
         set(v) { prefs.edit().putString("stream_service", cleanUrl(v)).apply() }
 
+    /** Optional: the address of a suggestashow server for Picked for you. Blank means the picks are worked out here. */
+    var suggestashowUrl: String?
+        get() = prefs.getString("suggestashow", null)?.takeIf { it.isNotBlank() }
+        set(v) { prefs.edit().putString("suggestashow", cleanUrl(v)).apply() }
+
     fun manualArr(arr: Arr): ManualArr? {
         val url = prefs.getString("manual_${arr.name}", null)?.takeIf { it.isNotBlank() } ?: return null
         val key = secrets.get("manual_${arr.name}_key") ?: return null

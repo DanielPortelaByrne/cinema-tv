@@ -221,7 +221,13 @@ class MoviesPanel(
     /** Groups this page's picture requests, so a rebuilt page drops the ones the old page still had queued. */
     private var pageTag = Any()
     private val catalog = CatalogRepository(AndroidPlatform(activity))
-    private val picks by lazy { com.danielportelabyrne.cinema.data.movies.PicksRepository(AndroidPlatform(activity), seerr, jellyfin, com.danielportelabyrne.cinema.data.movies.WatchHistory(AndroidPlatform(activity))) }
+    private val picks by lazy {
+        val platform = AndroidPlatform(activity)
+        val settings = com.danielportelabyrne.cinema.data.settings.CinemaSettings(platform)
+        com.danielportelabyrne.cinema.data.movies.PicksRepository(platform, seerr, jellyfin, com.danielportelabyrne.cinema.data.movies.WatchHistory(platform)) {
+            settings.suggestashowUrl?.takeIf { integrationOn(Integration.SUGGESTASHOW) }?.let { com.danielportelabyrne.cinema.data.movies.SuggestashowClient(it, jellyfin::authorization) }
+        }
+    }
     private val ui = Handler(Looper.getMainLooper())
     @Volatile private var generation = 0
     private var current: Dest = Dest.Home
@@ -2579,8 +2585,8 @@ class MoviesPanel(
         return Title(
             key = "tmdb:" + com.danielportelabyrne.cinema.data.movies.Picks.key(s.kind, s.tmdbId), kind = s.kind, name = s.name, year = s.year,
             overview = s.overview, runtimeMin = null, genres = s.genres, age = null, imdbScore = null,
-            posterUrl = s.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" },
-            backdropUrl = s.backdropPath?.let { "https://image.tmdb.org/t/p/original$it" },
+            posterUrl = s.rowPoster,
+            backdropUrl = s.heroBackdrop,
             imdbId = null, tmdbId = s.tmdbId.toString()
         )
     }
@@ -2708,6 +2714,7 @@ class MoviesPanel(
             activity.runOnUiThread { if (saved.isNotEmpty()) show(saved) }
             val fresh = picks.fresh()
             activity.runOnUiThread { if (fresh != null) show(fresh) else if (saved.isEmpty()) row.hide() }
+            fresh?.let { picks.shown(it) }
         }
     }
 

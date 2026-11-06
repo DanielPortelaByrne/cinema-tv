@@ -17,9 +17,16 @@ data class HistoryEntry(val tmdbId: Long, val kind: Kind, val name: String, val 
 /** A title TMDB suggests from a seed (via Seerr), in TMDB's order. [owned] is Seerr saying it is already on the server. */
 data class Suggestion(
     val tmdbId: Long, val kind: Kind, val name: String, val year: Int?, val overview: String?,
-    val posterPath: String?, val backdropPath: String?, val genres: List<String>, val vote: Double?, val owned: Boolean
+    val posterPath: String?, val backdropPath: String?, val genres: List<String>, val vote: Double?, val owned: Boolean,
+    val posterUrl: String? = null, val backdropUrl: String? = null
 ) {
     val key: String get() = Picks.key(kind, tmdbId)
+
+    /** The poster for a row: the full address a server sent, else TMDB's at row size. */
+    val rowPoster: String? get() = posterUrl ?: posterPath?.let { "https://image.tmdb.org/t/p/w342$it" }
+
+    /** The backdrop for the featured title: the full address a server sent, else TMDB's full size. */
+    val heroBackdrop: String? get() = backdropUrl ?: backdropPath?.let { "https://image.tmdb.org/t/p/original$it" }
 }
 
 /** A pick, with the seed that did most to suggest it ("Because you watched Inception"). */
@@ -140,6 +147,7 @@ object Picks {
             val s = p.suggestion
             put(JSONObject().put("id", s.tmdbId).put("kind", s.kind.name).put("name", s.name).put("year", s.year ?: 0)
                 .put("overview", s.overview ?: "").put("poster", s.posterPath ?: "").put("backdrop", s.backdropPath ?: "")
+                .put("posterUrl", s.posterUrl ?: "").put("backdropUrl", s.backdropUrl ?: "")
                 .put("genres", JSONArray(s.genres)).put("vote", s.vote ?: 0.0).put("score", p.score).put("because", p.because))
         }
     }.toString()
@@ -151,7 +159,8 @@ object Picks {
             val g = o.optJSONArray("genres")
             Pick(Suggestion(o.getLong("id"), Kind.valueOf(o.getString("kind")), o.getString("name"), o.optInt("year").takeIf { it > 0 },
                 o.optString("overview").ifBlank { null }, o.optString("poster").ifBlank { null }, o.optString("backdrop").ifBlank { null },
-                (0 until (g?.length() ?: 0)).map { g!!.getString(it) }, o.optDouble("vote").takeIf { it > 0 }, false),
+                (0 until (g?.length() ?: 0)).map { g!!.getString(it) }, o.optDouble("vote").takeIf { it > 0 }, false,
+                o.optString("posterUrl").ifBlank { null }, o.optString("backdropUrl").ifBlank { null }),
                 o.optDouble("score"), o.getString("because"))
         }
     } catch (_: Exception) { emptyList() }
