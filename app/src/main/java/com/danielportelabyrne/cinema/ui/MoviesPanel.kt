@@ -271,8 +271,20 @@ class MoviesPanel(
     private fun showAmbient() {
         if (ambientView != null) return
         val host = overlay as? ViewGroup ?: return
-        overlay.setBackgroundColor(Cinema.BG)
+        // The ground is opaque and fills the screen, so the overlay needs no fill of its own beneath it.
+        overlay.background = null
         ambientView = AmbientBackground(activity).also { host.addView(it, 0, FrameLayout.LayoutParams(-1, -1)) }
+    }
+
+    /**
+     * While the pages are up, nothing beneath their ground is ever seen: the window's and the root's own fills are taken
+     * away, as every full-screen layer is painted on every frame (three of them were most of a Chromecast HD's work
+     * while a page scrolled). They come back when the pages close, for the screens that show on them.
+     */
+    private fun underlayers(on: Boolean) {
+        val ink = Cinema.BG
+        activity.window.setBackgroundDrawable(if (on) android.graphics.drawable.ColorDrawable(ink) else null)
+        activity.findViewById<View>(R.id.cinemaRoot)?.let { if (on) it.setBackgroundColor(ink) else it.background = null }
     }
 
     /** Where page content starts: clear of the floating rail (184 mockup px), and its right edge (96). */
@@ -284,6 +296,7 @@ class MoviesPanel(
         Perf.begin("movies.open->firstRow"); Perf.begin("movies.open->firstPoster"); Perf.begin("movies.open->hero")
         overlay.visibility = View.VISIBLE
         showAmbient()
+        underlayers(on = false)
         com.danielportelabyrne.cinema.design.Motion.enter(overlay, null, 0f)
         if (!topBuilt) { buildTop(); topBuilt = true }
         syncIntegrations()
@@ -324,6 +337,7 @@ class MoviesPanel(
     fun hide() {
         closePhoneTyping()
         if (voiceActive) voice?.cancel(); closeStreamLoading(); closeDetail(restoreFocus = false); overlay.visibility = View.GONE; ui.removeCallbacks(heroTick)
+        underlayers(on = true)
         // Home is kept for a quick reopen, so its rows keep loading; any other page is dropped.
         if (current !== Dest.Home || trail.isNotEmpty()) { generation++; builtAt = 0L }
     }
@@ -1535,7 +1549,7 @@ class MoviesPanel(
                                     val bottom = maxOf(bounds.bottom, bounds.top + Cinema.px(activity, 488))
                                     val visible = bounds.top < page.scrollY + page.height && bottom > page.scrollY &&
                                         left < row.scroller.scrollX + row.scroller.width - row.scroller.paddingRight && right > row.scroller.scrollX
-                                    val done: (Bitmap) -> Unit = { b -> if (gen == generation) { v.setShadedPoster(b); frost?.refresh(); Perf.mark("lb poster drawn ${f.slug}") } }
+                                    val done: (Bitmap) -> Unit = { b -> if (gen == generation) { v.setShadedPoster(b); Perf.mark("lb poster drawn ${f.slug}") } }
                                     if (visible) images.loadShadedPosterPriority(url, Cinema.px(activity, 260), tag, done)
                                     else images.loadShadedPoster(url, emptyMap(), Cinema.px(activity, 260), tag, done)
                                 }
@@ -2595,7 +2609,7 @@ class MoviesPanel(
         val section = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false; visibility = View.GONE }
         section.addView(View(activity).apply { background = StatementBand(Cinema.pxf(activity, 380)) }, FrameLayout.LayoutParams(-1, -1))
         // The Downloads ribbon, looping in from the right edge, quieter here: the section's signature.
-        section.addView(FrameLayout(activity).apply { alpha = 0.55f; addView(RibbonView.downloads(activity), FrameLayout.LayoutParams(-1, -1)) },
+        section.addView(RibbonView.downloads(activity, opacity = 0.47f),
             FrameLayout.LayoutParams(-1, Cinema.px(activity, 300)))
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
@@ -4657,7 +4671,7 @@ class MoviesPanel(
         if (badge && e.library != null) card.badge()
         else if (badge) whenInLibrary(e) { card.badge() }
         e.title.posterUrl?.let { u ->
-            val load = { images.loadShadedPoster(u, e.posterHeaders, 332, pageTag) { b: Bitmap -> card.setShadedPoster(b); frost?.refresh(); Perf.end("movies.open->firstPoster") } }
+            val load = { images.loadShadedPoster(u, e.posterHeaders, 332, pageTag) { b: Bitmap -> card.setShadedPoster(b); Perf.end("movies.open->firstPoster") } }
             if (defer != null) defer.deferred += holder to load else load()
         }
     }
@@ -4712,7 +4726,8 @@ class MoviesPanel(
         nameSlot.addView(name, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
         nameSlot.addView(logo, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { bottomMargin = Cinema.px(activity, if (spotlight) 12 else 8) })
         words.addView(nameSlot, LinearLayout.LayoutParams(-2, -2))
-        t.imdbId?.takeIf { it.startsWith("tt") }?.let { imdb ->
+        // Logos only on the large stills: the smaller ones (and a grid's many) keep the name in type, which costs no picture.
+        t.imdbId?.takeIf { it.startsWith("tt") && (spotlight || w >= STILL_W) }?.let { imdb ->
             images.loadLogo(LOGO_URL.format(imdb), Cinema.px(activity, logoW.coerceAtLeast(1)), pageTag) { b ->
                 logo.setImageBitmap(b); logo.visibility = View.VISIBLE
                 if (com.danielportelabyrne.cinema.design.Motion.animationsOn(logo)) { logo.alpha = 0f; logo.animate().alpha(1f).setDuration(220).start(); name.animate().alpha(0f).setDuration(220).withEndAction { name.visibility = View.GONE }.start() }
@@ -4730,8 +4745,9 @@ class MoviesPanel(
         }
         card.poster.addView(words, FrameLayout.LayoutParams(-1, -1))
         if (libraryChip) { if (e.library != null) card.chip("In library") else whenInLibrary(e) { card.chip("In library") } }
+        // No frost refresh when it arrives: card pictures are hardware bitmaps, which the rail's blur leaves out anyway.
         (t.backdropUrl ?: t.posterUrl)?.let { u ->
-            val load = { images.loadShadedPoster(u, e.posterHeaders, w, pageTag) { b: Bitmap -> card.setShadedPoster(b); frost?.refresh(); Perf.end("movies.open->firstPoster") } }
+            val load = { images.loadShadedPoster(u, e.posterHeaders, w, pageTag) { b: Bitmap -> card.setShadedPoster(b); Perf.end("movies.open->firstPoster") } }
             if (defer != null) defer.deferred += (holder ?: card) to load else load()
         }
         card.onFocus = { lit -> if (lit) { reveal(card); prefetchOnRest(card, e) } }
@@ -4866,28 +4882,31 @@ class MoviesPanel(
      * by a soft terracotta glow low on the left and a fainter saffron one at the right, like stage light on a curtain.
      */
     private class StatementBand(private val glowRadius: Float) : Drawable() {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private var band: android.graphics.Shader? = null
-        private val glows = ArrayList<Triple<Float, Float, Pair<Float, android.graphics.Shader>>>()
-        // The gradients depend only on the size, so they are made once per size, not on every draw.
+        // Painted once per size into a bitmap a quarter the size and blitted after: as live gradients its two large glows
+        // were computed for every pixel on every frame, a real cost on a weak TV GPU.
+        private var cache: android.graphics.Bitmap? = null
+        private val blit = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
         override fun onBoundsChange(b: android.graphics.Rect) {
-            val w = b.width().toFloat(); val h = b.height().toFloat()
-            glows.clear(); band = null
-            if (w <= 0f || h <= 0f) return
-            band = android.graphics.LinearGradient(0f, b.top.toFloat(), 0f, b.bottom.toFloat(),
+            cache = null
+            val w = b.width(); val h = b.height()
+            if (w <= 0 || h <= 0) return
+            val sw = (w / 2).coerceAtLeast(1); val sh = (h / 2).coerceAtLeast(1)
+            val bmp = android.graphics.Bitmap.createBitmap(sw, sh, android.graphics.Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
+            p.shader = android.graphics.LinearGradient(0f, 0f, 0f, sh.toFloat(),
                 intArrayOf(0, Cinema.alpha(0xFF1C110C.toInt(), 0.92f), Cinema.alpha(0xFF160D09.toInt(), 0.92f), 0), floatArrayOf(0f, 0.16f, 0.84f, 1f), android.graphics.Shader.TileMode.CLAMP)
+            c.drawRect(0f, 0f, sw.toFloat(), sh.toFloat(), p)
             fun glow(cx: Float, cy: Float, r: Float, color: Int) {
-                glows += Triple(cx, cy, r to android.graphics.RadialGradient(cx, cy, r, intArrayOf(color, Cinema.alpha(color, 0f)), null, android.graphics.Shader.TileMode.CLAMP))
+                p.shader = android.graphics.RadialGradient(cx, cy, r, intArrayOf(color, Cinema.alpha(color, 0f)), null, android.graphics.Shader.TileMode.CLAMP)
+                c.drawCircle(cx, cy, r, p)
             }
-            glow(b.left + w * 0.12f, b.top + h * 0.62f, glowRadius * 1.6f, Cinema.alpha(Cinema.STRIPE_TERRA, 0.16f))
-            glow(b.left + w * 0.86f, b.top + h * 0.4f, glowRadius * 1.2f, Cinema.alpha(Cinema.STRIPE_SAFFRON, 0.07f))
+            glow(sw * 0.12f, sh * 0.62f, glowRadius * 0.8f, Cinema.alpha(Cinema.STRIPE_TERRA, 0.16f))
+            glow(sw * 0.86f, sh * 0.4f, glowRadius * 0.6f, Cinema.alpha(Cinema.STRIPE_SAFFRON, 0.07f))
+            bmp.prepareToDraw()
+            cache = bmp
         }
-        override fun draw(canvas: Canvas) {
-            val s = band ?: return
-            paint.shader = s; canvas.drawRect(RectF(bounds), paint)
-            glows.forEach { (x, y, g) -> paint.shader = g.second; canvas.drawCircle(x, y, g.first, paint) }
-            paint.shader = null
-        }
+        override fun draw(canvas: Canvas) { cache?.let { canvas.drawBitmap(it, null, bounds, blit) } }
         override fun setAlpha(alpha: Int) {}
         override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
         @Deprecated("Deprecated in Java") override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT

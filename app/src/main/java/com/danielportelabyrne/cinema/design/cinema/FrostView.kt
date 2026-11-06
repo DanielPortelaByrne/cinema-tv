@@ -121,6 +121,9 @@ class FrostView(context: Context, private val sources: List<View>, private val r
      * the handful under the rail. Backgrounds and pictures are drawn; outlines and shadows are not (the blur hides them).
      */
     private fun drawUnder(v: View, c: Canvas) {
+        // Card pictures are hardware bitmaps, which a software canvas cannot draw: under the blur their card's own colour
+        // stands in for them, which costs nothing and reads the same once blurred.
+        if (v is android.widget.ImageView && ((v.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.config == android.graphics.Bitmap.Config.HARDWARE)) return
         if (v !is android.view.ViewGroup) { v.draw(c); return }
         v.background?.let { bg -> bg.setBounds(0, 0, v.width, v.height); bg.draw(c) }
         for (i in 0 until v.childCount) {

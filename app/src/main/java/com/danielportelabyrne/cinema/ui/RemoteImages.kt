@@ -140,6 +140,12 @@ class RemoteImages private constructor(context: Context) {
                     shader = android.graphics.LinearGradient(0f, 0f, 0f, h, intArrayOf(0, 0, 0x40000000), null, android.graphics.Shader.TileMode.CLAMP)
                 })
             }
+            // Posters, stills and logos only ever go into a card's picture, drawn by the GPU: make them hardware bitmaps
+            // here, on the decoding thread, so their upload to the GPU happens now rather than inside a scrolling frame
+            // (on a Chromecast HD that upload was most of what made scrolling stutter). Everything else stays readable.
+            if ((variant == SHADED || variant == LOGO) && android.os.Build.VERSION.SDK_INT >= 26) {
+                bmp.copy(Bitmap.Config.HARDWARE, false)?.let { hw -> bmp.recycle(); return hw }
+            }
             // Hand the texture upload to the render thread ahead of the first draw, instead of inside a scrolling frame.
             bmp.prepareToDraw()
             return bmp

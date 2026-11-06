@@ -26,6 +26,9 @@ class RibbonView(context: Context, private val path: Path, private val widthPx: 
 
     init { isFocusable = false; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
 
+    /** One bitmap, drawn once: its alpha applies straight to that draw, with no offscreen layer each frame. */
+    override fun hasOverlappingRendering() = false
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         cache?.recycle(); cache = null
         if (w <= 0 || h <= 0) return
@@ -57,11 +60,11 @@ class RibbonView(context: Context, private val path: Path, private val widthPx: 
 
     companion object {
         /** Downloads: a loop entering from the right edge, top right (`M1990 82H1640A62 62 0 0 0 1640 206H1990`). */
-        fun downloads(context: Context) = RibbonView(context, Path().apply {
+        fun downloads(context: Context, opacity: Float = 0.85f) = RibbonView(context, Path().apply {
             moveTo(1990f, 82f); lineTo(1640f, 82f)
             arcTo(android.graphics.RectF(1578f, 82f, 1702f, 206f), 270f, -180f)
             lineTo(1990f, 206f)
-        }, 90f, 0.85f, Fade(true, listOf(0f to 0f, 0.45f to 0f, 0.8f to 1f, 1f to 1f)))
+        }, 90f, opacity, Fade(true, listOf(0f to 0f, 0.45f to 0f, 0.8f to 1f, 1f to 1f)))
 
         /** Stream loading: a stepped ribbon falling from the top left (`M300 -60V150A80 80 0 0 0 380 230H560A80 80 0 0 1 640 310V560`). */
         fun loading(context: Context) = RibbonView(context, Path().apply {
