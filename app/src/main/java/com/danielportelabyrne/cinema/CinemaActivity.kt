@@ -42,6 +42,8 @@ class CinemaActivity : AppCompatActivity() {
     private lateinit var setup: SetupFlow
     private lateinit var jellyfin: JellyfinClient
     private var splash: SplashView? = null
+    /** Cinema updating itself from its GitHub releases: offered when a newer build is out, and from Settings. */
+    private lateinit var updates: com.danielportelabyrne.cinema.update.UpdatePrompt
     private var quietOpen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,6 +56,7 @@ class CinemaActivity : AppCompatActivity() {
         PhoneInput.attach(this)
         overlay = findViewById(R.id.moviesOverlay)
         infoSheet = InfoSheet(findViewById(R.id.infoSheet))
+        updates = com.danielportelabyrne.cinema.update.UpdatePrompt(this, infoSheet)
         val platform = AndroidPlatform(this)
         val settings = CinemaSettings(platform)
         val addonSync = com.danielportelabyrne.cinema.data.stremio.StremioAddonSync(
@@ -69,7 +72,7 @@ class CinemaActivity : AppCompatActivity() {
             )
         } }
         val seerr = SeerrClient(AndroidPlatform(this))
-        setup = SetupFlow(this, findViewById(R.id.setupHost), infoSheet, jellyfin, seerr, settings) { changed ->
+        setup = SetupFlow(this, findViewById(R.id.setupHost), infoSheet, jellyfin, seerr, settings, updates) { changed ->
             if (changed) { moviesPanel.reload(); if (moviesPanel.isVisible) moviesPanel.hide() }
             if (!moviesPanel.isVisible) openMovies()
             else returnFocus?.takeIf { it.isAttachedToWindow }?.requestFocus()
@@ -147,7 +150,7 @@ class CinemaActivity : AppCompatActivity() {
     private fun openMovies() {
         if (quietOpen || !OpeningState.due(this)) { quietOpen = false; moviesPanel.show(); return }
         splash = SplashView.show(findViewById<ViewGroup>(R.id.cinemaRoot), skip = false,
-            covered = { if (!isDestroyed) openingHeld() }, done = { splash = null })
+            covered = { if (!isDestroyed) openingHeld() }, done = { splash = null; offerUpdate() })
         if (splash == null) moviesPanel.show()
     }
 
@@ -242,6 +245,10 @@ class CinemaActivity : AppCompatActivity() {
     private fun handleDebugIntent(intent: android.content.Intent?) {
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         intent?.getStringExtra("debug_setup_step")?.let { if (moviesPanel.isVisible) moviesPanel.hide(); setup.debugOpen(it); return }
+        // "debug_update_url": offers the app file at that address as build 999999, to try the whole update on a device.
+        intent?.getStringExtra("debug_update_url")?.let { url ->
+            updates.offer(com.danielportelabyrne.cinema.data.update.AvailableUpdate(999_999, "Test build", url, 0L, "A test of updating in the app")); return
+        }
         if (setup.isVisible) return
         intent?.getStringExtra("debug_cinema_dest")?.let { moviesPanel.debugGo(it) }
     }
@@ -249,6 +256,13 @@ class CinemaActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (::moviesPanel.isInitialized) moviesPanel.onResume()
+        offerUpdate()
+    }
+
+    /** Looks for a newer build (at most every few hours) and offers it over the pages, never over setup or the opening. */
+    private fun offerUpdate() {
+        if (!::updates.isInitialized || !::moviesPanel.isInitialized) return
+        updates.checkInBackground { !isFinishing && moviesPanel.isVisible && !setup.isVisible && !infoSheet.isVisible && splash == null }
     }
 
     override fun onDestroy() {

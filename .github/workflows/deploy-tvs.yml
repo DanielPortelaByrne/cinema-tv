@@ -40,12 +40,35 @@ jobs:
           printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
       - name: Build the release APK
-        run: ./gradlew --no-daemon :app:assembleRelease
+        # The run number is the build number: TVs compare it with their own to know a release is newer.
+        run: ./gradlew --no-daemon :app:assembleRelease -Pcinema.versionCode=${{ github.run_number }}
       - uses: actions/upload-artifact@v4
         with:
           name: cinema-tv-release-apk
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 7
+
+  # Each build pushed to main becomes a GitHub release (build-<n>), which Cinema finds and offers to install itself.
+  publish:
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cinema-tv-release-apk
+          path: artifacts
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          mv artifacts/app-release.apk cinema-tv.apk
+          echo "${MESSAGE:-Build ${{ github.run_number }}}" | grep -v '^Co-Authored-By:' > notes.md
+          gh release create "build-${{ github.run_number }}" cinema-tv.apk --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" --title "Cinema build ${{ github.run_number }}" --notes-file notes.md --latest
 
   build-launcher:
     runs-on: ubuntu-latest

@@ -61,6 +61,8 @@ class SetupFlow(
     private val jellyfin: JellyfinClient,
     private val seerr: SeerrClient,
     private val settings: CinemaSettings,
+    /** Cinema's own updates, for the Updates row; none in setups that cannot update themselves. */
+    private val updates: com.danielportelabyrne.cinema.update.UpdatePrompt? = null,
     /** Setup finished or Settings closed; [changed] when a server, sign-in or region changed, so Cinema rebuilds. */
     private val onClosed: (changed: Boolean) -> Unit
 ) {
@@ -660,6 +662,25 @@ class SetupFlow(
         val extras = listOfNotNull(settings.requestHelperUrl?.let { "request helper" }, settings.streamServiceUrl?.let { "stream service" })
         p.row("Helper services", if (extras.isEmpty()) "None" else extras.joinToString(" and ").replaceFirstChar { it.uppercase() })
             .button("Change") { advancedStep() }
+
+        updates?.let { up ->
+            val build = up.updater.currentBuild
+            val row = p.row("Updates", "Cinema build $build")
+            row.button("Check for updates") {
+                row.detail.text = "Checking for a newer build…"
+                up.checkNow { u, reached ->
+                    if (token != pageToken) return@checkNow
+                    when {
+                        u != null -> {
+                            row.detail.text = listOfNotNull("Build ${u.build} is ready", com.danielportelabyrne.cinema.data.update.UpdateCheck.headline(u)).joinToString(" · ")
+                            up.offer(u)
+                        }
+                        !reached -> row.detail.text = "Couldn't reach GitHub just now · build $build"
+                        else -> row.detail.text = "Up to date · build $build"
+                    }
+                }
+            }
+        }
 
         p.row("Save sign-in", "Download your settings and sign-ins to your phone, to restore after an update or reinstall")
             .button("Save to phone") { phoneStep(PhoneKind.SAVE, back = ::overview) }

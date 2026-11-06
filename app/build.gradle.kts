@@ -53,8 +53,10 @@ android {
         applicationId = "com.danielportelabyrne.cinema"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // CI numbers each build (-Pcinema.versionCode=<run number>), so a TV can tell a newer release from the one it runs.
+        val build = providers.gradleProperty("cinema.versionCode").orNull?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "1.$build"
     }
 
     signingConfigs {

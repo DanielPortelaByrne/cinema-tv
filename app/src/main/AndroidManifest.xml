@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Cinema installs its own updates (from its GitHub releases); Android still asks the viewer to confirm each one. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Voice search (asked for at runtime, the first time the mic is used). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
@@ -65,6 +67,8 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <receiver android:name=".update.AppUpdater$InstallResult" android:exported="false" />
 
         <provider
             android:name=".data.ContinueWatchingProvider"
