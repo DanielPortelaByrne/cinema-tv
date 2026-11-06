@@ -57,9 +57,12 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
     private val badgeText = Cinema.text(context, "", 13, Cinema.SAFFRON, weight = 700, tracking = 0.14f).apply { maxLines = 1 }
     private val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; clipChildren = false; clipToPadding = false }
     private val airs = Cinema.text(context, "", 18, Cinema.CREAM, weight = 600, tracking = 0.12f, caps = true).apply { visibility = GONE }
-    // Watch progress along the still's foot, saffron over a dark track like the Continue row.
-    private val track = View(context).apply { setBackgroundColor(0x66000000); visibility = GONE }
-    private val fill = View(context).apply { setBackgroundColor(Cinema.SAFFRON); visibility = GONE }
+    // Watch progress along the still's foot: the signature wavy bar, as on the Continue row, over a soft shade.
+    private val track = View(context).apply {
+        background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0, 0xB3080605.toInt()))
+        visibility = GONE
+    }
+    private val fill = com.danielportelabyrne.cinema.design.cinema.WaveBar(context, amplitudePx = 4f, wavelengthPx = 48f, thicknessPx = 9f).apply { visibility = GONE }
     private val texts = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val title = Cinema.text(context, name, 23, Cinema.CARD_TITLE, weight = 500).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
     private val meta = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -114,8 +117,8 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         still.addView(actions, LayoutParams(-1, -1))
         airs.setPadding(p(18), p(10), p(18), p(10)); airs.background = Cinema.glass(context, 22f, 0xA80C0806.toInt())
         still.addView(airs, LayoutParams(-2, -2, Gravity.CENTER))
-        still.addView(track, LayoutParams(-1, p(6), Gravity.BOTTOM))
-        still.addView(fill, LayoutParams(0, p(6), Gravity.BOTTOM or Gravity.START))
+        still.addView(track, LayoutParams(-1, p(48), Gravity.BOTTOM))
+        still.addView(fill, LayoutParams(-1, p(24), Gravity.BOTTOM).apply { leftMargin = p(8); rightMargin = p(8); bottomMargin = p(6) })
         column.addView(still, LinearLayout.LayoutParams(stillW, stillH))
 
         texts.addView(title, LinearLayout.LayoutParams(stillW, -2))
@@ -229,8 +232,7 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         val on = fraction != null && fraction > 0f
         track.visibility = if (on) VISIBLE else GONE
         fill.visibility = if (on) VISIBLE else GONE
-        if (on) (fill.layoutParams as LayoutParams).width = (stillW * fraction!!.coerceIn(0f, 1f)).toInt().coerceAtLeast(p(6))
-        fill.requestLayout()
+        if (on) fill.progress = fraction!!.coerceIn(0f, 1f)
     }
 
     fun setStill(bitmap: Bitmap) { image.setImageBitmap(bitmap); placeholder.visibility = GONE }

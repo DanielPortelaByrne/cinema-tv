@@ -106,9 +106,18 @@ class CinemaContentScrollView @JvmOverloads constructor(
         return null
     }
 
-    /** The first focusable card of [row], the one at its left edge. */
+    /**
+     * The first focusable card of [row], the one at its left edge. A grid row holds its cards in columns, so a column
+     * stands for its top card.
+     */
     private fun rowStart(row: HorizontalScrollView): View? {
         val cards = row.getChildAt(0) as? ViewGroup ?: return null
-        return (0 until cards.childCount).map { cards.getChildAt(it) }.firstOrNull { it.isFocusable && it.isShown }
+        fun first(v: View): View? = when {
+            !v.isShown -> null
+            v.isFocusable -> v
+            v is ViewGroup -> (0 until v.childCount).firstNotNullOfOrNull { first(v.getChildAt(it)) }
+            else -> null
+        }
+        return (0 until cards.childCount).firstNotNullOfOrNull { first(cards.getChildAt(it)) }
     }
 }

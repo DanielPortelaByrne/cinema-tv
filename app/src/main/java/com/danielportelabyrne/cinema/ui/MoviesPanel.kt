@@ -161,6 +161,7 @@ class MoviesPanel(
         object Series : Dest()
         object Docs : Dest()
         object Library : Dest()
+        object Watchlist : Dest()
         object Downloads : Dest()
         object Search : Dest()
         class OnService(val service: Service) : Dest()
@@ -184,6 +185,7 @@ class MoviesPanel(
         is Dest.OnService, is Dest.InGenre -> Dest.Home
         is Dest.LbPerson, is Dest.LbListPage, Dest.LbSearch, Dest.LbFollow -> Dest.Letterboxd
         is Dest.MusicAlbum, is Dest.MusicArtist -> Dest.Music
+        Dest.Watchlist -> Dest.Library
         else -> d
     }
 
@@ -337,6 +339,8 @@ class MoviesPanel(
      * Continue / Restart, the featured title's, and a series' episode cards (by reopening its page).
      */
     fun onResume() {
+        // An episode picked on the player's paused screen: find a copy of it, as the series page would.
+        PlayerActivity.takeEpisodeRequest()?.let { r -> if (isVisible) ui.post { streamPickedEpisode(r) } }
         if (!playbackStarted || !isVisible || !jellyfin.isConnected) return
         playbackStarted = false
         val gen = generation
@@ -371,7 +375,7 @@ class MoviesPanel(
     /** Debug builds only (see MainActivity): opens a destination by name for UI-review screenshots. */
     fun debugGo(name: String) {
         // "letterboxd", "downloads", "library": open that rail page.
-        when (name) { "letterboxd" -> { go(Dest.Letterboxd); return }; "downloads" -> { go(Dest.Downloads); return }; "library" -> { go(Dest.Library); return } }
+        when (name) { "letterboxd" -> { go(Dest.Letterboxd); return }; "downloads" -> { go(Dest.Downloads); return }; "library" -> { go(Dest.Library); return }; "watchlist" -> { go(Dest.Watchlist); return } }
         // "lbtest:/path/": fetch one Letterboxd page and log what came back (checks the browser fallback on a device).
         if (name.startsWith("lbtest:")) {
             val web = com.danielportelabyrne.cinema.data.letterboxd.LetterboxdWeb(activity)
@@ -381,6 +385,23 @@ class MoviesPanel(
                 android.util.Log.i("Letterboxd", "TEST ${name.removePrefix("lbtest:")}: ${html?.length ?: -1} chars, posters=${html?.let { Regex("data-item-slug=").findAll(it).count() } ?: 0}, ${System.currentTimeMillis() - t} ms")
                 html?.let { h -> java.io.File(activity.cacheDir, "lbdump").apply { mkdirs() }.resolve(name.removePrefix("lbtest:").trim('/').replace(Regex("[^a-zA-Z0-9]+"), "_") + ".html").writeText(h) }
             }
+            return
+        }
+        // "sheet": a download's sheet as it appears, to see its look.
+        if (name == "sheet") {
+            infoSheet.show("DOWNLOAD", "The Substance", "2.1 GB of 6.4 GB · 3 seeds", listOf("Downloading at 4.2 MB/s, about 17 minutes left."), null, listOf(
+                SheetAction("Download next", "Move to the front of the queue", primary = true) { },
+                SheetAction("Download now", "Bypass the queue; other downloads continue") { },
+                SheetAction("Cancel download", "Stop it and remove its partial files") { }))
+            return
+        }
+        // "sample:<imdb>:<season>:<episode>": a public sample video in the player as that episode, to see its paused screen.
+        if (name.startsWith("sample:")) {
+            val p = name.removePrefix("sample:").split(":")
+            val episode = p.getOrNull(1)?.toIntOrNull()?.let { s -> p.getOrNull(2)?.toIntOrNull()?.let { s to it } }
+            val candidate = StreamCandidate("sample", "Sample", "Sample", "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_30MB.mp4", null, StreamMetadata())
+            PlayerActivity.launch(activity, listOf(RankedStream(candidate, 100, 0L, false, Verdict.RECOMMENDED, null, emptyList())),
+                "Sample · S${episode?.first} E${episode?.second}", p.getOrNull(0), meta = PlayerMeta("Sample episode"), episode = episode)
             return
         }
         // "stream:<imdb>:<name>[:<season>:<episode>]": press Stream now on that title, for timing startup on a device.
@@ -747,17 +768,23 @@ class MoviesPanel(
         if (current !== Dest.Search) { if (voiceActive) voice?.cancel(); searchUi = null }
         frost?.post { frost?.refresh(500); updateEdgeFade() }
         builtAt = Perf.now(); builtConnected = jellyfin.isConnected; awaitingLibrary.clear()
+        ambientView?.palette = paletteFor(current)
         // Rows never wait for the library: they draw from the catalogue at once, and this one fetch badges them when it lands.
         jellyfin.takeIf { it.isConnected }?.let { j -> worker.execute { j.library(); ui.post { rebadge(gen) } } }
         when (val d = current) {
-            Dest.Home -> { buildHero(); continueRow(gen); picksRow(gen); libraryRow(gen, "My library", 18); serviceTiles(); genreTiles(); shelves(Catalog.homePage(), gen) }
+            // Home threads its own rows between the catalogue's: the spotlight right under the featured title, then what
+            // is part-watched, then Top 10, with picks, services, the library and genres spread through the rest.
+            Dest.Home -> { buildHero(); shelves(Catalog.homePage(), gen, mapOf(
+                1 to { continueRow(gen) }, 2 to { picksRow(gen) }, 3 to { serviceTiles(gen) },
+                5 to { libraryRow(gen, "My library", 18) }, 7 to { genreTiles() })) }
             Dest.Films -> { buildHero(); shelves(Catalog.filmsPage(), gen) }
             Dest.Series -> { buildHero(); shelves(Catalog.seriesPage(), gen) }
             Dest.Docs -> { buildHero(); shelves(Catalog.documentariesPage(), gen) }
             Dest.Library -> buildLibrary(gen)
+            Dest.Watchlist -> buildWatchlist(gen)
             Dest.Downloads -> buildDownloads(gen)
             Dest.Search -> buildSearch()
-            is Dest.OnService -> { buildHero(); heroTag("Streaming on", d.service.label); shelves(Catalog.servicePage(d.service), gen) }
+            is Dest.OnService -> { buildHero(); heroTag("Streaming on", d.service.label, Catalog.logoUrl(d.service)); shelves(Catalog.servicePage(d.service), gen) }
             is Dest.InGenre -> { buildHero(); heroTag("Genre", d.genre.label); shelves(Catalog.genrePage(d.genre), gen) }
             Dest.Letterboxd -> buildLetterboxd(gen)
             is Dest.LbPerson -> buildLbPerson(d.user, gen)
@@ -772,14 +799,43 @@ class MoviesPanel(
         Perf.took("movies.build (main thread)", Perf.now() - buildStart)
     }
 
+    /** Each section of the app has the same ground in its own colours (see AmbientBackground.Palette). */
+    private fun paletteFor(d: Dest): AmbientBackground.Palette = when (d) {
+        Dest.Home -> AmbientBackground.HOME
+        Dest.Films -> AmbientBackground.FILMS
+        Dest.Series -> AmbientBackground.SERIES
+        Dest.Docs -> AmbientBackground.DOCS
+        Dest.Library, Dest.Watchlist -> AmbientBackground.LIBRARY
+        Dest.Downloads -> AmbientBackground.DOWNLOADS
+        Dest.Search -> AmbientBackground.SEARCH
+        Dest.Settings -> AmbientBackground.SETTINGS
+        Dest.Letterboxd, Dest.LbSearch, Dest.LbFollow, is Dest.LbPerson, is Dest.LbListPage -> AmbientBackground.LETTERBOXD
+        Dest.Music, is Dest.MusicAlbum, is Dest.MusicArtist -> AmbientBackground.MUSIC
+        // A service's page takes the service's own colour; a genre's, the colour of its tile.
+        is Dest.OnService -> AmbientBackground.from(ServiceCard.coloursFor(d.service.code).first)
+        is Dest.InGenre -> GenreArt.coloursFor(d.genre.code).let { AmbientBackground.from(it.base, it.light) }
+    }
+
     /**
      * Names the service or genre a page is about, laid over the top corner of the hero. It used to be a title row above the
      * hero, which pushed the featured picture down the screen and left these pages starting lower than Films and Series.
      */
-    private fun heroTag(kicker: String, name: String) {
-        val tag = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        tag.addView(Cinema.text(activity, kicker, 17, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
-        tag.addView(Cinema.text(activity, name, 38, Cinema.CREAM, serif = true, weight = 500), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 2) })
+    private fun heroTag(kicker: String, name: String, logo: String? = null) {
+        val tag = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        // A service page leads with the service's own app icon, rounded like a launcher tile.
+        logo?.let { url ->
+            val icon = android.widget.ImageView(activity).apply {
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP; clipToOutline = true; contentDescription = name
+                outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(activity, 18)) } }
+                setBackgroundColor(Cinema.PLACEHOLDER)
+            }
+            tag.addView(icon, LinearLayout.LayoutParams(Cinema.px(activity, 76), Cinema.px(activity, 76)).apply { marginEnd = Cinema.px(activity, 22) })
+            images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 76), tag = pageTag) { b -> icon.setImageBitmap(b) }
+        }
+        val words = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        words.addView(Cinema.text(activity, kicker, 17, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
+        words.addView(Cinema.text(activity, name, 38, Cinema.CREAM, serif = true, weight = 500), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 2) })
+        tag.addView(words)
         (heroFrame as FrameLayout).addView(tag, FrameLayout.LayoutParams(-2, -2).apply { marginStart = pageStart; topMargin = Cinema.px(activity, 20) })
     }
 
@@ -812,28 +868,39 @@ class MoviesPanel(
         due.forEach { it.load() }
     }
 
-    /** Rows of posters, loaded three at a time and filled as each arrives; an empty one hides itself. */
-    private fun shelves(specs: List<ShelfSpec>, gen: Int) {
+    /**
+     * Rows of posters, loaded three at a time and filled as each arrives; an empty one hides itself. The page's first
+     * ordinary shelf leads as the spotlight (see ShelfLooks.plan). [between] adds the page's own rows: the one at key i
+     * goes in just before the i-th shelf shown, or at the end when there are fewer shelves.
+     */
+    private fun shelves(specs: List<ShelfSpec>, gen: Int, between: Map<Int, () -> Unit> = emptyMap()) {
         // Every row gets its place on the page now, with room reserved so the page does not jump; its titles are fetched
         // and drawn only when it is about to be seen, which is what keeps opening the page quick.
-        // Rows take turns between wide stills, posters, smaller stills and a spotlight, so neighbours never look alike.
-        val looks = com.danielportelabyrne.cinema.data.movies.ShelfLooks.forShelves(specs)
-        specs.forEachIndexed { i, spec ->
+        // Rows take turns between a spotlight, wide stills, posters, a grid and smaller stills, so neighbours never look alike.
+        heroFromSpotlight = false
+        val plan = com.danielportelabyrne.cinema.data.movies.ShelfLooks.plan(specs)
+        plan.forEachIndexed { i, (spec, look) ->
+            between[i]?.invoke()
             val row = row(spec.heading, null)
             // Room for the row before it loads, so the page does not jump.
-            row.inner.minimumHeight = Cinema.px(activity, rowHeight(looks[i]))
+            row.inner.minimumHeight = Cinema.px(activity, rowHeight(look))
             // The first rows are always near the top: fetch them now rather than after the page's first layout (a second
             // or more on a cold start), so they are ready the moment the main thread is free to draw them.
-            if (i < EAGER_SHELVES) loadShelf(spec, row, gen, looks[i]) else pending += Lazy(row) { loadShelf(spec, row, gen, looks[i]) }
+            if (i < EAGER_SHELVES) loadShelf(spec, row, gen, look) else pending += Lazy(row) { loadShelf(spec, row, gen, look) }
         }
+        between.filterKeys { it >= plan.size }.toSortedMap().values.forEach { it() }
         page.post { fillNear() }
     }
+
+    /** The featured titles came from the spotlight row, which gives way to the first other row that loads. */
+    private var heroFromSpotlight = false
 
     /** Mockup pixels a row of each look needs, card and name included. */
     private fun rowHeight(look: com.danielportelabyrne.cinema.data.movies.ShelfLook): Int = when (look) {
         com.danielportelabyrne.cinema.data.movies.ShelfLook.RANKED -> 368
         com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS -> STILL_H + 8
         com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS -> SMALL_STILL_H + 8
+        com.danielportelabyrne.cinema.data.movies.ShelfLook.GRID -> 2 * SMALL_STILL_H + GRID_GAP + 8
         com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT -> SPOTLIGHT_H + 8
         com.danielportelabyrne.cinema.data.movies.ShelfLook.POSTERS -> 488
     }
@@ -861,10 +928,19 @@ class MoviesPanel(
                 val related = entries.map { it.title }
                 row.setCount(entries.size)
                 row.inner.minimumHeight = Cinema.px(activity, rowHeight(look))
-                if (!heroSet) {
-                    val featured = entries.withIndex().filter { it.value.title.backdropUrl != null }.take(3)
-                    setHero(featured.map { it.value }, related, featured.map { rankLabel(spec.heading, spec.ranked, it.index) })
+                // The featured titles come from the first row to load, but never from the spotlight while another row can
+                // give them: the same picture twice, one above the other, would waste the top of the page.
+                val spotlit = look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT
+                if (!heroSet || (heroFromSpotlight && !spotlit)) {
+                    val featured = entries.withIndex().filter { it.value.title.backdropUrl != null && !(spotlit && it.index == 0) }.take(3)
+                    if (featured.isNotEmpty()) {
+                        setHero(featured.map { it.value }, related, featured.map { rankLabel(spec.heading, spec.ranked, it.index) })
+                        heroFromSpotlight = spotlit
+                    }
                 }
+                // A grid row holds its titles in columns of two, one above the other.
+                val grid = look == com.danielportelabyrne.cinema.data.movies.ShelfLook.GRID
+                var column: LinearLayout? = null
                 // A few cards a frame, not sixteen in one go (each is a small tree of views): the page keeps moving while a
                 // row fills. Posters further along than the screen wait until the row scrolls near them.
                 fun addFrom(from: Int) {
@@ -874,6 +950,14 @@ class MoviesPanel(
                         val e = entries[i]
                         val ranked = spec.ranked && i < 10
                         val defer = if (i >= EAGER_POSTERS) row else null
+                        if (grid) {
+                            val col = column?.takeIf { it.childCount < 2 } ?: LinearLayout(activity).apply {
+                                orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
+                            }.also { c -> row.inner.addView(c, cardParams(i / 2)); column = c }
+                            col.addView(stillCard(e, related, SMALL_STILL_W, SMALL_STILL_H, defer, holder = col),
+                                LinearLayout.LayoutParams(-2, -2).apply { if (col.childCount > 0) topMargin = Cinema.px(activity, GRID_GAP) })
+                            continue
+                        }
                         val view = when {
                             ranked -> rankCard(i + 1, e, related, defer)
                             look == com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS -> stillCard(e, related, STILL_W, STILL_H, defer)
@@ -889,9 +973,12 @@ class MoviesPanel(
                         val moreSize = when (look) {
                             com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS -> STILL_W to STILL_H
                             com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS -> SMALL_STILL_W to SMALL_STILL_H
+                            com.danielportelabyrne.cinema.data.movies.ShelfLook.GRID -> SMALL_STILL_W to 2 * SMALL_STILL_H + GRID_GAP
                             else -> 260 to 390
                         }
-                        moreCard(spec, moreSize.first, moreSize.second)?.let { row.inner.addView(it, cardParams(entries.size)) }
+                        // Its still is one from further along the row, so it never repeats a picture still on screen.
+                        val art = entries.drop(4).firstOrNull { it.title.backdropUrl != null }?.title?.backdropUrl
+                        moreCard(spec, moreSize.first, moreSize.second, art)?.let { row.inner.addView(it, cardParams(entries.size)) }
                         Perf.took("shelf '${spec.heading}' ui add ${entries.size} (spread)", Perf.now() - uiAt); row.scroller.post { row.loadNear() }; page.post { fillNear() }
                     }
                 }
@@ -985,11 +1072,158 @@ class MoviesPanel(
         if (films.isEmpty()) return
         val titles = films.map { watchlistTitle(it) }
         val r = row("Watchlist", "${films.size}")
-        films.forEachIndexed { i, f ->
+        films.take(WATCHLIST_ROW).forEachIndexed { i, f ->
             r.inner.addView(card(Entry(titles[i], null, emptyMap()), titles, defer = r, onSelect = { openWatchlistFilm(f) }), cardParams(i))
         }
+        r.inner.addView(watchlistDoor(films.size), cardParams(1))
         r.scroller.post { r.loadNear() }
     }
+
+    /** The watchlist row's last card: the way to the whole watchlist, with its sorting and grouping. */
+    private fun watchlistDoor(count: Int): View {
+        val card = PosterCard(activity, 260, 390, titled = false, radiusPx = 22f)
+        card.contentDescription = "Open your watchlist"
+        card.poster.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFF4A2A1C.toInt(), 0xFF1A0F0A.toInt())).apply { cornerRadius = Cinema.pxf(activity, 22) }
+        card.poster.foreground = null
+        val column = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.START
+            setPadding(Cinema.px(activity, 26), 0, Cinema.px(activity, 22), Cinema.px(activity, 28))
+        }
+        column.addView(View(activity).apply { background = StripeDrawable(horizontalBands = false, radius = Cinema.pxf(activity, 5)) },
+            LinearLayout.LayoutParams(Cinema.px(activity, 10), Cinema.px(activity, 34)))
+        column.addView(Cinema.text(activity, "All $count", 18, Cinema.SAFFRON, weight = 700, tracking = 0.18f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) })
+        column.addView(Cinema.text(activity, "Your watchlist", 38, Cinema.CREAM, serif = true, weight = 400).apply { maxLines = 2 }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 6) })
+        column.addView(Cinema.text(activity, "Sort, group by genre or decade", 18, Cinema.MUTED).apply { maxLines = 2 }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 10) })
+        card.poster.addView(column, FrameLayout.LayoutParams(-1, -1))
+        card.onFocus = { lit -> if (lit) reveal(card) }
+        card.setOnClickListener { go(Dest.Watchlist, remember = true) }
+        return card
+    }
+
+    // --- The watchlist page ---------------------------------------------------------------------------
+
+    private val watchlistPrefs by lazy { activity.getSharedPreferences("watchlist_view", Context.MODE_PRIVATE) }
+    private var watchSort: com.danielportelabyrne.cinema.data.movies.WatchlistSort
+        get() = runCatching { com.danielportelabyrne.cinema.data.movies.WatchlistSort.valueOf(watchlistPrefs.getString("sort", null)!!) }.getOrDefault(com.danielportelabyrne.cinema.data.movies.WatchlistSort.ADDED)
+        set(v) { watchlistPrefs.edit().putString("sort", v.name).apply() }
+    private var watchGroup: com.danielportelabyrne.cinema.data.movies.WatchlistGroup
+        get() = runCatching { com.danielportelabyrne.cinema.data.movies.WatchlistGroup.valueOf(watchlistPrefs.getString("group", null)!!) }.getOrDefault(com.danielportelabyrne.cinema.data.movies.WatchlistGroup.NONE)
+        set(v) { watchlistPrefs.edit().putString("group", v.name).apply() }
+    private var watchShow: com.danielportelabyrne.cinema.data.movies.WatchlistShow
+        get() = runCatching { com.danielportelabyrne.cinema.data.movies.WatchlistShow.valueOf(watchlistPrefs.getString("show", null)!!) }.getOrDefault(com.danielportelabyrne.cinema.data.movies.WatchlistShow.ALL)
+        set(v) { watchlistPrefs.edit().putString("show", v.name).apply() }
+
+    /**
+     * The whole watchlist on a page of its own: how to show it (one grid, or a row per genre or per decade), how to
+     * order it, and whether to show only what is (or is not) in the library. Each film's genres, length and rating come
+     * from Cinemeta once and are kept, so the page can sort and group by them; until they arrive a film waits under
+     * "Details on the way" and the page redraws itself, keeping focus where it was, as they come in.
+     */
+    private fun buildWatchlist(gen: Int) {
+        val films = watchlist()
+        val header = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; setPadding(pageStart, 0, pageEnd, 0) }
+        header.addView(Cinema.eyebrow(activity, listOf("Your watchlist", "${films.size} films")))
+        header.addView(Cinema.title(activity, "Watchlist", 96, maxLines = 1), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 16) })
+        content.addView(header)
+        if (films.isEmpty()) {
+            content.addView(note("Nothing on your watchlist yet. Add a film from its page with the watchlist button.").apply { setPadding(pageStart, Cinema.px(activity, 30), 0, 0) })
+            return
+        }
+        val controls = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(pageStart, Cinema.px(activity, 10), pageEnd, 0) }
+        content.addView(controls)
+        val rows = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        content.addView(rows, LinearLayout.LayoutParams(-1, -2))
+        var facts: Map<String, com.danielportelabyrne.cinema.data.movies.WatchlistFacts> =
+            com.danielportelabyrne.cinema.data.movies.WatchlistView.parseFacts(watchlistPrefs.getString("facts", null))
+        val refreshers = ArrayList<() -> Unit>()
+        val titles = films.associate { it.imdbId to watchlistTitle(it) }
+        fun inLibrary(id: String) = jellyfin.isConnected && jellyfin.findLoaded(id, null, false) != null
+
+        fun render() {
+            if (gen != generation) return
+            val focusedId = (rows.findFocus()?.let { f -> generateSequence(f) { it.parent as? View }.firstOrNull { it.tag is String && (it.tag as String).startsWith("tt") } })?.tag
+            rows.removeAllViews(); pending.removeAll { isWithin(it.row.scroller, rows) }
+            val sections = com.danielportelabyrne.cinema.data.movies.WatchlistView.arrange(films, facts, ::inLibrary, watchSort, watchGroup, watchShow)
+            if (sections.isEmpty()) { rows.addView(note("Nothing here with these choices.").apply { setPadding(pageStart, Cinema.px(activity, 30), 0, 0) }); return }
+            fun cardFor(f: com.danielportelabyrne.cinema.data.movies.WatchlistFilm, related: List<Title>, defer: Row): View {
+                val x = facts[f.imdbId]
+                val sub = listOfNotNull(f.year?.toString(), x?.genres?.firstOrNull(), x?.runtimeMin?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "$it min" },
+                    x?.rating?.let { "★ " + String.format(java.util.Locale.UK, "%.1f", it) }).joinToString(" · ")
+                return card(Entry(titles.getValue(f.imdbId), null, emptyMap()), related, defer = defer, note = sub.ifBlank { null }, onSelect = { openWatchlistFilm(f) }).apply { tag = f.imdbId }
+            }
+            sections.forEach { section ->
+                val related = section.films.map { titles.getValue(it.imdbId) }
+                if (section.heading == null) {
+                    // One grid: lines of five posters, each line loading its posters as it nears the screen.
+                    section.films.chunked(WATCHLIST_PER_LINE).forEachIndexed { li, line ->
+                        val strip = LinearLayout(activity).apply {
+                            orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false
+                            setPadding(pageStart, Cinema.px(activity, if (li == 0) 40 else 20), pageEnd, Cinema.px(activity, 20))
+                        }
+                        val r = Row(null, strip, strip)
+                        line.forEachIndexed { i, f -> strip.addView(cardFor(f, related, r), cardParams(i)) }
+                        rows.addView(strip, LinearLayout.LayoutParams(-1, -2))
+                        pending += Lazy(r) { r.loadNear() }
+                    }
+                } else {
+                    val r = row(section.heading, "${section.films.size}", into = rows)
+                    section.films.forEachIndexed { i, f -> r.inner.addView(cardFor(f, related, r), cardParams(i)) }
+                    pending += Lazy(r) { r.loadNear() }
+                }
+            }
+            page.post { fillNear() }
+            focusedId?.let { id -> rows.findViewWithTag<View>(id)?.requestFocus() }
+        }
+
+        fun chipRow(label: String, options: List<Pair<String, () -> Unit>>, isOn: (Int) -> Boolean) {
+            val strip = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
+            options.forEachIndexed { i, (text, pick) ->
+                val chip = lbChip(text).apply { setOnClickListener { pick(); refreshers.forEach { it() }; render() } }
+                refreshers += { chip.isSelected = isOn(i) }
+                strip.addView(chip, LinearLayout.LayoutParams(-2, Cinema.px(activity, 60)).apply { if (i > 0) marginStart = Cinema.px(activity, 14) })
+            }
+            val line = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+            line.addView(Cinema.text(activity, label, 15, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 4) })
+            line.addView(HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(strip) },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 10) })
+            controls.addView(line, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 22) })
+        }
+        val groups = com.danielportelabyrne.cinema.data.movies.WatchlistGroup.values()
+        val sorts = com.danielportelabyrne.cinema.data.movies.WatchlistSort.values()
+        val shows = com.danielportelabyrne.cinema.data.movies.WatchlistShow.values()
+        chipRow("Show as", groups.map { g -> g.label to { watchGroup = g } }) { groups[it] == watchGroup }
+        chipRow("Sort", sorts.map { o -> o.label to { watchSort = o } }) { sorts[it] == watchSort }
+        if (jellyfin.isConnected) chipRow("Films", shows.map { o -> o.label to { watchShow = o } }) { shows[it] == watchShow }
+        refreshers.forEach { it() }
+        render()
+
+        // The details still missing, four at a time; the page redraws once a batch has come in.
+        val missing = films.filter { it.imdbId !in facts }
+        if (missing.isEmpty()) return
+        val got = java.util.concurrent.ConcurrentHashMap<String, com.danielportelabyrne.cinema.data.movies.WatchlistFacts>()
+        val left = java.util.concurrent.atomic.AtomicInteger(missing.size)
+        var redraw: Runnable? = null
+        fun landed() {
+            redraw?.let { ui.removeCallbacks(it) }
+            redraw = Runnable {
+                if (gen != generation) return@Runnable
+                facts = facts + got
+                watchlistPrefs.edit().putString("facts", com.danielportelabyrne.cinema.data.movies.WatchlistView.factsJson(facts)).apply()
+                if (watchGroup != com.danielportelabyrne.cinema.data.movies.WatchlistGroup.NONE || watchSort == com.danielportelabyrne.cinema.data.movies.WatchlistSort.RATING ||
+                    watchSort == com.danielportelabyrne.cinema.data.movies.WatchlistSort.SHORTEST || left.get() == 0) render()
+            }.also { ui.postDelayed(it, if (left.get() == 0) 0L else 1200L) }
+        }
+        missing.forEach { f ->
+            infoPool.execute {
+                if (gen != generation) return@execute
+                val t = stremio.filmPage(com.danielportelabyrne.cinema.data.stremio.StremioFilm(f.imdbId, f.name, f.poster, f.year, false, ""))
+                got[f.imdbId] = com.danielportelabyrne.cinema.data.movies.WatchlistFacts(t.genres, t.runtimeMin, t.imdbScore, t.backdropUrl)
+                left.decrementAndGet()
+                ui.post { landed() }
+            }
+        }
+    }
+
 
     private fun watchlistTitle(f: com.danielportelabyrne.cinema.data.movies.WatchlistFilm) =
         com.danielportelabyrne.cinema.data.stremio.StremioApi.bare(com.danielportelabyrne.cinema.data.stremio.StremioFilm(f.imdbId, f.name, f.poster, f.year, false, ""))
@@ -1106,7 +1340,7 @@ class MoviesPanel(
 
     /** One album: its cover, Play and Shuffle, and the tracks in order. */
     private fun buildMusicAlbum(id: String, gen: Int) {
-        val wait = note("Loading the album…").apply { setPadding(pageStart, 0, 0, 0) }
+        val wait = loading("Loading the album…").apply { setPadding(pageStart, 0, 0, 0) }
         content.addView(wait)
         musicLoad(gen, { it.album(id) }) { found ->
             content.removeView(wait)
@@ -1511,7 +1745,7 @@ class MoviesPanel(
             if (shown == i) return
             shown = i; paints.forEach { it() }
             holder.removeAllViews()
-            val loading = note("Loading…").apply { setPadding(pageStart, Cinema.px(activity, 30), 0, 0) }
+            val loading = loading("Loading…").apply { setPadding(pageStart, Cinema.px(activity, 30), 0, 0) }
             holder.addView(loading)
             val H = com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR
             fun ready(): Boolean = gen == generation && shown == i
@@ -1691,7 +1925,7 @@ class MoviesPanel(
         content.addView(controls, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 10); marginStart = pageStart })
         val rows = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(rows, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 10) })
-        rows.addView(note("Loading the list…").apply { setPadding(pageStart, Cinema.px(activity, 40), 0, 0) })
+        rows.addView(loading("Loading the list…").apply { setPadding(pageStart, Cinema.px(activity, 40), 0, 0) })
 
         fun membersWhoWatched(slug: String) = members.filter { watched[it]?.get(slug) == true }
 
@@ -2353,10 +2587,28 @@ class MoviesPanel(
         val open: () -> Unit, val still: Bitmap?, val stillUrl: String?
     )
 
-    /** The row under the hero: what is part-way through, streams and Jellyfin together, most recent first. Hidden when empty. */
+    /**
+     * Continue watching, right under the spotlight: a section of its own on a warm band, with a kicker over a large
+     * heading. The title watched last leads as a large card; the rest sit beside it two to a column. Hidden when empty.
+     */
     private fun continueRow(gen: Int) {
-        val row = row("Continue watching", null)
-        row.heading?.visibility = View.GONE; row.scroller.visibility = View.GONE
+        val section = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false; visibility = View.GONE }
+        section.addView(View(activity).apply { background = StatementBand(Cinema.pxf(activity, 380)) }, FrameLayout.LayoutParams(-1, -1))
+        // The Downloads ribbon, looping in from the right edge, quieter here: the section's signature.
+        section.addView(FrameLayout(activity).apply { alpha = 0.55f; addView(RibbonView.downloads(activity), FrameLayout.LayoutParams(-1, -1)) },
+            FrameLayout.LayoutParams(-1, Cinema.px(activity, 300)))
+        val column = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
+            setPadding(0, Cinema.px(activity, 72), 0, Cinema.px(activity, 64))
+        }
+        column.addView(Cinema.eyebrow(activity, listOf("Pick up where you left off"), 17).apply { setPadding(pageStart, 0, pageEnd, 0) })
+        column.addView(Cinema.rowHeading(activity, "Continue watching", sizePx = 60).apply { setPadding(pageStart, Cinema.px(activity, 14), pageEnd, Cinema.px(activity, 18)) })
+        section.addView(column, FrameLayout.LayoutParams(-1, -2))
+        content.addView(section, LinearLayout.LayoutParams(-1, -2))
+        val inner = row(null, null, into = column)
+        // The section is the row's "heading": hiding the row hides all of it, and the count sits in its heading.
+        val row = Row(section, inner.scroller, inner.inner).also { rowOf[inner.scroller] = it }
+        row.inner.minimumHeight = Cinema.px(activity, ResumeCard.heightOf(featured = true))
         continueRow = row
         fillContinue(row, gen)
     }
@@ -2377,28 +2629,39 @@ class MoviesPanel(
                     still = null, stillUrl = if (item.hasBackdrop) jellyfin.backdropUrl(item.id) else JellyfinApi.episodeImageUrl(JellyfinApi.cleanBase(jellyfin.server), item.id, 640))
             }
             // One card a title: a series shows only the episode watched most recently.
-            val all = com.danielportelabyrne.cinema.data.latestPerTitle(streams + films, { it.title }, { it.lastMs }).take(12)
+            val all = com.danielportelabyrne.cinema.data.latestPerTitle(streams + films, { it.title }, { it.lastMs }).take(13)
             activity.runOnUiThread {
                 if (gen != generation) return@runOnUiThread
                 row.inner.removeAllViews()
                 if (all.isEmpty()) { row.hide(); return@runOnUiThread }
                 row.heading?.visibility = View.VISIBLE; row.scroller.visibility = View.VISIBLE
-                all.forEachIndexed { i, r -> row.inner.addView(resumeCard(r, gen), cardParams(i)) }
+                row.inner.addView(resumeCard(all[0], gen, featured = true))
+                // The rest two to a column, beside the lead card and exactly as tall as it.
+                val gap = Cinema.px(activity, ResumeCard.heightOf(true) - 2 * ResumeCard.heightOf(false))
+                all.drop(1).chunked(2).forEachIndexed { c, pair ->
+                    val col = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+                    pair.forEachIndexed { i, r -> col.addView(resumeCard(r, gen, featured = false), LinearLayout.LayoutParams(-2, -2).apply { if (i > 0) topMargin = gap }) }
+                    row.inner.addView(col, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, if (c == 0) 40 else 32) })
+                }
                 row.setCount(all.size)
                 row.scroller.post { row.loadNear() }
             }
         }
     }
 
-    private fun resumeCard(r: Resumable, gen: Int): View {
-        val card = ResumeCard(activity)
+    private fun resumeCard(r: Resumable, gen: Int, featured: Boolean): View {
+        val card = ResumeCard(activity, featured)
         card.contentDescription = r.title
         card.title.text = r.title
         val left = if (r.durationMs > 0 && r.positionMs > 0) ((r.durationMs - r.positionMs) / 60_000).toInt().coerceAtLeast(1) else null
-        card.meta.text = listOfNotNull(r.subtitle, left?.let { if (it >= 60) "${it / 60}h ${it % 60}m left" else "$it min left" }).joinToString(" · ")
+        val remaining = left?.let { if (it >= 60) "${it / 60}h ${it % 60}m left" else "$it min left" }
+        if (featured) {
+            card.kicker.text = listOfNotNull("Resume", r.subtitle).joinToString(" · ")
+            card.meta.text = remaining.orEmpty()
+        } else card.meta.text = listOfNotNull(r.subtitle, remaining).joinToString(" · ")
         card.setProgress(if (r.durationMs > 0) r.positionMs.toFloat() / r.durationMs else 0f)
         r.still?.let { card.setStill(it) }
-        r.stillUrl?.let { url -> images.load(url, jellyfin.playbackHeaders(), maxWidth = 640, tag = pageTag) { b -> if (gen == generation) card.setStill(b) } }
+        r.stillUrl?.let { url -> images.load(url, jellyfin.playbackHeaders(), maxWidth = Cinema.px(activity, if (featured) 960 else 480), tag = pageTag) { b -> if (gen == generation) card.setStill(b) } }
         card.onFocus = { lit -> if (lit) reveal(card) }
         card.setOnClickListener { r.open() }
         return card
@@ -2440,7 +2703,7 @@ class MoviesPanel(
             row.inner.addView(actionCard("Connect Jellyfin", "Sign in to see your own films and series") { jellyfinSheet.show(jellyfin) { if (isVisible) build() } })
             return
         }
-        row.inner.addView(note("Loading…"))
+        row.inner.addView(loading("Loading…"))
         worker.execute {
             val items = libraryOrder().sort(jellyfin.library()).take(limit)
             activity.runOnUiThread {
@@ -2468,7 +2731,7 @@ class MoviesPanel(
         val holder = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         watchlistRow()
         content.addView(holder, LinearLayout.LayoutParams(-1, -2))
-        holder.addView(note("Loading your library…").apply { setPadding(margin, dp(10), 0, dp(10)) })
+        holder.addView(loading("Loading your library…").apply { setPadding(margin, dp(10), 0, dp(10)) })
         worker.execute {
             val items = libraryOrder().sort(jellyfin.library())
             activity.runOnUiThread {
@@ -2477,11 +2740,16 @@ class MoviesPanel(
                 if (items.isEmpty()) { holder.addView(note("Nothing in your library yet, or Jellyfin couldn't be reached").apply { setPadding(margin, dp(10), 0, dp(10)) }); return@runOnUiThread }
                 val all = libraryEntries(items)
                 all.filter { it.title.backdropUrl != null }.take(3).let { f -> setHero(f, all.map { e -> e.title }, f.map { recencyLabel(it) }) }
+                // The same row looks as the catalogue: the latest first as a spotlight, then stills, a grid, posters…
+                val looks = listOf(com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT, com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS,
+                    com.danielportelabyrne.cinema.data.movies.ShelfLook.GRID, com.danielportelabyrne.cinema.data.movies.ShelfLook.POSTERS,
+                    com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS)
+                var next = 0
                 fun add(heading: String, list: List<Entry>) {
                     if (list.isEmpty()) return
                     val r = row(heading, "${list.size}", into = holder)
-                    val related = list.map { it.title }
-                    list.forEachIndexed { i, e -> r.inner.addView(card(e, related, badge = false), cardParams(i)) }
+                    val look = com.danielportelabyrne.cinema.data.movies.ShelfLooks.resolve(looks[next++ % looks.size], list.map { it.title })
+                    drawEntries(r, list, look, libraryChip = false)
                 }
                 add(libraryOrder().label, all.take(20))
                 add("Films", all.filter { it.title.kind == Kind.MOVIE })
@@ -2490,6 +2758,35 @@ class MoviesPanel(
                     .filterValues { it.size >= 2 }.entries.sortedByDescending { it.value.size }.take(6).forEach { (g, list) -> add(g, list) }
             }
         }
+    }
+
+    /**
+     * Fills [r] with [entries] drawn in [look], as the catalogue's shelves are: a spotlight leads with its first title
+     * that has a wide picture; a grid stacks stills two to a column. Pictures far along the row wait until it nears them.
+     */
+    private fun drawEntries(r: Row, entries: List<Entry>, look: com.danielportelabyrne.cinema.data.movies.ShelfLook, libraryChip: Boolean = true) {
+        val lead = if (look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT) com.danielportelabyrne.cinema.data.movies.ShelfLooks.spotlightIndex(entries.map { it.title }) ?: 0 else 0
+        val list = if (lead > 0) listOf(entries[lead]) + entries.filterIndexed { i, _ -> i != lead } else entries
+        val related = list.map { it.title }
+        r.inner.minimumHeight = Cinema.px(activity, rowHeight(look))
+        var column: LinearLayout? = null
+        list.forEachIndexed { i, e ->
+            val defer = if (i >= EAGER_POSTERS) r else null
+            when {
+                look == com.danielportelabyrne.cinema.data.movies.ShelfLook.GRID -> {
+                    val col = column?.takeIf { it.childCount < 2 } ?: LinearLayout(activity).apply {
+                        orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
+                    }.also { c -> r.inner.addView(c, cardParams(i / 2)); column = c }
+                    col.addView(stillCard(e, related, SMALL_STILL_W, SMALL_STILL_H, defer, holder = col, libraryChip = libraryChip),
+                        LinearLayout.LayoutParams(-2, -2).apply { if (col.childCount > 0) topMargin = Cinema.px(activity, GRID_GAP) })
+                }
+                look == com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS -> r.inner.addView(stillCard(e, related, STILL_W, STILL_H, defer, libraryChip = libraryChip), cardParams(i))
+                look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS -> r.inner.addView(stillCard(e, related, SMALL_STILL_W, SMALL_STILL_H, defer, libraryChip = libraryChip), cardParams(i))
+                look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT && i == 0 -> r.inner.addView(stillCard(e, related, SPOTLIGHT_W, SPOTLIGHT_H, null, spotlight = true, libraryChip = libraryChip), cardParams(i))
+                else -> r.inner.addView(card(e, related, badge = libraryChip, defer = defer), cardParams(i))
+            }
+        }
+        r.scroller.post { r.loadNear() }
     }
 
     // --- Downloads ---------------------------------------------------------------------------------
@@ -2576,7 +2873,7 @@ class MoviesPanel(
         content.addView(stats.row, LinearLayout.LayoutParams(-2, -2).apply { marginStart = margin; topMargin = Cinema.px(activity, 56) })
         val holder = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(holder, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 14) })
-        holder.addView(note("Loading…").apply { setPadding(margin, dp(10), 0, 0) })
+        holder.addView(loading("Loading…").apply { setPadding(margin, dp(10), 0, 0) })
         var firstLoad = true
         var loading = false
         var lastSignature: String? = null
@@ -3710,6 +4007,7 @@ class MoviesPanel(
         }
         if (!seerr.isSignedIn) { seerrSheet.show(seerr, jellyfin) { streamNow(e, button, episode, shownTitle) }; return }
         val token = ++streamToken
+        lastStreamed = e
         Perf.mark("stream.press"); Perf.begin("stream.press->startReply")
         streamReturnFocus = button
         val label = shownTitle ?: e.title.name
@@ -3784,6 +4082,16 @@ class MoviesPanel(
         }
     }
 
+    /** The title last streamed, so an episode picked in the player is streamed with everything the page knew of it. */
+    private var lastStreamed: Entry? = null
+
+    private fun streamPickedEpisode(r: EpisodeRequest) {
+        val e = lastStreamed?.takeIf { it.title.imdbId == r.imdbId }
+            ?: entry(Title(r.imdbId, Kind.SHOW, r.seriesName, null, null, null, emptyList(), null, null, null, null, r.imdbId, null))
+        val name = e.title.name.ifBlank { r.seriesName }
+        streamNow(e, streamReturnFocus?.takeIf { it.isAttachedToWindow } ?: page, r.season to r.episode, "$name · S${r.season} E${r.episode}")
+    }
+
     private fun closeStreamLoading() {
         val screen = streamLoading ?: return
         streamLoading = null; streamToken++
@@ -3834,7 +4142,7 @@ class MoviesPanel(
         val tmdb = e.title.tmdbId?.toLongOrNull()
         val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         parent.addView(box, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 60) })
-        box.addView(note("Loading seasons…"))
+        box.addView(loading("Loading seasons…"))
         Perf.begin("seasons.draw")
         worker.execute {
             // Jellyfin and Seerr first: Sonarr and the download queue can be slow or unreachable, so they fill in after.
@@ -4094,7 +4402,7 @@ class MoviesPanel(
             setAction(s, allInLibrary = false)
             railTarget = null
             restateShown = {}
-            rail.inner.removeAllViews(); rail.inner.addView(note("Loading episodes…"))
+            rail.inner.removeAllViews(); rail.inner.addView(loading("Loading episodes…"))
             worker.execute {
                 val listing = if (tmdb != null && seerr.isSignedIn) seerr.episodes(tmdb, s.number) else emptyList()
                 activity.runOnUiThread {
@@ -4193,14 +4501,60 @@ class MoviesPanel(
     /** The stripe set's colours plus the arches' olive and a deep teal, for the painted browse tiles. */
     private val tileColours = intArrayOf(Cinema.STRIPE_TERRA, 0xFF2F6E66.toInt(), Cinema.STRIPE_SAFFRON, 0xFF4D5B2C.toInt(), Cinema.STRIPE_RED, Cinema.MAROON)
 
-    private fun serviceTiles() {
+    /** One card per service, in its own colours with its app icon and a fan of what is popular on it now. */
+    private fun serviceTiles(gen: Int) {
         val r = row("Browse by service", null)
-        Catalog.SERVICES.forEachIndexed { i, s -> r.inner.addView(tile(s.label, i, wide = true) { go(Dest.OnService(s), remember = true) }, cardParams(i)) }
+        r.inner.minimumHeight = Cinema.px(activity, ServiceCard.H + 8)
+        val fans = ArrayList<() -> Unit>()
+        Catalog.SERVICES.forEachIndexed { i, s ->
+            val card = ServiceCard(activity, s.label, ServiceCard.coloursFor(s.code))
+            Catalog.logoUrl(s)?.let { url -> images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 92), tag = pageTag) { b -> card.logo.setImageBitmap(b) } }
+            card.onFocus = { lit -> if (lit) reveal(card) }
+            card.setOnClickListener { go(Dest.OnService(s), remember = true) }
+            r.inner.addView(card, cardParams(i))
+            // The fan is the service's own Popular shelf, which Home asks for anyway (and keeps), so this costs no extra fetch.
+            val spec = Catalog.homePage().firstOrNull { it.packages == listOf(s.code) } ?: return@forEachIndexed
+            // Only once the row nears the screen, and never ahead of the shelves on show (worker, not the shelf pool).
+            fans += { worker.execute {
+                val posters = catalog.shelf(spec).titles.mapNotNull { it.posterUrl }.take(3)
+                activity.runOnUiThread {
+                    if (gen != generation) return@runOnUiThread
+                    // Middle first: the front card is the service's most popular title.
+                    listOf(1, 0, 2).zip(posters).forEach { (slot, url) ->
+                        images.load(url, emptyMap(), maxWidth = Cinema.px(activity, ServiceCard.POSTER_W), tag = pageTag) { b -> if (gen == generation) card.setPoster(slot, b) }
+                    }
+                }
+            } }
+        }
+        pending += Lazy(r) { fans.forEach { it() } }
     }
 
     private fun genreTiles() {
         val r = row("Browse by genre", null)
-        Catalog.GENRES.forEachIndexed { i, g -> r.inner.addView(tile(g.label, i + 2, wide = false) { go(Dest.InGenre(g), remember = true) }, cardParams(i)) }
+        r.inner.minimumHeight = Cinema.px(activity, GENRE_H + 8)
+        val gen = generation
+        val cards = Catalog.GENRES.mapIndexed { i, g ->
+            GenreCard(activity, g.code, g.label, GENRE_W, GENRE_H).apply {
+                onFocus = { lit -> if (lit) reveal(this) }
+                setOnClickListener { go(Dest.InGenre(g), remember = true) }
+            }.also { r.inner.addView(it, cardParams(i)) }
+        }
+        // Each card's still: the first title with a wide picture on that genre's own Trending shelf (the shelf its page
+        // opens with, so it is kept for that page too), never one another genre already shows. Fetched only when the row
+        // nears the screen.
+        pending += Lazy(r) {
+            worker.execute {
+                val used = HashSet<String>()
+                Catalog.GENRES.forEachIndexed { i, g ->
+                    if (gen != generation) return@execute
+                    val pick = catalog.shelf(Catalog.genrePage(g).first()).titles.firstOrNull { it.backdropUrl != null && used.add(it.key) } ?: return@forEachIndexed
+                    activity.runOnUiThread {
+                        if (gen != generation) return@runOnUiThread
+                        images.load(pick.backdropUrl!!, emptyMap(), maxWidth = Cinema.px(activity, GENRE_W), tag = pageTag) { b -> if (gen == generation) cards[i].setArt(b) }
+                    }
+                }
+            }
+        }
     }
 
     /** A painted tile: a flat Cinema colour with a pale sun or stripes in it, the name in Fraunces; it grows and glows on focus. */
@@ -4225,30 +4579,12 @@ class MoviesPanel(
      * per-service shelves. Until now the only way there was a theme in Search. None on the genre's own page, where it would
      * only lead back to itself, nor on a Top 10 row, which is exactly ten titles.
      */
-    private fun moreCard(spec: ShelfSpec, w: Int = 260, h: Int = 390): View? {
+    private fun moreCard(spec: ShelfSpec, w: Int = 260, h: Int = 390, art: String? = null): View? {
         val code = spec.genre?.takeUnless { spec.ranked } ?: return null
         val genre = (Catalog.GENRES + Genre("doc", "Documentaries")).firstOrNull { it.code == code } ?: return null
         if ((current as? Dest.InGenre)?.genre?.code == code) return null
-        val seed = Catalog.GENRES.indexOfFirst { it.code == code }.coerceAtLeast(0)
-        val colour = tileColours[seed % tileColours.size]
-        val label = "More ${genre.label}"
-        val ink = if (colour == Cinema.STRIPE_SAFFRON) Cinema.INK else Cinema.CREAM
-        val card = PosterCard(activity, w, h, titled = false, radiusPx = 22f, focusScale = if (w > h) 1.06f else 1.1f)
-        card.contentDescription = label
-        card.poster.background = MotifDrawable(colour, Cinema.pxf(activity, 22), seed)
-        card.poster.foreground = null
-        // "More" over the name over an arrow. The name is one line that shrinks to fit the card, so "Documentaries" stays whole.
-        val column = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.START
-            setPadding(Cinema.px(activity, 26), 0, Cinema.px(activity, 20), Cinema.px(activity, 26))
-        }
-        column.addView(Cinema.text(activity, "More", 20, ink, weight = 600, tracking = 0.18f, caps = true))
-        val name = Cinema.text(activity, genre.label, 40, ink, serif = true, weight = 500).apply { maxLines = 1; includeFontPadding = false }
-        androidx.core.widget.TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
-            name, Cinema.px(activity, 20), Cinema.px(activity, 40), 1, android.util.TypedValue.COMPLEX_UNIT_PX)
-        column.addView(name, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 6) })
-        column.addView(Cinema.text(activity, "\u2192", 40, ink, weight = 400), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 10) })
-        card.poster.addView(column, FrameLayout.LayoutParams(-1, -1))
+        val card = GenreCard(activity, genre.code, genre.label, w, h, more = true)
+        art?.let { url -> images.load(url, emptyMap(), maxWidth = Cinema.px(activity, w), tag = pageTag) { b -> card.setArt(b) } }
         card.onFocus = { lit -> if (lit) reveal(card) }
         card.setOnClickListener { go(Dest.InGenre(genre), remember = true) }
         return card
@@ -4343,7 +4679,7 @@ class MoviesPanel(
      * A wide 16:9 still with the name, year and genre over its foot. [spotlight] is a row's large lead card: a SPOTLIGHT
      * kicker, a bigger name and two lines of the overview. In the library shows as a pill at the top, clear of the text.
      */
-    private fun stillCard(e: Entry, related: List<Title>, w: Int, h: Int, defer: Row?, spotlight: Boolean = false): View {
+    private fun stillCard(e: Entry, related: List<Title>, w: Int, h: Int, defer: Row?, spotlight: Boolean = false, holder: View? = null, libraryChip: Boolean = true): View {
         val t = e.title
         val card = PosterCard(activity, w, h, titled = false, focusScale = if (spotlight) 1.04f else 1.06f)
         card.contentDescription = t.name
@@ -4393,10 +4729,10 @@ class MoviesPanel(
             }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 12) })
         }
         card.poster.addView(words, FrameLayout.LayoutParams(-1, -1))
-        if (e.library != null) card.chip("In library") else whenInLibrary(e) { card.chip("In library") }
+        if (libraryChip) { if (e.library != null) card.chip("In library") else whenInLibrary(e) { card.chip("In library") } }
         (t.backdropUrl ?: t.posterUrl)?.let { u ->
             val load = { images.loadShadedPoster(u, e.posterHeaders, w, pageTag) { b: Bitmap -> card.setShadedPoster(b); frost?.refresh(); Perf.end("movies.open->firstPoster") } }
-            if (defer != null) defer.deferred += card to load else load()
+            if (defer != null) defer.deferred += (holder ?: card) to load else load()
         }
         card.onFocus = { lit -> if (lit) { reveal(card); prefetchOnRest(card, e) } }
         card.setOnClickListener { openDetail(e, related) }
@@ -4459,6 +4795,9 @@ class MoviesPanel(
 
     private fun note(text: String) = Cinema.text(activity, text, 22, Cinema.MUTED).apply { setPadding(dp(4), dp(10), 0, dp(10)) }
 
+    /** Something still on its way: the wavy loader with a quiet word beside it, where a note would sit. */
+    private fun loading(text: String): View = com.danielportelabyrne.cinema.design.cinema.WaveLoader.withLabel(activity, text).apply { setPadding(dp(4), dp(6), 0, dp(6)) }
+
     private val surfaces12 by lazy { FastFocus.Surfaces(activity, dp(12).toFloat()) }
     private val surfaces16 by lazy { FastFocus.Surfaces(activity, dp(16).toFloat()) }
 
@@ -4474,6 +4813,13 @@ class MoviesPanel(
         const val STILL_W = 520; const val STILL_H = 292
         const val SMALL_STILL_W = 400; const val SMALL_STILL_H = 225
         const val SPOTLIGHT_W = 880; const val SPOTLIGHT_H = 495
+        /** A Browse by genre card, in mockup pixels. */
+        const val GENRE_W = 400; const val GENRE_H = 225
+        /** Posters in the watchlist row before its way to the full page, and in each line of that page's grid. */
+        const val WATCHLIST_ROW = 16
+        const val WATCHLIST_PER_LINE = 5
+        /** Space between the two stills of a grid row's column. */
+        const val GRID_GAP = 28
         /** Title logos (transparent PNGs) by IMDb id, from the artwork service Stremio uses. No key; 404 when there is none. */
         const val LOGO_URL = "https://images.metahub.space/logo/medium/%s/img"
         const val HERO_HEIGHT = 762      // mockup px: the first row's heading sits at 812
@@ -4513,6 +4859,38 @@ class MoviesPanel(
             }
             super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
         }
+    }
+
+    /**
+     * The warm band behind Continue watching: the page darkens into a deep brown that fades out again top and bottom, lit
+     * by a soft terracotta glow low on the left and a fainter saffron one at the right, like stage light on a curtain.
+     */
+    private class StatementBand(private val glowRadius: Float) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var band: android.graphics.Shader? = null
+        private val glows = ArrayList<Triple<Float, Float, Pair<Float, android.graphics.Shader>>>()
+        // The gradients depend only on the size, so they are made once per size, not on every draw.
+        override fun onBoundsChange(b: android.graphics.Rect) {
+            val w = b.width().toFloat(); val h = b.height().toFloat()
+            glows.clear(); band = null
+            if (w <= 0f || h <= 0f) return
+            band = android.graphics.LinearGradient(0f, b.top.toFloat(), 0f, b.bottom.toFloat(),
+                intArrayOf(0, Cinema.alpha(0xFF1C110C.toInt(), 0.92f), Cinema.alpha(0xFF160D09.toInt(), 0.92f), 0), floatArrayOf(0f, 0.16f, 0.84f, 1f), android.graphics.Shader.TileMode.CLAMP)
+            fun glow(cx: Float, cy: Float, r: Float, color: Int) {
+                glows += Triple(cx, cy, r to android.graphics.RadialGradient(cx, cy, r, intArrayOf(color, Cinema.alpha(color, 0f)), null, android.graphics.Shader.TileMode.CLAMP))
+            }
+            glow(b.left + w * 0.12f, b.top + h * 0.62f, glowRadius * 1.6f, Cinema.alpha(Cinema.STRIPE_TERRA, 0.16f))
+            glow(b.left + w * 0.86f, b.top + h * 0.4f, glowRadius * 1.2f, Cinema.alpha(Cinema.STRIPE_SAFFRON, 0.07f))
+        }
+        override fun draw(canvas: Canvas) {
+            val s = band ?: return
+            paint.shader = s; canvas.drawRect(RectF(bounds), paint)
+            glows.forEach { (x, y, g) -> paint.shader = g.second; canvas.drawCircle(x, y, g.first, paint) }
+            paint.shader = null
+        }
+        override fun setAlpha(alpha: Int) {}
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
+        @Deprecated("Deprecated in Java") override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
     }
 
     /** A tile's painted face: a flat colour with a pale sun, a pair of stripes or a half moon, varying with [seed]. */

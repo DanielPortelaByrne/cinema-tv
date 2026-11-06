@@ -43,8 +43,8 @@ data class ShelfSpec(
     val genre: String? = null, val sort: String = "TRENDING", val ranked: Boolean = false, val query: String? = null
 )
 
-/** A streaming service, with the short name JustWatch uses for it in the UK. */
-data class Service(val code: String, val label: String)
+/** A streaming service, with the short name JustWatch uses for it in the UK and its app icon on JustWatch's image host. */
+data class Service(val code: String, val label: String, val icon: String? = null)
 
 data class Genre(val code: String, val label: String)
 
@@ -57,12 +57,12 @@ object Catalog {
     /** Two-letter country whose streaming catalogue is shown. Set from the owner's settings when the app starts. */
     @Volatile var country: String = "US"
 
-    val NETFLIX = Service("nfx", "Netflix")
-    val HBO_MAX = Service("mxx", "HBO Max")
-    val PARAMOUNT = Service("pmp", "Paramount+")
-    val PRIME = Service("amp", "Prime Video")
-    val DISNEY = Service("dnp", "Disney+")
-    val APPLE = Service("atp", "Apple TV+")
+    val NETFLIX = Service("nfx", "Netflix", "/icon/207360008/s166/netflix.png")
+    val HBO_MAX = Service("mxx", "HBO Max", "/icon/332884837/s166/max.png")
+    val PARAMOUNT = Service("pmp", "Paramount+", "/icon/242706661/s166/paramountplus.png")
+    val PRIME = Service("amp", "Prime Video", "/icon/322992749/s166/amazonprime.png")
+    val DISNEY = Service("dnp", "Disney+", "/icon/313118777/s166/disneyplus.png")
+    val APPLE = Service("atp", "Apple TV+", "/icon/338367329/s166/appletvplus.png")
     val SERVICES = listOf(NETFLIX, HBO_MAX, PARAMOUNT, PRIME, DISNEY, APPLE)
     private val MAJOR = SERVICES.map { it.code }
 
@@ -122,6 +122,9 @@ object Catalog {
     )
 
     private const val IMAGES = "https://images.justwatch.com"
+
+    /** The service's square app icon (166 px), or null when it has none on record. */
+    fun logoUrl(service: Service): String? = service.icon?.let { IMAGES + it }
 
     private const val QUERY = "query(\$f: TitleFilter!, \$c: Country!, \$l: Language!, \$n: Int!) { popularTitles(country: \$c, filter: \$f, first: \$n, sortBy: %SORT%) { edges { node { id objectType " +
         "content(country: \$c, language: \$l) { title originalReleaseYear shortDescription runtime genres { translation(language: \$l) } ageCertification posterUrl " +

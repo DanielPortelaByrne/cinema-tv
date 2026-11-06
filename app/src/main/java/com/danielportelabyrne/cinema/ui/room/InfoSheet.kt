@@ -20,6 +20,9 @@ import com.danielportelabyrne.cinema.R
 import com.danielportelabyrne.cinema.design.AppTheme
 import com.danielportelabyrne.cinema.design.Motion
 import com.danielportelabyrne.cinema.design.Type
+import com.danielportelabyrne.cinema.design.Cinema
+import com.danielportelabyrne.cinema.design.cinema.CinemaButton
+import com.danielportelabyrne.cinema.design.cinema.StripeDrawable
 import com.danielportelabyrne.cinema.ui.scrollFocusIntoView
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -92,12 +95,13 @@ class InfoSheet(private val container: FrameLayout) {
         settle()
         container.removeAllViews()
         container.setBackgroundColor(ContextCompat.getColor(context, R.color.sheet_scrim))
-        val pad = AppTheme.px(context, R.dimen.space_6)
+        // The Cinema card: dark warm glass, an eyebrow, the title in Fraunces, the words, then the choices and Close.
+        val pad = Cinema.px(context, 48)
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             clipChildren = false; clipToPadding = false
-            setPadding(pad, pad, pad, pad)
-            background = AppTheme.surface(context, R.color.surface_solid)
+            setPadding(pad, Cinema.px(context, 44), pad, Cinema.px(context, 44))
+            background = Cinema.glass(context, 32f, 0xF5120D0A.toInt())
             elevation = context.dp(24).toFloat()
         }
         var imageView: View? = null
@@ -106,64 +110,62 @@ class InfoSheet(private val container: FrameLayout) {
                 setImageBitmap(image); scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
                 clipToOutline = true
                 outlineProvider = object : android.view.ViewOutlineProvider() {
-                    override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, AppTheme.px(context, R.dimen.radius_small).toFloat()) }
+                    override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(context, 18)) }
                 }
-            }, LinearLayout.LayoutParams(context.dp(imageSizeDp.first), context.dp(imageSizeDp.second)).apply { marginEnd = AppTheme.px(context, R.dimen.space_5) })
+            }, LinearLayout.LayoutParams(context.dp(imageSizeDp.first), context.dp(imageSizeDp.second)).apply { marginEnd = Cinema.px(context, 44) })
         }
         val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
-        val measure = context.dp(440)
+        val measure = Cinema.px(context, 860)
         card.addView(column, LinearLayout.LayoutParams(0, -2, 1f))
 
-        val gap = AppTheme.px(context, R.dimen.space_2)
-        column.addView(Type.text(context, kicker, Type.Style.EYEBROW))
-        column.addView(Type.text(context, title, Type.Style.TITLE).apply { maxWidth = measure; setPadding(0, gap, 0, 0) })
+        // A caller's own "Close" becomes the Close button rather than a second one.
+        val closeAction = actions.firstOrNull { it.label == "Close" }
+        val actions = actions.filter { it.label != "Close" }
+        val danger = actions.any { isDestructive(it.label) }
+        column.addView(Cinema.eyebrow(context, listOf(kicker.lowercase(Locale.UK).replaceFirstChar { it.uppercase() }), color = if (danger) Cinema.DANGER_TEXT else Cinema.SAFFRON))
+        column.addView(Cinema.title(context, title, if (title.length > 28) 48 else 60, maxLines = 3).apply { maxWidth = measure },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 16) })
         subtitle?.let {
-            val accent = ContextCompat.getColor(context, R.color.accent)
-            column.addView(Type.text(context, it.uppercase(Locale.UK), Type.Style.CAPTION, accent).apply {
-                letterSpacing = 0.14f; textSize = 13f
-                setPadding(context.dp(10), context.dp(3), context.dp(10), context.dp(4))
-                background = GradientDrawable().apply { cornerRadius = context.dp(12).toFloat(); setStroke(context.dp(1), accent) }
-            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = gap + gap / 2 })
+            column.addView(Cinema.text(context, it, 20, Cinema.SAFFRON, weight = 600, tracking = 0.06f).apply { maxWidth = measure },
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 14) })
         }
-        lines.forEach { column.addView(Type.reading(Type.text(context, it, Type.Style.BODY, ContextCompat.getColor(context, R.color.text_muted))).apply { maxWidth = measure; setPadding(0, gap + gap / 2, 0, 0) }) }
+        lines.forEach {
+            column.addView(Cinema.text(context, it, 24, Cinema.READING, weight = 300).apply { maxWidth = measure; setLineSpacing(0f, 1.22f) },
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 18) })
+        }
 
+        // Each choice is a glass row: its name and a line on what it does; a destructive one is red until focused, the
+        // suggested one carries the stripe mark. Close always comes last, as a plain Cinema button.
         var first: View? = null
         val built = mutableListOf<View>()
-        val buttons = actions + SheetAction("Close") { }
-        val stack = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
-        val controlHeight = AppTheme.px(context, R.dimen.control_height)
-        buttons.forEachIndexed { i, action ->
-            val label = if (action.sublabel == null) android.text.SpannableString(action.label) else
-                android.text.SpannableString(action.label + "\n" + action.sublabel).apply {
-                    setSpan(android.text.style.RelativeSizeSpan(0.8f), action.label.length + 1, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    setSpan(android.text.style.StyleSpan(Typeface.NORMAL), action.label.length + 1, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
-            val extraLines = action.sublabel?.count { it == '\n' }?.plus(1) ?: 0
-            // A lone Close is a small centred pill; a list of choices reads left-aligned like a menu.
-            val alone = buttons.size == 1
-            val button = Type.text(context, label, Type.Style.BODY).apply {
-                gravity = if (alone) Gravity.CENTER else Gravity.CENTER_VERTICAL; isFocusable = true; isClickable = true
-                setPadding(AppTheme.px(context, R.dimen.space_4), 0, AppTheme.px(context, R.dimen.space_4), 0)
-                tag = extraLines
+        if (actions.isNotEmpty()) {
+            val stack = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+            actions.forEach { action ->
+                val row = choiceRow(action)
+                row.setOnClickListener { hide(); action.run() }
+                stack.addView(row, LinearLayout.LayoutParams(-1, -2).apply { if (stack.childCount > 0) topMargin = Cinema.px(context, 12) })
+                built += row
+                if (first == null) first = row
             }
-            AppTheme.bindPanelFocus(
-                button,
-                AppTheme.surface(context, if (action.primary) R.color.action else R.color.surface_raised, R.dimen.radius_pill),
-                AppTheme.surface(context, R.color.focus, R.dimen.radius_pill), 1f
-            )
-            button.setOnClickListener { hide(); if (i != buttons.lastIndex) action.run() }
-            stack.addView(button, LinearLayout.LayoutParams(if (alone) context.dp(200) else -1, controlHeight + context.dp(20) * extraLines).apply { topMargin = if (i == 0) 0 else gap })
-            built += button
-            if (first == null) first = button
+            column.addView(stack, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(context, 34) })
         }
-        column.addView(stack, LinearLayout.LayoutParams(-1, -2).apply { topMargin = AppTheme.px(context, R.dimen.space_4) })
+        val close = CinemaButton(context, CinemaButton.Kind.GLASS, "Close").apply { setOnClickListener { hide(); closeAction?.run() } }
+        column.addView(close, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, if (actions.isEmpty()) 36 else 22) })
+        built += close
+        if (first == null) first = close
 
         // Beside a picture the card hugs its words (up to a reading measure) rather than a fixed width.
-        val cardWidth = if (image == null) context.dp(560) else {
+        // Without a picture it hugs its words too: never narrower than a comfortable card, never wider than reading allows.
+        val cardWidth = if (image == null) {
             val words = (0 until column.childCount).map { column.getChildAt(it) }.filterIsInstance<TextView>()
                 .maxOfOrNull { it.paint.measureText(it.text.toString()) + it.paddingLeft + it.paddingRight }?.toInt() ?: 0
-            val text = words.coerceIn(context.dp(280), measure)
-            pad * 2 + context.dp(imageSizeDp.first) + AppTheme.px(context, R.dimen.space_5) + text
+            val choices = if (actions.isEmpty()) 0 else Cinema.px(context, 620)
+            pad * 2 + maxOf(words, choices).coerceIn(Cinema.px(context, 560), Cinema.px(context, if (lines.sumOf { it.length } > 400) 1000 else 860))
+        } else {
+            val words = (0 until column.childCount).map { column.getChildAt(it) }.filterIsInstance<TextView>()
+                .maxOfOrNull { it.paint.measureText(it.text.toString()) + it.paddingLeft + it.paddingRight }?.toInt() ?: 0
+            val text = words.coerceIn(Cinema.px(context, 560), measure)
+            pad * 2 + context.dp(imageSizeDp.first) + Cinema.px(context, 44) + text
         }
         container.addView(card, FrameLayout.LayoutParams(cardWidth, -2, Gravity.CENTER))
         container.visibility = View.VISIBLE
@@ -174,6 +176,36 @@ class InfoSheet(private val container: FrameLayout) {
         else if (!refresh) Motion.enter(container, card, context.dp(28).toFloat())
         lastButtons = built
         (built.getOrNull(focusedIndex) ?: first)?.post { (built.getOrNull(focusedIndex) ?: first)?.requestFocus() }
+    }
+
+    private fun isDestructive(label: String) = listOf("Cancel", "Delete", "Remove", "Stop", "Withdraw").any { label.startsWith(it) }
+
+    /** A choice in the sheet: glass at rest, cream when focused; its line on what it does sits beneath its name. */
+    private fun choiceRow(action: SheetAction): LinearLayout {
+        val destructive = isDestructive(action.label)
+        val restName = if (destructive) Cinema.DANGER_TEXT else Cinema.CREAM
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isFocusable = true; isClickable = true
+            setPadding(Cinema.px(context, 30), Cinema.px(context, 18), Cinema.px(context, 30), Cinema.px(context, 18))
+            contentDescription = action.label
+        }
+        if (action.primary) row.addView(View(context).apply { background = StripeDrawable(horizontalBands = false, radius = Cinema.pxf(context, 4)) },
+            LinearLayout.LayoutParams(Cinema.px(context, 8), Cinema.px(context, 40)).apply { marginEnd = Cinema.px(context, 22) })
+        val words = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val name = Cinema.text(context, action.label, 25, restName, weight = 600).apply { maxLines = 1 }
+        words.addView(name)
+        val sub = action.sublabel?.let { Cinema.text(context, it, 19, Cinema.MUTED).apply { maxLines = 3 } }
+        sub?.let { words.addView(it, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 4) }) }
+        row.addView(words, LinearLayout.LayoutParams(0, -2, 1f))
+        val rest = Cinema.glass(context, 22f, Cinema.GLASS_STRONG)
+        val lit = Cinema.glass(context, 22f, Cinema.CREAM)
+        row.background = rest
+        row.setOnFocusChangeListener { _, f ->
+            row.background = if (f) lit else rest
+            name.setTextColor(if (f) Cinema.INK else restName)
+            sub?.setTextColor(if (f) 0xFF6A5848.toInt() else Cinema.MUTED)
+        }
+        return row
     }
 
     /** Shows any view centred over a scrim, focusing [focus]. Back dismisses it like every other sheet. */
