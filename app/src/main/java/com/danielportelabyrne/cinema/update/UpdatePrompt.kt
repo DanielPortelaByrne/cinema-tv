@@ -19,14 +19,34 @@ class UpdatePrompt(private val activity: Activity, private val sheet: InfoSheet)
     private val pool = Executors.newSingleThreadExecutor()
     @Volatile private var downloading = false
 
-    /** On opening Cinema: when a check is due, looks for a newer build and offers it, unless the viewer said Later to it. */
+    /**
+     * On opening Cinema, when a check is due. With automatic updates on (and Android letting Cinema install itself without
+     * asking), a newer build downloads quietly and installs once Cinema is off screen (see CinemaApp). Otherwise it is
+     * offered in the sheet, unless the viewer said Later to it.
+     */
     fun checkInBackground(canShow: () -> Boolean) {
         if (!updater.checkDue() || downloading) return
         pool.execute {
             val u = updater.available() ?: return@execute
+            if (updater.auto && updater.canInstallSilently()) {
+                if (updater.ready()?.first != u.build && updater.download(u) { } != null) updater.markReady(u.build)
+                return@execute
+            }
             if (updater.dismissed(u.build)) return@execute
             showWhenFree(u, canShow, tries = 20)
         }
+    }
+
+    /** Debug builds: [u] as if GitHub had just published it, taking the same path as a real one. */
+    fun debugArrived(u: AvailableUpdate) {
+        if (updater.auto && updater.canInstallSilently()) pool.execute { if (updater.download(u) { } != null) { updater.markReady(u.build); android.util.Log.i("Updates", "build ${u.build} ready") } }
+        else offer(u)
+    }
+
+    /** After Cinema updated itself: says so, once, when it next opens. */
+    fun sayIfUpdated() {
+        val build = updater.justUpdatedTo() ?: return
+        ui.postDelayed({ if (!activity.isFinishing) com.danielportelabyrne.cinema.design.cinema.CinemaToast.show(activity, "Cinema updated to build $build", android.widget.Toast.LENGTH_LONG) }, 1500)
     }
 
     /** Offers [u] as soon as nothing else is on screen (setup, another sheet, the opening): looks again every half minute. */
@@ -46,9 +66,10 @@ class UpdatePrompt(private val activity: Activity, private val sheet: InfoSheet)
     }
 
     fun offer(u: AvailableUpdate) {
-        sheet.show("UPDATE", "Cinema build ${u.build} is ready", UpdateCheck.headline(u), listOf(
+        sheet.show("UPDATE", "Cinema build ${u.build} is ready", UpdateCheck.headline(u), listOfNotNull(
             "You're on build ${updater.currentBuild}. It downloads in a moment; then the TV asks you to confirm the install. " +
-                "Cinema closes while it updates: open it again from the home screen."
+                "Cinema closes while it updates: open it again from the home screen.",
+            if (updater.auto) "After this one, updates install by themselves while Cinema isn't on screen." else null
         ), null, listOf(
             SheetAction("Install now", "Download it (${mb(u.sizeBytes)}) and install it", primary = true) { install(u) },
             SheetAction("Later", "Ask again when there's a newer build") { updater.dismiss(u.build) }

@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Cinema installs its own updates (from its GitHub releases); Android still asks the viewer to confirm each one. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- With it, Android 12+ lets Cinema install a newer build of itself without asking, once it installed itself before. -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <!-- Voice search (asked for at runtime, the first time the mic is used). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 

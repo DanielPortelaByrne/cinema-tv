@@ -57,6 +57,7 @@ class CinemaActivity : AppCompatActivity() {
         overlay = findViewById(R.id.moviesOverlay)
         infoSheet = InfoSheet(findViewById(R.id.infoSheet))
         updates = com.danielportelabyrne.cinema.update.UpdatePrompt(this, infoSheet)
+        updates.sayIfUpdated()
         val platform = AndroidPlatform(this)
         val settings = CinemaSettings(platform)
         val addonSync = com.danielportelabyrne.cinema.data.stremio.StremioAddonSync(
@@ -247,7 +248,8 @@ class CinemaActivity : AppCompatActivity() {
         intent?.getStringExtra("debug_setup_step")?.let { if (moviesPanel.isVisible) moviesPanel.hide(); setup.debugOpen(it); return }
         // "debug_update_url": offers the app file at that address as build 999999, to try the whole update on a device.
         intent?.getStringExtra("debug_update_url")?.let { url ->
-            updates.offer(com.danielportelabyrne.cinema.data.update.AvailableUpdate(999_999, "Test build", url, 0L, "A test of updating in the app")); return
+            val build = intent.getIntExtra("debug_update_build", 999_999)
+            updates.debugArrived(com.danielportelabyrne.cinema.data.update.AvailableUpdate(build, "Test build", url, 0L, "A test of updating in the app")); return
         }
         if (setup.isVisible) return
         intent?.getStringExtra("debug_cinema_dest")?.let { moviesPanel.debugGo(it) }

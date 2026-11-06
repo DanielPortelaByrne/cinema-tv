@@ -665,7 +665,8 @@ class SetupFlow(
 
         updates?.let { up ->
             val build = up.updater.currentBuild
-            val row = p.row("Updates", "Cinema build $build")
+            fun how() = if (up.updater.auto) "updates install by themselves" else "you're asked before each update"
+            val row = p.row("Updates", "Cinema build $build · ${how()}")
             row.button("Check for updates") {
                 row.detail.text = "Checking for a newer build…"
                 up.checkNow { u, reached ->
@@ -676,9 +677,14 @@ class SetupFlow(
                             up.offer(u)
                         }
                         !reached -> row.detail.text = "Couldn't reach GitHub just now · build $build"
-                        else -> row.detail.text = "Up to date · build $build"
+                        else -> row.detail.text = "Up to date · build $build · ${how()}"
                     }
                 }
+            }
+            row.button(if (up.updater.auto) "Turn off automatic" else "Turn on automatic") {
+                up.updater.auto = !up.updater.auto
+                row.lastButton?.label?.text = if (up.updater.auto) "Turn off automatic" else "Turn on automatic"
+                row.detail.text = "Cinema build $build · ${how()}"
             }
         }
 

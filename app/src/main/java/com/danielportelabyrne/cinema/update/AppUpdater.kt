@@ -17,9 +17,10 @@ import java.net.URL
 
 /**
  * Cinema updating itself: asks GitHub for the newest build, downloads its app file and hands it to Android's package
- * installer. Android always asks the viewer to confirm an app install (and, the first time, to let Cinema install apps);
- * the new build then replaces this one. Android does not let an app reopen itself afterwards, so the viewer opens it again. Every call that touches the network blocks, so
- * run them off the main thread.
+ * installer. The first time, Android asks the viewer to confirm the install (and to let Cinema install apps); once Cinema
+ * has installed itself like that, Android lets it install later builds of itself without asking, which is what automatic
+ * updates use ([installQuietly]). Android does not let an app reopen itself after an update, so the viewer opens it
+ * again. Every call that touches the network blocks, so run them off the main thread.
  */
 class AppUpdater(private val context: Context) {
     private val prefs = context.getSharedPreferences("updates", Context.MODE_PRIVATE)
@@ -47,6 +48,49 @@ class AppUpdater(private val context: Context) {
             if (code != 200) null else c.inputStream.bufferedReader().use { UpdateCheck.parse(it.readText()) }
         } finally { c.disconnect() }
     } catch (e: Exception) { Log.w(TAG, "update check failed: ${e.javaClass.simpleName}"); null }.also { prefs.edit().putLong(KEY_CHECKED, System.currentTimeMillis()).apply() }
+
+    /** Whether newer builds download by themselves and install when Cinema is not on screen. On unless turned off. */
+    var auto: Boolean
+        get() = prefs.getBoolean(KEY_AUTO, true)
+        set(v) { prefs.edit().putBoolean(KEY_AUTO, v).apply() }
+
+    /**
+     * Whether Android will install a new build without asking: Android 12 or later, Cinema allowed to install apps, and the
+     * copy running installed by Cinema itself (one installed from a computer or a store still needs the viewer's yes once).
+     */
+    fun canInstallSilently(): Boolean {
+        if (Build.VERSION.SDK_INT < 31) return false
+        val pm = context.packageManager
+        if (!pm.canRequestPackageInstalls()) return false
+        return try { pm.getInstallSourceInfo(context.packageName).installingPackageName == context.packageName } catch (_: Exception) { false }
+    }
+
+    /** A build already downloaded and waiting to be installed, if it is still newer than the one running. */
+    fun ready(): Pair<Int, File>? {
+        val build = prefs.getInt(KEY_READY, 0)
+        val file = File(context.cacheDir, "updates/cinema-$build.apk")
+        return if (build > currentBuild && file.exists()) build to file else null
+    }
+
+    fun markReady(build: Int) = prefs.edit().putInt(KEY_READY, build).apply()
+
+    /** Installs the waiting build without asking, when Android allows it. Returns whether it started. */
+    fun installQuietly(): Boolean {
+        if (!auto || !canInstallSilently()) return false
+        val (_, file) = ready() ?: return false
+        return try { install(file); true } catch (e: Exception) { Log.w(TAG, "quiet install failed: ${e.javaClass.simpleName}"); false }
+    }
+
+    /**
+     * The build Cinema was updated to since it last ran, once (for "Updated to build 312"); null when it was not updated
+     * by itself.
+     */
+    fun justUpdatedTo(): Long? {
+        val from = prefs.getLong(KEY_FROM, 0L)
+        if (from == 0L) return null
+        prefs.edit().remove(KEY_FROM).apply()
+        return currentBuild.takeIf { it > from }
+    }
 
     /** A newer build than this one, or null. */
     fun available(): AvailableUpdate? = latest()?.takeIf { UpdateCheck.isNewer(it, currentBuild) }
@@ -96,6 +140,7 @@ class AppUpdater(private val context: Context) {
      * installed, this process is replaced by the new build.
      */
     fun install(apk: File) {
+        prefs.edit().putLong(KEY_FROM, currentBuild).apply()
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
@@ -132,6 +177,9 @@ class AppUpdater(private val context: Context) {
         private const val TAG = "Updates"
         private const val KEY_CHECKED = "checked"
         private const val KEY_DISMISSED = "dismissed"
+        private const val KEY_AUTO = "auto"
+        private const val KEY_READY = "ready"
+        private const val KEY_FROM = "updatingFrom"
         private const val CHECK_EVERY_MS = 6 * 60 * 60_000L
     }
 }
