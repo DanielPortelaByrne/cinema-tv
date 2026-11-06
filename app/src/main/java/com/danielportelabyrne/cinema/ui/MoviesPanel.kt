@@ -816,25 +816,40 @@ class MoviesPanel(
     private fun shelves(specs: List<ShelfSpec>, gen: Int) {
         // Every row gets its place on the page now, with room reserved so the page does not jump; its titles are fetched
         // and drawn only when it is about to be seen, which is what keeps opening the page quick.
+        // Rows take turns between wide stills, posters, smaller stills and a spotlight, so neighbours never look alike.
+        val looks = com.danielportelabyrne.cinema.data.movies.ShelfLooks.forShelves(specs)
         specs.forEachIndexed { i, spec ->
             val row = row(spec.heading, null)
-            // Room for the row before it loads, so the page does not jump: a poster row, or a shorter Top 10 row.
-            row.inner.minimumHeight = Cinema.px(activity, if (spec.ranked) 368 else 488)
+            // Room for the row before it loads, so the page does not jump.
+            row.inner.minimumHeight = Cinema.px(activity, rowHeight(looks[i]))
             // The first rows are always near the top: fetch them now rather than after the page's first layout (a second
             // or more on a cold start), so they are ready the moment the main thread is free to draw them.
-            if (i < EAGER_SHELVES) loadShelf(spec, row, gen) else pending += Lazy(row) { loadShelf(spec, row, gen) }
+            if (i < EAGER_SHELVES) loadShelf(spec, row, gen, looks[i]) else pending += Lazy(row) { loadShelf(spec, row, gen, looks[i]) }
         }
         page.post { fillNear() }
     }
 
-    private fun loadShelf(spec: ShelfSpec, row: Row, gen: Int) {
+    /** Mockup pixels a row of each look needs, card and name included. */
+    private fun rowHeight(look: com.danielportelabyrne.cinema.data.movies.ShelfLook): Int = when (look) {
+        com.danielportelabyrne.cinema.data.movies.ShelfLook.RANKED -> 368
+        com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS -> STILL_H + 8
+        com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS -> SMALL_STILL_H + 8
+        com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT -> SPOTLIGHT_H + 8
+        com.danielportelabyrne.cinema.data.movies.ShelfLook.POSTERS -> 488
+    }
+
+    private fun loadShelf(spec: ShelfSpec, row: Row, gen: Int, planned: com.danielportelabyrne.cinema.data.movies.ShelfLook) {
         val queuedAt = Perf.now()
         Perf.mark("shelf '${spec.heading}' queued")
         shelfPool.execute {
             val startAt = Perf.now()
             val libraryAt = Perf.now()
             // A Top 10 row is exactly that: ten numbered posters, nothing after them.
-            val entries = catalog.shelf(spec).titles.take(if (spec.ranked) 10 else SHELF_LIMIT).map { entry(it) }
+            val fetched = catalog.shelf(spec).titles.take(if (spec.ranked) 10 else SHELF_LIMIT).map { entry(it) }
+            val look = com.danielportelabyrne.cinema.data.movies.ShelfLooks.resolve(planned, fetched.map { it.title })
+            val lead = if (look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT)
+                com.danielportelabyrne.cinema.data.movies.ShelfLooks.spotlightIndex(fetched.map { it.title }) ?: 0 else 0
+            val entries = if (lead > 0) listOf(fetched[lead]) + fetched.filterIndexed { i, _ -> i != lead } else fetched
             val catalogAt = Perf.now()
             activity.runOnUiThread {
                 if (gen != generation) return@runOnUiThread
@@ -845,6 +860,7 @@ class MoviesPanel(
                 if (entries.isEmpty()) { row.hide(); return@runOnUiThread }
                 val related = entries.map { it.title }
                 row.setCount(entries.size)
+                row.inner.minimumHeight = Cinema.px(activity, rowHeight(look))
                 if (!heroSet) {
                     val featured = entries.withIndex().filter { it.value.title.backdropUrl != null }.take(3)
                     setHero(featured.map { it.value }, related, featured.map { rankLabel(spec.heading, spec.ranked, it.index) })
@@ -858,12 +874,24 @@ class MoviesPanel(
                         val e = entries[i]
                         val ranked = spec.ranked && i < 10
                         val defer = if (i >= EAGER_POSTERS) row else null
-                        row.inner.addView(if (ranked) rankCard(i + 1, e, related, defer) else card(e, related, defer = defer), cardParams(i, wide = ranked))
+                        val view = when {
+                            ranked -> rankCard(i + 1, e, related, defer)
+                            look == com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS -> stillCard(e, related, STILL_W, STILL_H, defer)
+                            look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS -> stillCard(e, related, SMALL_STILL_W, SMALL_STILL_H, defer)
+                            look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT && i == 0 -> stillCard(e, related, SPOTLIGHT_W, SPOTLIGHT_H, null, spotlight = true)
+                            else -> card(e, related, defer = defer)
+                        }
+                        row.inner.addView(view, cardParams(i, wide = ranked))
                     }
                     if (to < entries.size) android.view.Choreographer.getInstance().postFrameCallback { addFrom(to) }
                     else {
                         // A genre shelf ends with the way into that genre's own page.
-                        moreCard(spec)?.let { row.inner.addView(it, cardParams(entries.size)) }
+                        val moreSize = when (look) {
+                            com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS -> STILL_W to STILL_H
+                            com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS -> SMALL_STILL_W to SMALL_STILL_H
+                            else -> 260 to 390
+                        }
+                        moreCard(spec, moreSize.first, moreSize.second)?.let { row.inner.addView(it, cardParams(entries.size)) }
                         Perf.took("shelf '${spec.heading}' ui add ${entries.size} (spread)", Perf.now() - uiAt); row.scroller.post { row.loadNear() }; page.post { fillNear() }
                     }
                 }
@@ -4197,7 +4225,7 @@ class MoviesPanel(
      * per-service shelves. Until now the only way there was a theme in Search. None on the genre's own page, where it would
      * only lead back to itself, nor on a Top 10 row, which is exactly ten titles.
      */
-    private fun moreCard(spec: ShelfSpec): View? {
+    private fun moreCard(spec: ShelfSpec, w: Int = 260, h: Int = 390): View? {
         val code = spec.genre?.takeUnless { spec.ranked } ?: return null
         val genre = (Catalog.GENRES + Genre("doc", "Documentaries")).firstOrNull { it.code == code } ?: return null
         if ((current as? Dest.InGenre)?.genre?.code == code) return null
@@ -4205,7 +4233,7 @@ class MoviesPanel(
         val colour = tileColours[seed % tileColours.size]
         val label = "More ${genre.label}"
         val ink = if (colour == Cinema.STRIPE_SAFFRON) Cinema.INK else Cinema.CREAM
-        val card = PosterCard(activity, 260, 390, titled = false, radiusPx = 22f)
+        val card = PosterCard(activity, w, h, titled = false, radiusPx = 22f, focusScale = if (w > h) 1.06f else 1.1f)
         card.contentDescription = label
         card.poster.background = MotifDrawable(colour, Cinema.pxf(activity, 22), seed)
         card.poster.foreground = null
@@ -4311,6 +4339,51 @@ class MoviesPanel(
         return card
     }
 
+    /**
+     * A wide 16:9 still with the name, year and genre over its foot. [spotlight] is a row's large lead card: a SPOTLIGHT
+     * kicker, a bigger name and two lines of the overview. In the library shows as a pill at the top, clear of the text.
+     */
+    private fun stillCard(e: Entry, related: List<Title>, w: Int, h: Int, defer: Row?, spotlight: Boolean = false): View {
+        val t = e.title
+        val card = PosterCard(activity, w, h, titled = false, focusScale = if (spotlight) 1.04f else 1.06f)
+        card.contentDescription = t.name
+        if (t.backdropUrl == null && t.posterUrl == null) card.placeholder(t.name)
+        // A scrim under the words, so they read on any picture.
+        card.poster.addView(View(activity).apply {
+            background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0, 0x33000000, 0xD9000000.toInt()))
+        }, FrameLayout.LayoutParams(-1, -1))
+        val words = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.START
+            val side = Cinema.px(activity, if (spotlight) 38 else 24)
+            setPadding(side, 0, side, Cinema.px(activity, if (spotlight) 34 else 20))
+        }
+        if (spotlight) words.addView(Cinema.text(activity, "Spotlight", 16, Cinema.SAFFRON, weight = 700, tracking = 0.2f, caps = true),
+            LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = Cinema.px(activity, 6) })
+        val nameSize = when { spotlight -> 50; w >= STILL_W -> 30; else -> 25 }
+        words.addView(Cinema.text(activity, t.name, nameSize, Cinema.CREAM, serif = true, weight = 500).apply {
+            maxLines = if (spotlight) 2 else 1; ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        subline(t).takeIf { it.isNotBlank() }?.let {
+            words.addView(Cinema.text(activity, it, if (spotlight) 20 else 16, Cinema.alpha(Cinema.CREAM, 0.72f)).apply { maxLines = 1 },
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 4) })
+        }
+        if (spotlight) t.overview?.let {
+            words.addView(Cinema.text(activity, it, 20, Cinema.alpha(Cinema.CREAM, 0.86f)).apply {
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END; maxWidth = Cinema.px(activity, w * 3 / 4)
+            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 12) })
+        }
+        card.poster.addView(words, FrameLayout.LayoutParams(-1, -1))
+        if (e.library != null) card.chip("In library") else whenInLibrary(e) { card.chip("In library") }
+        (t.backdropUrl ?: t.posterUrl)?.let { u ->
+            val load = { images.loadShadedPoster(u, e.posterHeaders, w, pageTag) { b: Bitmap -> card.setShadedPoster(b); frost?.refresh(); Perf.end("movies.open->firstPoster") } }
+            if (defer != null) defer.deferred += card to load else load()
+        }
+        card.onFocus = { lit -> if (lit) { reveal(card); prefetchOnRest(card, e) } }
+        card.setOnClickListener { openDetail(e, related) }
+        return card
+    }
+
     /** A Top 10 item: an outlined Fraunces numeral tucked behind the left of the poster (`.top10`). */
     private fun rankCard(rank: Int, e: Entry, related: List<Title>, defer: Row? = null): View {
         val box = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false }
@@ -4378,6 +4451,10 @@ class MoviesPanel(
 
     private companion object {
         const val SHELF_LIMIT = 16
+        /** Wide-card sizes in mockup pixels: stills, smaller stills and a spotlight row's lead card (all 16:9). */
+        const val STILL_W = 520; const val STILL_H = 292
+        const val SMALL_STILL_W = 400; const val SMALL_STILL_H = 225
+        const val SPOTLIGHT_W = 880; const val SPOTLIGHT_H = 495
         const val HERO_HEIGHT = 762      // mockup px: the first row's heading sits at 812
         const val HERO_TURN_MS = 9_000L  // the featured title turns this often
         const val RAIL_WIDTH = 92        // mockup px, collapsed

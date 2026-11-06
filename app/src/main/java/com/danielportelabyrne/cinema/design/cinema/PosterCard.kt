@@ -28,7 +28,9 @@ import com.danielportelabyrne.cinema.design.Motion
  * ("2026 · Animation") fades in. Sizes are in mockup pixels; [titled] false leaves the text out (the Top 10 row).
  * Parents must not clip children, as the glow and the grown card reach past the card's bounds.
  */
-class PosterCard(context: Context, posterW: Int, posterH: Int, titled: Boolean = true, radiusPx: Float = 16f) : LinearLayout(context) {
+class PosterCard(context: Context, posterW: Int, posterH: Int, titled: Boolean = true, radiusPx: Float = 16f,
+                 /** How much the card grows on focus. Wide cards grow less, so they do not cover their neighbours. */
+                 private val focusScale: Float = 1.1f) : LinearLayout(context) {
     val poster: FrameLayout
     val image: ImageView
     val title: TextView?
@@ -128,7 +130,7 @@ class PosterCard(context: Context, posterW: Int, posterH: Int, titled: Boolean =
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        val scale = if (gainFocus) 1.1f else 1f
+        val scale = if (gainFocus) focusScale else 1f
         val duration = if (gainFocus) Motion.FOCUS_IN_MS else Motion.FOCUS_OUT_MS
         // Scale animates; depth is set once (an animated translationZ re-shadowed the card every frame).
         translationZ = if (gainFocus) Cinema.pxf(context, 20) else 0f
