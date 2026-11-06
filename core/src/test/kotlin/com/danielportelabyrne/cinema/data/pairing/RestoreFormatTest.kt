@@ -26,6 +26,7 @@ class RestoreFormatTest {
         settings.setManualArr(Arr.SONARR, ManualArr("http://10.0.0.5:8989", "sonarr-key"))
         settings.setOn(Integration.entries.first(), true)
         settings.requestHelperUrl = "http://10.0.0.6:9000"
+        settings.suggestashowUrl = "http://10.0.0.12:8099"
         settings.stremioKey = "stremio-key"
         settings.subsonic = SubsonicConfig("http://10.0.0.7:4533", "daniel", "music-pw", "")
         settings.setClientUser("http://10.0.0.11:8090", "admin")
@@ -49,6 +50,7 @@ class RestoreFormatTest {
         assertEquals(ManualArr("http://10.0.0.5:8989", "sonarr-key"), freshSettings.manualArr(Arr.SONARR))
         assertTrue(freshSettings.isOn(Integration.entries.first()))
         assertEquals("http://10.0.0.6:9000", freshSettings.requestHelperUrl)
+        assertEquals("http://10.0.0.12:8099", freshSettings.suggestashowUrl)
         assertEquals("stremio-key", freshSettings.stremioKey)
         assertEquals("music-pw", freshSettings.subsonic?.password)
         assertEquals("admin", freshSettings.clientUser("http://10.0.0.11:8090"))
