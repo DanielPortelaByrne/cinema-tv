@@ -1984,6 +1984,7 @@ class MoviesPanel(
             pending = Runnable { runQuery(lbTyped.trim()) }.also { ui.postDelayed(it, 450) }
         }
         keyboard.onLeave = { leaveKeyboard(field) }
+        keyboard.upTarget = { searchBarControl(field) }
         place(keyboard, left, Cinema.px(activity, 240), Cinema.px(activity, 980), Cinema.px(activity, 476))
         // Typing from a phone: the full text it sends is the query, live as it is typed.
         val lbPhoneTarget = phoneTargetFor("lb-search", "Search lists", Qwerty.MAX_LENGTH, { lbTyped }, { text ->
@@ -2167,7 +2168,9 @@ class MoviesPanel(
             if (lbTyped.length >= 2) showPreview(lbTyped)
         })
         usePhoneTarget(null, followPhoneTarget)
-        place(phoneIconButton { PhoneInput.toggleQr() }, Cinema.px(activity, 1240), Cinema.px(activity, 0), Cinema.px(activity, 84), Cinema.px(activity, 84))
+        val followPhone = phoneIconButton { PhoneInput.toggleQr() }
+        keyboard.upTarget = { followPhone }
+        place(followPhone, Cinema.px(activity, 1240), Cinema.px(activity, 0), Cinema.px(activity, 84), Cinema.px(activity, 84))
         // People the followed members follow, to choose without typing.
         val suggestions = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(suggestions, LinearLayout.LayoutParams(-1, -2))
@@ -2993,6 +2996,7 @@ class MoviesPanel(
         place(eyebrow, left, Cinema.px(activity, 222))
         val keyboard = QwertyKeyboard(activity) { key -> typeKey(key) }
         keyboard.onLeave = { leaveKeyboard(field) }
+        keyboard.upTarget = { searchBarControl(field) }
         place(keyboard, left, Cinema.px(activity, 300), Cinema.px(activity, 980), Cinema.px(activity, 476))
         val hints = Cinema.keyHints(activity, listOf("MIC" to "Hold on your remote to speak", "OK" to "Select", "▲" to "Voice search"))
         stage.addView(hints, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin = left; bottomMargin = Cinema.px(activity, 48) })
@@ -3026,6 +3030,10 @@ class MoviesPanel(
 
     /** Puts the caret just after the typed text ([after]), or before the grey prompt when nothing is typed yet. */
     /** Back on the keyboard leaves it: focus goes to the search field's last control (the microphone), and the page stays open. */
+    /** Where Up from the top of a keyboard lands: the search bar's first button (the phone, or the microphone). */
+    private fun searchBarControl(field: com.danielportelabyrne.cinema.design.cinema.SearchField): View? =
+        listOf(field.phone, field.mic).firstOrNull { it.isShown && it.isFocusable }
+
     private fun leaveKeyboard(field: View) {
         val group = field as? ViewGroup ?: return
         (group.childCount - 1 downTo 0).map { group.getChildAt(it) }.firstOrNull { it.isFocusable }?.requestFocus()

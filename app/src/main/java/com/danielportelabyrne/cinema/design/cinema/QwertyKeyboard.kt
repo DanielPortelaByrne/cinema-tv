@@ -30,6 +30,14 @@ class QwertyKeyboard(context: Context, private val onKey: (Qwerty.Key) -> Unit) 
     /** Called when Back is pressed on the keyboard; the caller moves focus out of it. Null lets Back act as usual. */
     var onLeave: (() -> Unit)? = null
 
+    /**
+     * Where Up from the top row goes: the page's search bar. Without it Android picks whatever lies nearest above and
+     * to the side, which on the search page was the recent searches. Null, or a view that cannot take focus, keeps that.
+     */
+    var upTarget: (() -> View?)? = null
+
+    private var topRow: List<KeyCap> = emptyList()
+
     private var symbols = false
     private var shifted = false
     private val letterKeys = ArrayList<KeyCap>()
@@ -68,6 +76,7 @@ class QwertyKeyboard(context: Context, private val onKey: (Qwerty.Key) -> Unit) 
             KeyCap(context, "Delete", R.drawable.ic_cin_bksp, wide = true).apply { setOnClickListener { press(Qwerty.Key.Delete) } } to (780 to 200),
         )
         bottom.forEach { (key, place) -> add(key, Cinema.px(context, place.first), y, Cinema.px(context, place.second)) }
+        topRow = rowKeys.firstOrNull().orEmpty()
         rowKeys.forEach { wrap(it) }
         wrap(bottom.map { it.first })
         shiftKey.latch(shifted)
@@ -117,6 +126,14 @@ class QwertyKeyboard(context: Context, private val onKey: (Qwerty.Key) -> Unit) 
             return true
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    /** Cinema moves focus by asking the focused view's parents (see CinemaActivity), so Up is answered here. */
+    override fun focusSearch(focused: View?, direction: Int): View? {
+        if (direction == View.FOCUS_UP && focused != null && topRow.any { it === focused }) {
+            upTarget?.invoke()?.takeIf { it.isShown && it.isFocusable }?.let { return it }
+        }
+        return super.focusSearch(focused, direction)
     }
 
     /** One key cap. Its [value] is the character it types; the wide ones carry a word or an icon instead. */
