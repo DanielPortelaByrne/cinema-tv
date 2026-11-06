@@ -15,7 +15,8 @@ enum class ShelfLook {
 }
 
 object ShelfLooks {
-    private val CYCLE = listOf(ShelfLook.STILLS, ShelfLook.POSTERS, ShelfLook.SMALL_STILLS, ShelfLook.SPOTLIGHT)
+    /** The spotlight comes first: the first row of titles on a page is the one most on display. */
+    private val CYCLE = listOf(ShelfLook.SPOTLIGHT, ShelfLook.STILLS, ShelfLook.POSTERS, ShelfLook.SMALL_STILLS)
 
     /** Below this share of titles with a wide picture, a wide row would be mostly placeholders: posters instead. */
     const val MIN_STILL_SHARE = 0.7

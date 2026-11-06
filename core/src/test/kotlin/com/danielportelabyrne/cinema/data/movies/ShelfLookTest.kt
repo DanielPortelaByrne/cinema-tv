@@ -16,7 +16,7 @@ class ShelfLookTest {
     @Test fun homeRowsTakeTurnsAndTop10KeepsItsNumbers() {
         val looks = ShelfLooks.forShelves(Catalog.homePage())
         assertEquals(RANKED, looks.first())
-        assertEquals(listOf(STILLS, POSTERS, SMALL_STILLS, SPOTLIGHT, STILLS), looks.drop(1).take(5))
+        assertEquals(listOf(SPOTLIGHT, STILLS, POSTERS, SMALL_STILLS, SPOTLIGHT), looks.drop(1).take(5))
         looks.zipWithNext().forEach { (a, b) -> assertNotEquals(a, b) }
     }
 
