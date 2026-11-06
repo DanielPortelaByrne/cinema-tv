@@ -117,7 +117,7 @@ class SetupFlow(
         when (name) {
             "welcome" -> welcome(); "jellyfin" -> jellyfinServer(); "signin" -> jellyfinSignIn(); "seerr" -> seerrStep()
             "arr" -> arrStep(); "client" -> clientStep(); "region" -> regionStep(); "advanced" -> advancedStep(); "order" -> libraryOrderStep()
-            "integrations" -> integrationsStep(); "music" -> musicStep()
+            "integrations" -> integrationsStep(); "music" -> musicStep(); "suggestashow" -> suggestashowStep()
             else -> overview()
         }
     }
@@ -436,6 +436,28 @@ class SetupFlow(
         p.secondary("Cancel") { integrationsStep() }
     }
 
+    private fun suggestashowStep() {
+        val p = page("SUGGESTASHOW", "Suggestashow server", "Your own server works out Picked for you from everything watched on Jellyfin.")
+        backTo = ::integrationsStep
+        val address = p.field("Suggestashow address", settings.suggestashowUrl)
+        p.note("It checks who is watching with your Jellyfin sign-in. Nothing else leaves this TV.")
+        val token = pageToken
+        p.primary("Connect", R.drawable.ic_cin_check) {
+            val a = CinemaSettings.cleanUrl(address.text.toString())
+            if (a == null) { p.status("Enter the server's address."); return@primary }
+            p.busy("Connecting…")
+            bg({ com.danielportelabyrne.cinema.data.movies.SuggestashowClient.reachable(a) }) { ok ->
+                if (token != pageToken) return@bg
+                if (ok == true) { settings.suggestashowUrl = a; settings.setOn(Integration.SUGGESTASHOW, true); changed = true; integrationsStep() }
+                else p.done("Couldn't reach suggestashow at $a.")
+            }
+        }
+        if (settings.suggestashowUrl != null) p.secondary("Forget server") {
+            settings.suggestashowUrl = null; settings.setOn(Integration.SUGGESTASHOW, false); changed = true; integrationsStep()
+        }
+        p.secondary("Cancel") { integrationsStep() }
+    }
+
     private fun libraryOrderStep() {
         val p = page("SETTINGS", "Library order", "How My library lists your films and series.")
         backTo = ::overview
@@ -456,6 +478,7 @@ class SetupFlow(
             val row = p.row(integration.label, integrationDetail(integration))
             if (integration == Integration.MUSIC) row.button(if (settings.subsonic == null) "Set up" else "Server") { musicStep() }
             if (integration == Integration.STREMIO) row.button(if (settings.stremioKey == null) "Link" else "Open") { stremioStep() }
+            if (integration == Integration.SUGGESTASHOW) row.button(if (settings.suggestashowUrl == null) "Set up" else "Server") { suggestashowStep() }
             row.button(toggleLabel(integration)) {
                 settings.setOn(integration, !settings.isOn(integration)); changed = true
                 row.detail.text = integrationDetail(integration)
@@ -628,6 +651,7 @@ class SetupFlow(
             Integration.MUSIC -> settings.subsonic?.let { "On · ${it.baseUrl}" + if (it.username.isNotBlank()) " · ${it.username}" else "" }
                 ?: "On · set up a server to add Music to the menu"
             Integration.STREMIO -> if (settings.stremioKey != null) "On · linked, open it to see and import your saved films" else "On · press Link to port your Stremio library"
+            Integration.SUGGESTASHOW -> settings.suggestashowUrl?.let { "On · $it" } ?: "On · set up a server to use it for Picked for you"
         }
     }
 

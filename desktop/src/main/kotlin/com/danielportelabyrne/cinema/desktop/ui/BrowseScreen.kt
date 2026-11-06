@@ -489,6 +489,7 @@ private fun PicksRow(model: CinemaModel, art: Art, state: PageState, onEnter: ()
         if (saved.isNotEmpty()) value = saved
         val fresh = withContext(Dispatchers.IO) { runCatching { model.picks.fresh() }.getOrNull() }
         value = fresh ?: saved
+        if (fresh != null) withContext(Dispatchers.IO) { runCatching { model.picks.shown(fresh) } }
     }
     val list = picks ?: return
     if (list.isEmpty()) return
@@ -509,8 +510,8 @@ private fun pickTitle(p: Pick): Title {
     return Title(
         key = "tmdb:" + Picks.key(s.kind, s.tmdbId), kind = s.kind, name = s.name, year = s.year,
         overview = s.overview, runtimeMin = null, genres = s.genres, age = null, imdbScore = null,
-        posterUrl = s.posterPath?.let { "https://image.tmdb.org/t/p/w342$it" },
-        backdropUrl = s.backdropPath?.let { "https://image.tmdb.org/t/p/original$it" },
+        posterUrl = s.rowPoster,
+        backdropUrl = s.heroBackdrop,
         imdbId = null, tmdbId = s.tmdbId.toString(),
     )
 }

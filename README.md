@@ -25,6 +25,10 @@ Two extra services can run next to Seerr. They are **not part of this repo**, an
 - **Request helper.** It watches requests, retries searches, and reports why a request is stuck. Cinema calls `GET /requests`, `POST /requests/{id}/search`, `GET /torrents`, `POST /torrents/{hash}/next|now` and `POST /media/{tv|movie}/{tmdbId}/clear-stale`, each sent with the header `X-MCM-Action: 1`. Without it, "Search again" goes straight to Sonarr/Radarr, and torrent controls talk to the client directly.
 - **Stream service.** It plays a film before it has downloaded, through `POST /start` and `POST /prepare`. Without it, the Stream now button is hidden.
 
+### Suggestashow
+
+[suggestashow](https://github.com/ConorHK/suggestashow) is an optional server that works out **Picked for you** from everything watched on Jellyfin, on any device, and learns from what is ignored or requested. Turn it on under **Settings → Integrations → Suggestashow** and give its address (on the desktop app, under **Helper services**). Cinema sends its Jellyfin sign-in so the server knows who is watching. While it is off, picks are worked out on the device as before. When the server cannot be reached, the last picks stay. A preset can set it with `"suggestashowUrl"`.
+
 ## Installing on a TV
 
 1. Get an APK. Either download one someone has built, or build it yourself (see below).

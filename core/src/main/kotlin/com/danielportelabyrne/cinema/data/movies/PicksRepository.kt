@@ -38,7 +38,10 @@ class WatchHistory(platform: Platform) {
  * "Picked for you", kept on disk so the page shows the last picks at once. They are worked out again once a day, or
  * sooner (at most every half hour) when something new has been watched or added. Blocking; call off the main thread.
  */
-class PicksRepository(platform: Platform, private val seerr: SeerrClient, private val jellyfin: JellyfinClient, val history: WatchHistory) {
+class PicksRepository(
+    platform: Platform, private val seerr: SeerrClient, private val jellyfin: JellyfinClient, val history: WatchHistory,
+    private val remote: () -> SuggestashowClient? = { null }
+) {
     private val file = File(platform.filesDir, "picks.json")
     private val prefs = platform.preferences("picks")
     @Volatile private var memory: List<Pick>? = null
@@ -48,6 +51,7 @@ class PicksRepository(platform: Platform, private val seerr: SeerrClient, privat
 
     /** Fresh picks when they are due, else the saved ones. Null when they could not be worked out (Seerr signed out or unreachable). */
     @Synchronized fun fresh(): List<Pick>? {
+        remote()?.let { server -> return server.picks()?.also { keep(it) } }
         if (!seerr.isSignedIn) return null
         val library = jellyfin.takeIf { it.isConnected }?.library().orEmpty()
         val watched = history.all()
@@ -69,10 +73,17 @@ class PicksRepository(platform: Platform, private val seerr: SeerrClient, privat
         if (reached == 0) return null
         val exclude = librarySeeds.map { Picks.key(it.kind, it.tmdbId) }.toSet() + watched.map { Picks.key(it.kind, it.tmdbId) }
         val picks = Picks.rank(seeds, suggestions, exclude)
-        try { File(file.parentFile, file.name + ".tmp").also { it.writeText(Picks.toJson(picks)); it.renameTo(file) } } catch (_: Exception) { }
+        keep(picks)
         prefs.edit().putLong("at", System.currentTimeMillis()).putString("signature", signature).apply()
-        memory = picks
         return picks
+    }
+
+    /** Tells a suggestashow server, when one is in use, that these picks were on screen. */
+    fun shown(picks: List<Pick>) { remote()?.shown(picks) }
+
+    private fun keep(picks: List<Pick>) {
+        try { File(file.parentFile, file.name + ".tmp").also { it.writeText(Picks.toJson(picks)); it.renameTo(file) } } catch (_: Exception) { }
+        memory = picks
     }
 
     private companion object {

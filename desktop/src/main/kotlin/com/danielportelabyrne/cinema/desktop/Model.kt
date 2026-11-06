@@ -143,7 +143,12 @@ class CinemaModel(
     val settings = CinemaSettings(platform)
     val catalog = CatalogRepository(platform)
     val history = WatchHistory(platform)
-    val picks by lazy { PicksRepository(platform, seerr, client, history) }
+    val picks by lazy {
+        PicksRepository(platform, seerr, client, history) {
+            settings.suggestashowUrl?.takeIf { settings.isOn(com.danielportelabyrne.cinema.data.settings.Integration.SUGGESTASHOW) }
+                ?.let { com.danielportelabyrne.cinema.data.movies.SuggestashowClient(it, client::authorization) }
+        }
+    }
     val queueClient by lazy { QueueClient(seerr, platform) }
     val sonarr by lazy { SonarrClient(seerr) }
     val remover by lazy { LibraryRemover(seerr) }

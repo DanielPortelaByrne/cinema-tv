@@ -41,6 +41,7 @@ object RestoreFormat {
             .put("integrations", JSONObject().apply { Integration.entries.forEach { put(it.key, settings.isOn(it)) } })
         settings.requestHelperUrl?.let { s.put("requestHelperUrl", it) }
         settings.streamServiceUrl?.let { s.put("streamServiceUrl", it) }
+        settings.suggestashowUrl?.let { s.put("suggestashowUrl", it) }
         Arr.entries.forEach { arr ->
             settings.manualArr(arr)?.let { s.put(arr.name.lowercase(), JSONObject().put("url", it.baseUrl).put("apiKey", it.apiKey)) }
         }
@@ -103,11 +104,13 @@ object RestoreFormat {
         val stremio = text(s, "stremioKey").ifBlank { null }
         val helper = text(s, "requestHelperUrl").ifBlank { null }
         val stream = text(s, "streamServiceUrl").ifBlank { null }
+        val suggestashow = text(s, "suggestashowUrl").ifBlank { null }
 
         region?.let { settings.region = it }
         settings.libraryOrder = order
         settings.requestHelperUrl = helper
         settings.streamServiceUrl = stream
+        settings.suggestashowUrl = suggestashow
         Arr.entries.forEach { settings.setManualArr(it, manual[it]) }
         settings.subsonic = subsonic
         settings.stremioKey = stremio

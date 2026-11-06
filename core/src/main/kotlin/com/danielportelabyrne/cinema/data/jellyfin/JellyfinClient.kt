@@ -71,6 +71,9 @@ class JellyfinClient(platform: Platform) {
      * What a player needs to fetch a stream: the token travels in a header, never in the address. Jellyfin 12
      * answers 401 to the older X-Emby-Token header and to ?api_key=, so it has to be the Authorization header.
      */
+    /** The Authorization header for this TV's sign-in, or null when signed out. Other servers use it to check the viewer. */
+    fun authorization(): String? = token?.takeIf { isConnected }?.let { JellyfinApi.authHeader(deviceId, deviceName, it) }
+
     fun playbackHeaders(): Map<String, String> = token?.let { mapOf("Authorization" to JellyfinApi.authHeader(deviceId, deviceName, it)) }.orEmpty()
 
     fun streamUrl(item: JellyfinItem) = JellyfinApi.directStreamUrl(JellyfinApi.cleanBase(server), item)

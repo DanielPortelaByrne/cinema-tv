@@ -358,11 +358,15 @@ class SetupModel(private val m: CinemaModel) {
         backTo = ::overview
         val helper = Field("Request helper address", settings.requestHelperUrl)
         val stream = Field("Stream service address", settings.streamServiceUrl)
-        fields = listOf(helper, stream)
+        val suggest = Field("Suggestashow address", settings.suggestashowUrl)
+        fields = listOf(helper, stream, suggest)
         notes = mapOf(0 to "Watches requests on the server, retries searches, and reports why a request is stuck.",
-            1 to "Plays a film before it has downloaded. Adds Stream now to title pages.")
+            1 to "Plays a film before it has downloaded. Adds Stream now to title pages.",
+            2 to "Works out Picked for you from everything watched on Jellyfin.")
         primary("Save", "check") {
             settings.requestHelperUrl = helper.value; settings.streamServiceUrl = stream.value
+            settings.suggestashowUrl = suggest.value
+            settings.setOn(com.danielportelabyrne.cinema.data.settings.Integration.SUGGESTASHOW, settings.suggestashowUrl != null)
             changed = true; overview()
         }
         secondary("Cancel") { overview() }
@@ -385,7 +389,8 @@ class SetupModel(private val m: CinemaModel) {
         list += SetupRow("Country", Locale("", settings.region).getDisplayCountry(Locale.ENGLISH), listOf(RowButton("Change") { regionStep() }))
         val following = LetterboxdRepository.followingCount(m.platform)
         list += SetupRow("Letterboxd", if (following == 0) "Not following anyone. Follow people from the Letterboxd page." else "Following $following · manage them from the Letterboxd page", emptyList())
-        val extras = listOfNotNull(settings.requestHelperUrl?.let { "request helper" }, settings.streamServiceUrl?.let { "stream service" })
+        val extras = listOfNotNull(settings.requestHelperUrl?.let { "request helper" }, settings.streamServiceUrl?.let { "stream service" },
+            settings.suggestashowUrl?.let { "suggestashow" })
         list += SetupRow("Helper services", if (extras.isEmpty()) "None" else extras.joinToString(" and ").replaceFirstChar { it.uppercase() }, listOf(RowButton("Change") { advancedStep() }))
         list += SetupRow("Controller", m.pads().ifEmpty { listOf("None found. The keyboard works too: arrows, Enter and Esc.") }.joinToString(" · "), emptyList())
         list += SetupRow("Reset", "Forget every server, sign-in and setting on this device", listOf(RowButton("Reset everything", danger = true) { confirmReset() }))
