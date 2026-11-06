@@ -21,7 +21,9 @@ import com.danielportelabyrne.cinema.design.Cinema
 class StreamLoadingView(context: Context, title: String) : FrameLayout(context) {
     private val backdrop = HeroBackdrop(context, focusX = 1f, fadeTo = 0.38f)
     private val status: TextView
-    private val bar = CinemaBar(context, trackAlpha = 0.1f).apply { indeterminate = true }
+    // While nothing is known, the wavy loader; once some of the film has arrived, the wavy bar shows how much.
+    private val loader = WaveLoader(context, amplitudePx = 14f, wavelengthPx = 140f, thicknessPx = 20f)
+    private val bar = WaveBar(context, amplitudePx = 10f, wavelengthPx = 120f, thicknessPx = 18f).apply { visibility = GONE; lit = true }
     private val steps = LinkedHashMap<LoadingStep, Pair<View, TextView>>()
     private val seeds: TextView
     private val peers: TextView
@@ -44,7 +46,10 @@ class StreamLoadingView(context: Context, title: String) : FrameLayout(context) 
         column.addView(Cinema.title(context, title, if (title.length > 22) 96 else 132), LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(context, 26) })
         status = Cinema.text(context, "Finding a copy of $title. This can take a minute.", 28, Cinema.READING, weight = 300).apply { maxLines = 2 }
         column.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(context, 28) })
-        column.addView(bar, LinearLayout.LayoutParams(Cinema.px(context, 780), Cinema.px(context, 16)).apply { topMargin = Cinema.px(context, 40) })
+        val progress = FrameLayout(context)
+        progress.addView(loader, LayoutParams(-1, -1))
+        progress.addView(bar, LayoutParams(-1, -1))
+        column.addView(progress, LinearLayout.LayoutParams(Cinema.px(context, 780), Cinema.px(context, 120)).apply { topMargin = Cinema.px(context, 4) })
 
         val trail = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         LoadingStep.values().forEachIndexed { i, step ->
@@ -95,7 +100,10 @@ class StreamLoadingView(context: Context, title: String) : FrameLayout(context) 
         seeds.text = seedCount?.toString() ?: "—"
         peers.text = peerCount?.toString() ?: "—"
         speed.text = LoadingStep.speed(bytesPerSecond) ?: "—"
-        if (progress != null && progress > 0f) { bar.indeterminate = false; bar.progress = progress } else { bar.progress = null; bar.indeterminate = true }
+        val known = progress != null && progress > 0f
+        bar.visibility = if (known) VISIBLE else GONE
+        loader.visibility = if (known) GONE else VISIBLE
+        if (known) bar.progress = progress!!
     }
 
     /** The saffron dot before "Now loading", with a soft halo that breathes. */

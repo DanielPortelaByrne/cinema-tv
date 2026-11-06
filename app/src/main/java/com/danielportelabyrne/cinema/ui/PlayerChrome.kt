@@ -40,6 +40,15 @@ data class PlayerMeta(
     val certificate: String? = null, val rating: Double? = null, val overview: String? = null
 )
 
+/**
+ * One episode on the paused screen's More episodes row. [key] identifies it to the activity; [progress] is how far in
+ * it is (0 for not started); [current] is the one playing.
+ */
+data class EpisodePick(
+    val key: String, val season: Int, val episode: Int, val name: String, val runtimeMin: Int?,
+    val progress: Float, val watched: Boolean, val current: Boolean
+)
+
 /** One figure on the paused screen's Stream card: label, value and an optional second line. */
 data class StreamSpec(val label: String, val value: String, val sub: String? = null)
 
@@ -84,6 +93,8 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     // Glows (the focused button's bloom, the playhead's) are drawn past their views' edges, so the layers holding them
     // must not clip their children: otherwise a glow is cut into a box at the edge of its column or of the scrubber.
     private val controls = FrameLayout(context).apply { clipChildren = false; clipToPadding = false }
+    /** The title block and clock at the top of the controls: they stay put when the controls lift for the episodes. */
+    private val pinnedTop = ArrayList<View>()
     private val eyebrowHolder = FrameLayout(context)
     private val title = Cinema.title(context, "", 60, maxLines = 1)
     private val metaLine = Cinema.text(context, "", 21, Cinema.MUTED).apply { maxLines = 1 }
@@ -159,6 +170,35 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     private val chapterRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
     private val chapterScroller = CalmHorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(chapterRow) }
     private val pausedScrubber = WaveScrubberView(context, amplitudePx = 11f, thicknessPx = 26f)
+    // More episodes: a drawer below the scrubber that peeks up from the foot of the paused screen. Down slides the whole
+    // paused screen up to show it; Up or Back slides it away again.
+    private val pausedSlide = FrameLayout(context).apply { clipChildren = false; clipToPadding = false }
+    private val drawer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; visibility = GONE }
+    private val drawerSeason = Cinema.text(context, "", 19, Cinema.MUTED, weight = 500)
+    private val drawerHint = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+    private val seasonPills = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
+    // A long run of seasons (South Park has 29) scrolls within its share of the line, fading at its ends, never over
+    // the key hint beside it. A plain scroll view, so it follows focus along the seasons.
+    private val seasonScroller = android.widget.HorizontalScrollView(context).apply {
+        isHorizontalScrollBarEnabled = false; isHorizontalFadingEdgeEnabled = true; setFadingEdgeLength(p(60))
+        isSmoothScrollingEnabled = true; addView(seasonPills)
+    }
+    private val episodeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
+    private val episodeScroller = CalmHorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(episodeRow) }
+    private var episodesShown = false
+    private var drawerOpen = false
+    /** Holds the episodes; it rises with the screen beneath when they are opened. */
+    private val episodesLayer = FrameLayout(context).apply { clipChildren = false; clipToPadding = false }
+    /** Over the playing picture the controls' own shade stops short of the cards, so they bring a little of their own. */
+    private val episodesShade = View(context).apply { background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0, 0xB3080605.toInt(), 0xF2080605.toInt())) }
+
+
+    /** Picking an episode on the paused screen; the activity plays it. */
+    var onEpisode: ((EpisodePick) -> Unit)? = null
+    /** Picking a season's pill; the activity answers with [setEpisodes] for that season. */
+    var onSeason: ((Int) -> Unit)? = null
+    /** Loads an episode's still (the activity knows where it is and how to sign the request). */
+    var episodeImage: (EpisodePick, (Bitmap) -> Unit) -> Unit = { _, _ -> }
     private val pausedNow = Cinema.text(context, "", 21, Cinema.CREAM, weight = 500)
     private val pausedLeft = Cinema.text(context, "", 21, Cinema.MUTED)
 
@@ -170,6 +210,35 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         controls.visibility = GONE; paused.visibility = GONE
         addView(controls, LayoutParams(-1, -1))
         addView(paused, LayoutParams(-1, -1))
+        // The episodes sit on a layer of their own, above both the controls and the paused screen, so either can show them.
+        episodesLayer.addView(episodesShade, LayoutParams(-1, p(620)).apply { topMargin = p(900) })
+        episodesLayer.addView(drawer, LayoutParams(-1, -2).apply { topMargin = p(DRAWER_TOP) })
+        episodesLayer.visibility = GONE
+        // Taller than the screen, so the cards waiting below its foot are inside their parent and drawn with it, ready
+        // the moment they rise (laid out past a parent's edge, they only appeared once the rise had finished).
+        addView(episodesLayer, LayoutParams(-1, p(1080 + 440)))
+    }
+
+    /** The layer the episodes rise with: the paused screen's content, or the controls. */
+    private fun episodesHost(): View = if (state == PlayerUi.Paused) pausedSlide else controls
+
+    /**
+     * Places the episodes for the state shown. Over the controls (playing) the controls lift a little to make room, so
+     * the label row and the tops of the cards still peek up below the chips; on the paused screen they sit under the times.
+     */
+    private fun layoutEpisodes() {
+        val inControls = state == PlayerUi.Controls || state is PlayerUi.Scrubbing
+        episodesLayer.visibility = if (episodesShown && (state == PlayerUi.Paused || state == PlayerUi.Controls)) VISIBLE else GONE
+        episodesShade.visibility = GONE
+        (drawer.layoutParams as LayoutParams).let { lp ->
+            val top = p(if (inControls) CONTROLS_DRAWER_TOP else DRAWER_TOP)
+            if (lp.topMargin != top) { lp.topMargin = top; drawer.layoutParams = lp }
+        }
+        if (!drawerOpen) {
+            controls.translationY = if (episodesShown && inControls) -p(CONTROLS_RAISE).toFloat() else 0f
+            pinnedTop.forEach { it.translationY = -controls.translationY }
+            pausedSlide.translationY = 0f; episodesLayer.translationY = 0f
+        }
     }
 
     private fun place(parent: FrameLayout, v: View, x: Number, y: Number, w: Int = -2, h: Int = -2) =
@@ -177,14 +246,16 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
 
     private fun buildControls() {
         // The picture dimmed top and bottom (`still(.12)`).
+        // It runs on below the screen, so when the controls rise to show the episodes the shade goes on under them.
         controls.addView(View(context).apply { background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(0xD9080605.toInt(), 0x1F080605, 0x1F080605, 0xF2080605.toInt())) }, LayoutParams(-1, -1))
+            intArrayOf(0xD9080605.toInt(), 0x1F080605, 0x1F080605, 0xF2080605.toInt(), 0xF2080605.toInt())) }, LayoutParams(-1, p(1480)))
         val top = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         top.addView(eyebrowHolder)
         top.addView(title, LinearLayout.LayoutParams(p(1100), -2).apply { topMargin = p(14) })
         top.addView(metaLine, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(12) })
         place(controls, top, 96, 64)
         controls.addView(clock, LayoutParams(-2, -2, Gravity.END or Gravity.TOP).apply { rightMargin = p(96); topMargin = p(80) })
+        pinnedTop += top; pinnedTop += clock
 
         val gap = p(100)
         transport.addView(roundButton(R.drawable.ic_cin_prev, 72, 44) { onPrevious(); nudge() })
@@ -296,6 +367,59 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         place(paused, pausedScrubber, 50, 854, p(1820), p(92))
         place(paused, pausedNow, 96, 946)
         paused.addView(pausedLeft, LayoutParams(-2, -2, Gravity.END or Gravity.TOP).apply { rightMargin = p(96); topMargin = p(946) })
+        // Everything but the scrim slides together, so the drawer can come up from below.
+        val kids = (0 until paused.childCount).map { paused.getChildAt(it) }.filter { it !== pausedScrim }
+        kids.forEach { v -> val lp = v.layoutParams; paused.removeView(v); pausedSlide.addView(v, lp) }
+        paused.addView(pausedSlide, LayoutParams(-1, -1))
+        buildDrawer()
+    }
+
+    /**
+     * The episodes below the scrubber, with no panel of their own: a slim label row (a stripe mark, MORE EPISODES, the
+     * season tabs and a key hint) just under the times, and the tops of the episode cards peeking up from the foot of the
+     * screen. Down slides the paused screen up to bring the cards fully into view.
+     */
+    private fun buildDrawer() {
+        val handle = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(p(96), 0, p(96), 0); clipChildren = false; clipToPadding = false }
+        handle.addView(View(context).apply { background = com.danielportelabyrne.cinema.design.cinema.StripeDrawable(horizontalBands = true, radius = Cinema.pxf(context, 4)) },
+            LinearLayout.LayoutParams(p(36), p(8)).apply { marginEnd = p(16) })
+        handle.addView(Cinema.text(context, "More episodes", 16, Cinema.SAFFRON, weight = 700, tracking = 0.24f, caps = true))
+        handle.addView(drawerSeason, LinearLayout.LayoutParams(-2, -2).apply { marginStart = p(18) })
+        handle.addView(seasonScroller, LinearLayout.LayoutParams(0, p(HANDLE_H), 1f).apply { marginStart = p(18) })
+        handle.addView(drawerHint)
+        drawer.addView(handle, LinearLayout.LayoutParams(-1, p(HANDLE_H)))
+        drawer.addView(episodeScroller, LinearLayout.LayoutParams(-1, -2).apply { topMargin = p(8) })
+        episodeScroller.setPadding(p(96), 0, p(96), 0)
+        episodeScroller.alpha = PEEK_ALPHA
+        hint(open = false)
+    }
+
+    private fun hint(open: Boolean) {
+        drawerHint.removeAllViews()
+        drawerHint.addView(Cinema.keyHints(context, listOf((if (open) "▲" else "▼") to (if (open) "Back to the film" else "Browse episodes")), 17))
+    }
+
+    /** Slides the paused screen up to show the drawer, or back down to leave only its strip showing. */
+    private fun openDrawer(open: Boolean, focusCurrent: Boolean = true) {
+        if (!episodesShown) return
+        drawerOpen = open
+        hint(open)
+        val host = episodesHost()
+        val paused = state == PlayerUi.Paused
+        val lift = if (open) p(if (paused) DRAWER_LIFT else CONTROLS_LIFT).toFloat() else 0f
+        val base = if (paused) 0f else p(CONTROLS_RAISE).toFloat()
+        val ms = if (open) 340L else 260L
+        if (Motion.animationsOn(this)) {
+            host.animate().translationY(-base - lift).setDuration(ms).setInterpolator(Motion.SETTLE).start()
+            episodesLayer.animate().translationY(-lift).setDuration(ms).setInterpolator(Motion.SETTLE).start()
+            episodeScroller.animate().alpha(if (open) 1f else PEEK_ALPHA).setDuration(ms).start()
+        } else { host.translationY = -base - lift; episodesLayer.translationY = -lift; episodeScroller.alpha = if (open) 1f else PEEK_ALPHA }
+        if (open) {
+            if (focusCurrent) currentTile()?.requestFocus() ?: episodeRow.getChildAt(0)?.requestFocus()
+            scrollToCurrentEpisode()
+        } else if (paused) resumeButton.requestFocus()
+        else (0 until chips.childCount).map { chips.getChildAt(it) }.firstOrNull { it.visibility == VISIBLE }?.requestFocus() ?: scrubber.requestFocus()
+        nudge()
     }
 
     // --- Content ---
@@ -328,6 +452,70 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         }, LinearLayout.LayoutParams(p(268), -2).apply { if (i > 0) marginStart = p(24) }) }
     }
 
+    /**
+     * The episodes of [season] for the paused screen's More episodes row, which then stands in for the chapters. [seasons]
+     * are the series' seasons, one pill each. An empty [list] with no seasons takes the row away again.
+     */
+    fun setEpisodes(seasons: List<Int>, season: Int, list: List<EpisodePick>) {
+        val tabsHadFocus = isInside(findFocus(), seasonPills)
+        episodesShown = list.isNotEmpty()
+        drawer.visibility = if (episodesShown) VISIBLE else GONE
+        if (!drawerOpen) episodeScroller.alpha = PEEK_ALPHA
+        drawerSeason.text = if (episodesShown) "Season $season  ·  ${list.size} episodes" else ""
+        drawerSeason.visibility = if (seasons.size > 1) GONE else VISIBLE
+        seasonPills.removeAllViews()
+        seasonScroller.visibility = if (seasons.size > 1) VISIBLE else GONE
+        var selected: View? = null
+        if (seasons.size > 1) seasons.forEachIndexed { i, n ->
+            val tab = seasonTab("Season $n", n == season) { onSeason?.invoke(n) }
+            if (n == season) selected = tab
+            seasonPills.addView(tab, LinearLayout.LayoutParams(-2, p(HANDLE_H)).apply { if (i > 0) marginStart = p(4) })
+        }
+        episodeRow.removeAllViews()
+        list.forEachIndexed { i, e ->
+            episodeRow.addView(EpisodeTile(context, e).apply {
+                setOnClickListener { if (e.current) { openDrawer(false); onPlay(); setState(PlayerUi.Hidden) } else onEpisode?.invoke(e) }
+                episodeImage(e) { b -> image.setImageBitmap(b) }
+            }, LinearLayout.LayoutParams(-2, -2).apply { if (i > 0) marginStart = p(28) })
+        }
+        // The season shown is in view along the line, a tab's width in from its start when there is room.
+        selected?.let { t -> seasonScroller.post { seasonScroller.scrollTo((t.left - p(120)).coerceAtLeast(0), 0) } }
+        // A new season picked from its tab: focus stays on the tabs, now on the season shown.
+        if (tabsHadFocus) selected?.let { t -> t.post { t.requestFocus() } }
+        if (!episodesShown && drawerOpen) openDrawer(false)
+        layoutEpisodes()
+        if (state == PlayerUi.Paused) scrollToCurrentEpisode()
+    }
+
+    private fun currentTile(): View? = (0 until episodeRow.childCount).map { episodeRow.getChildAt(it) }.firstOrNull { (it as? EpisodeTile)?.pick?.current == true }
+
+    private fun scrollToCurrentEpisode() {
+        val v = currentTile() ?: return
+        // The episode before it starts at the margin, whole, so the one playing is second in view.
+        val i = episodeRow.indexOfChild(v)
+        episodeScroller.post { episodeScroller.scrollTo((episodeRow.getChildAt((i - 1).coerceAtLeast(0))?.left ?: 0).coerceAtLeast(0), 0) }
+    }
+
+    /** A season tab: its name, saffron with a stripe beneath when it is the season shown; cream when focused. */
+    private fun seasonTab(label: String, selected: Boolean, onClick: () -> Unit): LinearLayout = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; isFocusable = true; isClickable = true
+        setPadding(p(18), p(2), p(18), p(2))
+        val text = Cinema.text(context, label, 18, if (selected) Cinema.CREAM else Cinema.MUTED, weight = if (selected) 700 else 500).apply { maxLines = 1 }
+        val stripe = View(context).apply {
+            background = com.danielportelabyrne.cinema.design.cinema.StripeDrawable(horizontalBands = true, radius = Cinema.pxf(context, 3))
+            visibility = if (selected) VISIBLE else INVISIBLE
+        }
+        addView(text, LinearLayout.LayoutParams(-2, -2))
+        addView(stripe, LinearLayout.LayoutParams(p(28), p(4)).apply { topMargin = p(4) })
+        setOnFocusChangeListener { _, focused ->
+            background = if (focused) Cinema.glass(context, 22f, Cinema.CREAM) else null
+            text.setTextColor(if (focused) Cinema.INK else if (selected) Cinema.CREAM else Cinema.MUTED)
+            stripe.visibility = if (selected && !focused) VISIBLE else INVISIBLE
+            nudge()
+        }
+        setOnClickListener { onClick() }
+    }
+
     /** Next exists or not (a next chapter or episode). */
     fun refreshNext() { nextButton.alpha = if (onNext != null) 0.9f else 0.3f; nextButton.isEnabled = onNext != null }
 
@@ -339,6 +527,12 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         val showControls = next == PlayerUi.Controls || next is PlayerUi.Scrubbing
         controls.visibility = if (showControls) VISIBLE else GONE
         paused.visibility = if (next == PlayerUi.Paused) VISIBLE else GONE
+        // A change of screen puts the episodes back down: they open again from wherever the viewer is.
+        if (next != before && drawerOpen) {
+            drawerOpen = false; hint(false)
+            listOf(pausedSlide, controls, episodesLayer).forEach { it.animate().cancel() }
+            episodeScroller.alpha = PEEK_ALPHA
+        }
         val scrubbing = next is PlayerUi.Scrubbing
         transport.visibility = if (scrubbing) INVISIBLE else VISIBLE
         chips.visibility = if (scrubbing) INVISIBLE else VISIBLE
@@ -347,6 +541,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         timeNow.visibility = if (scrubbing) INVISIBLE else VISIBLE; timeLeft.visibility = timeNow.visibility
         preview.visibility = if (scrubbing) VISIBLE else GONE
         eyebrowHolder.removeAllViews(); eyebrowHolder.addView(Cinema.eyebrow(context, listOf(if (scrubbing) "Scrubbing" else "Now playing"), 15))
+        layoutEpisodes()
         when {
             next == PlayerUi.Controls && before != PlayerUi.Controls && before !is PlayerUi.Scrubbing -> { refreshChips(); refreshNext(); pauseButton.requestFocus() }
             next == PlayerUi.Controls && before is PlayerUi.Scrubbing -> scrubber.requestFocus()
@@ -359,6 +554,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
 
     private fun enterPaused() {
         resumeButton.requestFocus()
+        if (episodesShown) scrollToCurrentEpisode()
         onPaused?.invoke()
         refreshStream()
         // Scroll the chapter row to the one playing.
@@ -382,6 +578,34 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         if (event.action == KeyEvent.ACTION_UP) return downConsumed.also { downConsumed = false }
         if (event.action != KeyEvent.ACTION_DOWN) return false
         lastKeyAt = android.os.SystemClock.uptimeMillis()
+        // The episodes, on the paused screen and over the controls: Down from the bottom row opens them, Up from their top
+        // (or Back) puts them away.
+        if ((state == PlayerUi.Paused || state == PlayerUi.Controls) && episodesShown) {
+            val focus = findFocus()
+            val inDrawer = isInside(focus, drawer)
+            val inTabs = isInside(focus, seasonPills)
+            val inChapters = isInside(focus, chapterScroller)
+            val atFoot = if (state == PlayerUi.Paused) !(chapterScroller.visibility == VISIBLE && !inChapters) else isInside(focus, chips) || slidersButton.isFocused
+            val handled = when (key) {
+                PlayerUi.Key.DOWN -> when {
+                    inDrawer && inTabs -> { (currentTile() ?: episodeRow.getChildAt(0))?.requestFocus(); true }
+                    inDrawer -> true
+                    atFoot -> { openDrawer(true); true }
+                    else -> false
+                }
+                PlayerUi.Key.UP -> when {
+                    inDrawer && !inTabs && seasonScroller.visibility == VISIBLE -> {
+                        seasonPills.let { row -> (0 until row.childCount).map { row.getChildAt(it) }.firstOrNull { (it as? LinearLayout)?.getChildAt(1)?.visibility == VISIBLE } ?: row.getChildAt(0) }?.requestFocus(); true
+                    }
+                    inDrawer -> { openDrawer(false); true }
+                    else -> false
+                }
+                PlayerUi.Key.LEFT, PlayerUi.Key.RIGHT, PlayerUi.Key.OK -> if (inDrawer) { downConsumed = false; nudge(); return false } else false
+                PlayerUi.Key.BACK -> if (drawerOpen) { openDrawer(false); true } else false
+                else -> false
+            }
+            if (handled) { downConsumed = true; nudge(); return true }
+        }
         // In the controls, Up and Down step between the three rows (transport, scrubber, chips) rather than leaving it
         // to geometry, which can skip the thin scrubber.
         if (state == PlayerUi.Controls && (key == PlayerUi.Key.UP || key == PlayerUi.Key.DOWN)) {
@@ -451,7 +675,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
             }
         }
         // Controls slip away after five quiet seconds while the film plays.
-        if (state == PlayerUi.Controls && isPlaying() && android.os.SystemClock.uptimeMillis() - lastKeyAt > 5000) setState(PlayerUi.Hidden)
+        if (state == PlayerUi.Controls && !drawerOpen && isPlaying() && android.os.SystemClock.uptimeMillis() - lastKeyAt > 5000) setState(PlayerUi.Hidden)
     }
 
     private var previewAt = -1L
@@ -886,6 +1110,72 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         }
     }
 
+    /**
+     * An episode in the drawer: its still with the episode number, its name over the foot of the still, and the wavy bar
+     * beneath when part-watched. The one playing says NOW; a watched one is dimmed a little and ticked. Focused, it grows
+     * with a warm glow behind it.
+     */
+    private inner class EpisodeTile(context: Context, val pick: EpisodePick) : LinearLayout(context) {
+        val image = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+        private val face = FrameLayout(context)
+        private val tileW = p(TILE_W); private val tileH = p(TILE_H)
+        private val name = Cinema.text(context, pick.name, 24, Cinema.CREAM, serif = true, weight = 500).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        private val bar = com.danielportelabyrne.cinema.design.cinema.WaveBar(context, amplitudePx = 4f, wavelengthPx = 48f, thicknessPx = 9f)
+        private val bloomSpread = Cinema.pxf(context, 8)
+        private val bloom by lazy { com.danielportelabyrne.cinema.design.cinema.Glows.roundRect(tileW + 2 * bloomSpread.toInt(), tileH + 2 * bloomSpread.toInt(), Cinema.pxf(context, 18) + bloomSpread, Cinema.pxf(context, 34), Cinema.alpha(Cinema.STRIPE_ORANGE, 0.42f)) }
+        private val plain = Paint(Paint.FILTER_BITMAP_FLAG)
+        init {
+            orientation = VERTICAL; isFocusable = true; isClickable = true; clipChildren = false; setWillNotDraw(false)
+            contentDescription = "Episode ${pick.episode}, ${pick.name}"
+            face.setBackgroundColor(Cinema.PLACEHOLDER); face.clipToOutline = true
+            face.outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(context, 18)) } }
+            face.addView(image, FrameLayout.LayoutParams(-1, -1))
+            face.addView(View(context).apply { background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0, 0x1F000000, 0xE0080605.toInt())) }, FrameLayout.LayoutParams(-1, -1))
+            face.addView(Cinema.text(context, "E${pick.episode}", 15, Cinema.CREAM, weight = 700).apply {
+                setPadding(p(11), p(4), p(11), p(4)); background = Cinema.glass(context, 10f, 0xB30B0807.toInt())
+            }, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = p(12); topMargin = p(12) })
+            when {
+                pick.current -> face.addView(Cinema.text(context, "NOW", 13, 0xFF1B0D06.toInt(), weight = 700, tracking = 0.14f).apply {
+                    setPadding(p(11), p(4), p(11), p(4)); background = com.danielportelabyrne.cinema.design.cinema.StripeDrawable(horizontalBands = true, radius = Cinema.pxf(context, 10))
+                }, FrameLayout.LayoutParams(-2, -2, Gravity.END).apply { rightMargin = p(12); topMargin = p(12) })
+                pick.watched -> face.addView(FrameLayout(context).apply {
+                    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xC70C0806.toInt()) }
+                    addView(Cinema.icon(context, R.drawable.ic_cin_check, Cinema.SAFFRON), LayoutParams(p(16), p(16), Gravity.CENTER))
+                }, FrameLayout.LayoutParams(p(32), p(32), Gravity.END).apply { rightMargin = p(12); topMargin = p(12) })
+            }
+            val words = LinearLayout(context).apply { orientation = VERTICAL; setPadding(p(20), 0, p(20), p(16)) }
+            words.addView(name)
+            val length = pick.runtimeMin?.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "$it min" }
+            words.addView(Cinema.text(context, listOfNotNull("S${pick.season} E${pick.episode}", length).joinToString(" · "), 16, Cinema.alpha(Cinema.CREAM, 0.7f)),
+                LayoutParams(-2, -2).apply { topMargin = p(2) })
+            face.addView(words, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            addView(face, LayoutParams(tileW, tileH))
+            bar.progress = if (pick.watched) 1f else pick.progress
+            bar.visibility = if (pick.watched || pick.progress > 0f) VISIBLE else INVISIBLE
+            addView(bar, LayoutParams(tileW, p(24)).apply { topMargin = p(10) })
+            look(false)
+        }
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { super.onSizeChanged(w, h, oldw, oldh); pivotX = w / 2f; pivotY = tileH * 0.5f }
+        private fun look(focused: Boolean) {
+            image.alpha = when { focused || pick.current -> 1f; pick.watched -> 0.55f; else -> 0.85f }
+            bar.lit = focused
+            translationZ = if (focused) Cinema.pxf(context, 16) else 0f
+            val s = if (focused) 1.07f else 1f
+            if (Motion.animationsOn(this)) animate().scaleX(s).scaleY(s).setDuration(if (focused) Motion.FOCUS_IN_MS else Motion.FOCUS_OUT_MS).setInterpolator(Motion.SETTLE).start() else { scaleX = s; scaleY = s }
+            invalidate()
+        }
+        override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+            super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+            look(gainFocus)
+            if (gainFocus) FastFocus.reveal(this, null, 0, 0, p(120))
+            nudge()
+        }
+        override fun dispatchDraw(canvas: Canvas) {
+            if (isFocused) { val s = bloomSpread.toInt(); canvas.drawBitmap(bloom.bitmap, (face.left - s - bloom.pad).toFloat(), (face.top - s - bloom.pad).toFloat(), plain) }
+            super.dispatchDraw(canvas)
+        }
+    }
+
     /** The faint arch columns on the paused screen, painted once. */
     private class ArchesView(context: Context) : View(context) {
         private var cache: Bitmap? = null
@@ -897,6 +1187,20 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     }
 
     companion object {
+        /**
+         * The episodes below the scrubber (mockup px): where their label row starts, its height, and how far the paused
+         * screen rises to show the cards whole. Closed, only the tops of the cards show, a little dimmed.
+         */
+        const val DRAWER_TOP = 982
+        const val HANDLE_H = 42
+        const val DRAWER_LIFT = 250
+        const val PEEK_ALPHA = 0.72f
+        /** Over the playing film: how far the controls lift to make room, where the episodes' label row sits, and how far they rise to show the cards. */
+        const val CONTROLS_RAISE = 58
+        const val CONTROLS_DRAWER_TOP = 990
+        const val CONTROLS_LIFT = 250
+        /** An episode card's still in the drawer. */
+        const val TILE_W = 384; const val TILE_H = 216
 
         /** A soft, cheap blur for the paused background: shrink hard, box-blur three times, let the view scale it back up. */
         fun blur(src: Bitmap): Bitmap {

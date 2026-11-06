@@ -86,6 +86,20 @@ class StremioTest {
         assertTrue(films[1].watched)
     }
 
+    @Test fun readsASeriesEpisodesInOrderWithoutSpecials() {
+        val json = """{"meta":{"name":"Breaking Bad","videos":[
+            {"season":1,"episode":2,"name":"Cat's in the Bag...","thumbnail":"https://e/1/2.jpg","overview":"Walt and Jesse"},
+            {"season":0,"episode":1,"name":"Special"},
+            {"season":1,"number":1,"name":"Pilot","description":"A teacher"},
+            {"season":1,"episode":2,"name":"Duplicate"}]}}"""
+        val s = StremioApi.series(json)!!
+        assertEquals("Breaking Bad", s.name)
+        assertEquals(listOf(1 to 1, 1 to 2), s.episodes.map { it.season to it.episode })
+        assertEquals("Pilot", s.episodes[0].name); assertEquals("A teacher", s.episodes[0].overview); assertEquals(null, s.episodes[0].still)
+        assertEquals("https://e/1/2.jpg", s.episodes[1].still)
+        assertEquals(null, StremioApi.series("""{"meta":{"name":"A film"}}"""))
+    }
+
     @Test fun filmPageUsesCinemetaOrTheLibraryEntry() {
         val film = StremioFilm("tt1", "Old", null, 2001, false, "")
         assertNull(StremioApi.title("""{"nope":1}""", film))

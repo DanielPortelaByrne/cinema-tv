@@ -55,6 +55,7 @@ import org.json.JSONObject
 import com.danielportelabyrne.cinema.data.jellyfin.EpisodeAutoplay
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
+import com.danielportelabyrne.cinema.design.Cinema
 import com.danielportelabyrne.cinema.design.Motion
 import com.danielportelabyrne.cinema.design.Type
 import android.graphics.drawable.GradientDrawable
@@ -63,6 +64,9 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 
 private const val TAG = "SmartStream"
+
+/** A streamed episode picked on the paused screen, for the Movies page to find a copy of once the player has closed. */
+data class EpisodeRequest(val imdbId: String, val seriesName: String, val season: Int, val episode: Int)
 
 /** One stream the player may try, in order. Serialised through the launch intent. */
 data class PlayItem(
@@ -200,6 +204,9 @@ class PlayerActivity : AppCompatActivity() {
         jf = com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport.fromJson(intent.getStringExtra(EXTRA_JF))
         forcedStart = intent.getBooleanExtra(EXTRA_FROM_START, false)
         title =intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        // Streams saved before the payload carried the episode still name it: "Show · S1 E7".
+        if (streamEpisode == null && intent.getStringExtra(EXTRA_JF).isNullOrBlank())
+            Regex("""S(\d+) E(\d+)$""").find(title)?.let { m -> streamEpisode = m.groupValues[1].toInt() to m.groupValues[2].toInt() }
         art = intent.getStringExtra(EXTRA_ART)
         history = PlaybackStore(this)
         continueStore = ContinueWatching(this)
@@ -235,7 +242,8 @@ class PlayerActivity : AppCompatActivity() {
         mediaSession = androidx.media3.session.MediaSession.Builder(this, player).setId("video-${System.identityHashCode(this)}").build()
         view = PlayerView(this).apply {
             player = this@PlayerActivity.player
-            setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+            // Waiting for the picture shows Cinema's wavy loader (below), not the stock spinner.
+            setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
             controllerShowTimeoutMs = 4000
             setBackgroundColor(0xFF000000.toInt())
             keepScreenOn = true
@@ -267,6 +275,16 @@ class PlayerActivity : AppCompatActivity() {
             view.isFocusable = false
             chrome = PlayerChrome(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)); wireChrome(it) }
         }
+        bufferingView = FrameLayout(this).apply {
+            visibility = View.GONE; isFocusable = false
+            // A soft dark pool behind the loader, so it reads over a bright frame.
+            background = android.graphics.drawable.GradientDrawable().apply {
+                gradientType = android.graphics.drawable.GradientDrawable.RADIAL_GRADIENT; gradientRadius = Cinema.pxf(this@PlayerActivity, 420)
+                colors = intArrayOf(0x99000000.toInt(), 0x00000000)
+            }
+            addView(com.danielportelabyrne.cinema.design.cinema.WaveLoader(this@PlayerActivity), FrameLayout.LayoutParams(Cinema.px(this@PlayerActivity, 420), Cinema.px(this@PlayerActivity, 120), Gravity.CENTER))
+        }
+        root.addView(bufferingView, FrameLayout.LayoutParams(Cinema.px(this, 900), Cinema.px(this, 600), Gravity.CENTER))
         nextCard = NextEpisodeCard(this, play = { playNextNow() }, cancel = { cancelAutoplay() })
         root.addView(nextCard, FrameLayout.LayoutParams(-1, -1))
         onBackPressedDispatcher.addCallback(this, cancelNext)
@@ -297,7 +315,7 @@ class PlayerActivity : AppCompatActivity() {
         val report = jf
         // A stream or a JustWatch title carries its IMDb id; a library item's ids arrive with its details below.
         lbSource = Triple(imdbId, null, false)
-        if (report == null) startAttempt(0) else {
+        if (report == null) { startAttempt(0); loadEpisodes(null) } else {
             // Start loading at once from what the library list already said (source and resume point), held paused; the
             // item's details (chapters, trickplay, the server's latest resume point) are fetched alongside. Playback
             // begins when they arrive, or after ITEM_WAIT_MS at most, so a slow answer never holds up the film.
@@ -312,6 +330,7 @@ class PlayerActivity : AppCompatActivity() {
                     if (fresh != null) { applyFreshItem(report, fresh); lbSource = Triple(fresh.imdbId, fresh.tmdbId, fresh.isEpisode) }
                     handler.removeCallbacks(release); player.playWhenReady = true
                     prefetchNextEpisode(fresh)
+                    loadEpisodes(fresh)
                 }
             }
         }
@@ -483,15 +502,130 @@ class PlayerActivity : AppCompatActivity() {
         if (creditsCard && !ended) { reportToJellyfin("Stopped", atEnd = true); resumePrefs.edit().remove(resumeKey() ?: "").apply() }
         creditsCard = false
         record(failed = false)
-        // Reuse the player and activity: a long viewing session never builds an activity stack.
+        beginEpisode(plan, next)
+    }
+
+    /**
+     * Plays [item] in place of the episode on screen, picked from the paused screen's More episodes row. The one playing
+     * stops where it is first, so Jellyfin and this TV both keep its place.
+     */
+    private fun switchToEpisode(item: JellyfinItem) {
+        if (item.id == jf?.itemId) { player.play(); chrome?.setState(com.danielportelabyrne.cinema.data.player.PlayerUi.Hidden); return }
+        saveResume(); snapshotToContinue()
+        reportToJellyfin("Stopped")
+        record(failed = false)
+        creditsCard = false; handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
+        val name = listOfNotNull(item.seriesName, item.episodeLabel(), item.name).joinToString(" · ")
+        beginEpisode(JellyfinPlayback.prepare(jellyfin, item, name, "jf:${item.id}"), item)
+    }
+
+    /**
+     * Starts [item] in this same player: a long viewing session never builds an activity stack. Its details (chapters,
+     * trickplay, overview) and the episode after it are fetched once it is under way, never before.
+     */
+    private fun beginEpisode(plan: JellyfinPlayback.Plan, item: JellyfinItem) {
         val nextIntent = playbackIntent(this, plan.streams, plan.title, plan.resumeKey, plan.report)
         intent = nextIntent
         items = parse(nextIntent.getStringExtra(EXTRA_ITEMS))
         imdbId = plan.resumeKey; title = plan.title; jf = plan.report
         payload = nextIntent.getStringExtra(EXTRA_PAYLOAD)
         nextItem = null; nextPlan = null; autoplay = EpisodeAutoplay(); episodeGeneration++; forcedStart = false
+        itemChapters = emptyList(); itemTrickplay = null; itemSizeBytes = null
+        chrome?.let { c ->
+            c.setMeta(PlayerMeta(title, item.year, item.genres, item.runtimeMin, item.officialRating, item.communityRating, item.overview))
+            c.setChapters(emptyList()); c.previewFrame = null
+            c.setState(com.danielportelabyrne.cinema.data.player.PlayerUi.Hidden)
+        }
         startAttempt(0)
-        prefetchNextEpisode(next)
+        val generation = episodeGeneration
+        reporter.execute {
+            val fresh = jellyfin.item(item.id)
+            handler.post {
+                if (isFinishing || isDestroyed || generation != episodeGeneration) return@post
+                fresh?.let { showItem(it) }
+                prefetchNextEpisode(fresh ?: item)
+                loadEpisodes(fresh ?: item)
+            }
+        }
+    }
+
+    // --- More episodes on the paused screen ----------------------------------------------------------
+
+    /** The series' episodes, for the paused screen: from Jellyfin for a library episode. */
+    private var seriesEpisodes: List<JellyfinItem> = emptyList()
+    /** The same from Cinemeta for a streamed episode, with the series' name. */
+    private var streamListing: com.danielportelabyrne.cinema.data.stremio.SeriesListing? = null
+
+    /** Reads the series' episodes for the paused screen, once the item playing is known to be an episode. */
+    private fun loadEpisodes(current: JellyfinItem?) {
+        val c = chrome ?: return
+        if (live) return
+        val seriesId = current?.seriesId
+        if (current != null && current.isEpisode && seriesId != null) {
+            c.onEpisode = { pick -> seriesEpisodes.firstOrNull { it.id == pick.key }?.let { switchToEpisode(it) } }
+            c.onSeason = { n -> showJellyfinSeason(n) }
+            c.episodeImage = { pick, done ->
+                val item = seriesEpisodes.firstOrNull { it.id == pick.key }
+                if (item != null && item.hasPrimaryImage) chromeImages.load(jellyfin.episodeImageUrl(item.id), jellyfin.playbackHeaders(), maxWidth = Cinema.px(this, 268)) { done(it) }
+            }
+            episodeLookup.execute {
+                val all = jellyfin.episodes(seriesId).filter { it.isEpisode && !it.missing && it.season != null && it.episode != null }
+                handler.post {
+                    if (isFinishing || isDestroyed || all.isEmpty()) return@post
+                    seriesEpisodes = all
+                    showJellyfinSeason(all.firstOrNull { it.id == jf?.itemId }?.season ?: current.season ?: all.first().season!!)
+                }
+            }
+            return
+        }
+        // A streamed episode: Cinemeta knows the series by its IMDb id; picking another episode goes back to the Movies
+        // page, which finds a copy of it as it found this one.
+        val episode = streamEpisode ?: return
+        val imdb = imdbId?.takeIf { it.startsWith("tt") } ?: return
+        if (jf != null) return
+        c.onSeason = { n -> showStreamSeason(n) }
+        c.onEpisode = { pick ->
+            val listing = streamListing
+            val e = listing?.episodes?.firstOrNull { "${it.season}:${it.episode}" == pick.key }
+            if (listing != null && e != null) {
+                pendingEpisode = EpisodeRequest(imdb, listing.name.ifBlank { title.substringBefore(" · ") }, e.season, e.episode)
+                finish()
+            }
+        }
+        c.episodeImage = { pick, done ->
+            streamListing?.episodes?.firstOrNull { "${it.season}:${it.episode}" == pick.key }?.still?.let { url -> chromeImages.load(url, maxWidth = Cinema.px(this, 268)) { done(it) } }
+        }
+        episodeLookup.execute {
+            val listing = com.danielportelabyrne.cinema.data.stremio.StremioClient().series(imdb)
+            handler.post {
+                if (isFinishing || isDestroyed || listing == null || listing.episodes.isEmpty()) return@post
+                streamListing = listing
+                showStreamSeason(episode.first)
+            }
+        }
+    }
+
+    private fun showJellyfinSeason(season: Int) {
+        val c = chrome ?: return
+        val seasons = seriesEpisodes.mapNotNull { it.season }.distinct().sorted()
+        val list = seriesEpisodes.filter { it.season == season }.sortedBy { it.episode }
+        c.setEpisodes(seasons, season, list.map { e ->
+            val runtime = e.runtimeMin
+            val progress = if (runtime != null && runtime > 0 && e.resumeMs > 0) (e.resumeMs / (runtime * 60_000f)).coerceIn(0f, 1f) else 0f
+            EpisodePick(e.id, e.season!!, e.episode!!, e.name, runtime, progress, e.played, e.id == jf?.itemId)
+        })
+    }
+
+    private fun showStreamSeason(season: Int) {
+        val c = chrome ?: return
+        val listing = streamListing ?: return
+        val imdb = imdbId ?: return
+        val watched = StreamProgress.forSeries(CinemaSettings(AndroidPlatform(this)).streamProgress, imdb)
+        c.setEpisodes(listing.episodes.map { it.season }.distinct(), season, listing.episodes.filter { it.season == season }.map { e ->
+            val seen = watched.firstOrNull { it.season == e.season && it.episode == e.episode }
+            val progress = seen?.takeIf { it.durationMs > 0 }?.let { it.positionMs.toFloat() / it.durationMs } ?: 0f
+            EpisodePick("${e.season}:${e.episode}", e.season, e.episode, e.name, null, progress, seen?.played == true, streamEpisode == e.season to e.episode)
+        })
     }
 
     // --- attempts ---------------------------------------------------------------------------------
@@ -631,6 +765,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         override fun onPlaybackStateChanged(state: Int) {
+            updateBuffering()
             when (state) {
                 Player.STATE_BUFFERING -> if (started && !seeking && player.playWhenReady && bufferStart == 0L) {
                     bufferStart = SystemClock.elapsedRealtime(); bufferEvents++; rebufferedAt = bufferStart
@@ -963,9 +1098,25 @@ class PlayerActivity : AppCompatActivity() {
         handler.postDelayed({ pollStatus() }, 1000)
     }
 
+    /** The wavy loader over the picture while it waits for more of the film (never over the stream loading screen). */
+    private var bufferingView: View? = null
+
+    private fun updateBuffering() {
+        val v = bufferingView ?: return
+        val show = ::player.isInitialized && player.playbackState == Player.STATE_BUFFERING && loadingView?.visibility != View.VISIBLE
+        if (show == (v.visibility == View.VISIBLE)) return
+        if (show) {
+            v.alpha = 0f; v.visibility = View.VISIBLE
+            // A blink of a wait (a seek within what is buffered) shows nothing at all.
+            v.animate().alpha(1f).setStartDelay(250).setDuration(200).start()
+        } else v.animate().alpha(0f).setStartDelay(0).setDuration(160).withEndAction { if (player.playbackState != Player.STATE_BUFFERING) v.visibility = View.GONE }.start()
+    }
+
     private fun hideLoading() {
+        updateBuffering()
         loadingView?.animate()?.alpha(0f)?.setDuration(400)?.withEndAction {
             loadingView?.visibility = View.GONE
+            updateBuffering()
             updateTitleLabel(view.isControllerFullyVisible)
         }?.start()
     }
@@ -1213,8 +1364,13 @@ class PlayerActivity : AppCompatActivity() {
         private const val ENGINE_STARTUP_TIMEOUT_MS = 75_000L
 
         /** Starts playback of [ranked] in order, capped at three attempts. */
+        @Volatile private var pendingEpisode: EpisodeRequest? = null
+
+        /** The episode the viewer picked in the player, once; null when there is none. */
+        fun takeEpisodeRequest(): EpisodeRequest? = pendingEpisode.also { pendingEpisode = null }
+
         fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false, episode: Pair<Int, Int>? = null) {
-            context.startActivity(playbackIntent(context, ranked, title, imdbId, report).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
+            context.startActivity(playbackIntent(context, ranked, title, imdbId, report, episode).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
                 .putExtra(EXTRA_FROM_START, fromStart).putExtra(EXTRA_EPISODE, episode?.let { "${it.first}:${it.second}" }))
         }
 
@@ -1222,7 +1378,8 @@ class PlayerActivity : AppCompatActivity() {
             .put("genres", JSONArray(m.genres)).put("runtime", m.runtimeMin ?: 0).put("cert", m.certificate ?: "")
             .put("rating", m.rating ?: 0.0).put("overview", m.overview ?: "").toString()
 
-        private fun playbackIntent(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport?): Intent {
+        /** [episode] goes into the saved payload too, so a streamed episode reopened from Continue watching still knows which it is. */
+        private fun playbackIntent(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport?, episode: Pair<Int, Int>? = null): Intent {
             val a = JSONArray()
             ranked.filter { it.playable }.take(3).forEach { r ->
                 val c = r.candidate
@@ -1230,7 +1387,8 @@ class PlayerActivity : AppCompatActivity() {
                     .put("res", c.meta.resolution.name).put("codec", c.meta.codec.name).put("src", c.meta.source.name)
                     .put("bitrate", r.requiredBps).put("label", c.meta.qualityLabel()).put("engine", c.viaEngine))
             }
-            val payload = JSONObject().put("items", a.toString()).put("imdb", imdbId ?: "").put("title", title).put("jf", report?.toJson() ?: "").toString()
+            val payload = JSONObject().put("items", a.toString()).put("imdb", imdbId ?: "").put("title", title).put("jf", report?.toJson() ?: "")
+                .put("episode", episode?.let { "${it.first}:${it.second}" } ?: "").toString()
             return Intent(context, PlayerActivity::class.java)
                 .putExtra(EXTRA_ITEMS, a.toString()).putExtra(EXTRA_IMDB, imdbId).putExtra(EXTRA_TITLE, title).putExtra(EXTRA_PAYLOAD, payload).putExtra(EXTRA_JF, report?.toJson())
         }
@@ -1249,7 +1407,8 @@ class PlayerActivity : AppCompatActivity() {
             val o = JSONObject(payload)
             context.startActivity(Intent(context, PlayerActivity::class.java)
                 .putExtra(EXTRA_ITEMS, o.getString("items")).putExtra(EXTRA_IMDB, o.optString("imdb").ifBlank { null })
-                .putExtra(EXTRA_TITLE, o.optString("title")).putExtra(EXTRA_PAYLOAD, payload).putExtra(EXTRA_JF, o.optString("jf").ifBlank { null }))
+                .putExtra(EXTRA_TITLE, o.optString("title")).putExtra(EXTRA_PAYLOAD, payload).putExtra(EXTRA_JF, o.optString("jf").ifBlank { null })
+                .putExtra(EXTRA_EPISODE, o.optString("episode").ifBlank { null }))
             true
         } catch (_: Exception) { false }
 
