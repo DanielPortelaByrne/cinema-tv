@@ -25,4 +25,9 @@ object NextEpisode {
         val after = inOrder.firstOrNull { it.season > last.season || (it.season == last.season && it.episode > last.episode) }
         return (after ?: inOrder.first()).let { NextUp(it.season, it.episode, continuing = false) }
     }
+
+    /** The episode after [season] and [episode] in [episodes] (given in any order), or null when it is the last one. */
+    fun following(episodes: List<Pair<Int, Int>>, season: Int, episode: Int): Pair<Int, Int>? =
+        episodes.sortedWith(compareBy<Pair<Int, Int>>({ it.first }, { it.second }))
+            .firstOrNull { it.first > season || (it.first == season && it.second > episode) }
 }

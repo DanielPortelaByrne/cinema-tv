@@ -80,12 +80,16 @@ class NextEpisodeCard(context: Context, play: () -> Unit, cancel: () -> Unit) : 
         primary.setOnFocusChangeListener { _, f -> ring.lit = f }
     }
 
-    fun bind(item: JellyfinItem) {
+    fun bind(item: JellyfinItem) = bindEpisode(
+        item.episodeLabel().orEmpty(), item.name, listOfNotNull(item.seriesName?.takeIf { it.isNotBlank() }, item.runtimeMin?.let { "$it min" }).joinToString(" · "))
+
+    /** An episode by its parts: "S2 E4", its title, and its line of meta. Streamed episodes come this way. */
+    fun bindEpisode(code: String, title: String, meta: String) {
         artwork.setImageDrawable(null)
-        episodeTitle.text = item.name
-        label.text = item.episodeLabel().orEmpty()
-        episodeMeta.text = listOfNotNull(item.seriesName?.takeIf { it.isNotBlank() }, item.runtimeMin?.let { "$it min" }).joinToString(" · ")
-        contentDescription = "Up next: ${item.name}"
+        episodeTitle.text = title
+        label.text = code
+        episodeMeta.text = meta
+        contentDescription = "Up next: $title"
     }
 
     fun showCard() {

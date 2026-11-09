@@ -285,6 +285,12 @@ class JellyfinClient(platform: Platform) {
     /** Jellyfin writes an id with or without its dashes, in either case. */
     private fun sameId(a: String?, b: String): Boolean = a != null && a.replace("-", "").equals(b.replace("-", ""), ignoreCase = true)
 
+    /** Where an episode's end credits begin on the server, in ms, when its segments know them; null otherwise. */
+    fun creditsStartMs(itemId: String): Long? {
+        val body = request("GET", JellyfinApi.segmentsUrl(JellyfinApi.cleanBase(server), itemId)) ?: return null
+        return com.danielportelabyrne.cinema.data.intro.CreditsTimes.fromJellyfinSegments(body)
+    }
+
     /** Every episode of a series, with season and episode numbers, or empty when there are none or Jellyfin cannot be reached. */
     fun episodes(seriesId: String): List<JellyfinItem> {
         val uid = userId ?: return emptyList()

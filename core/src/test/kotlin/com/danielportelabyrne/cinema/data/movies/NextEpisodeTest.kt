@@ -56,4 +56,12 @@ class NextEpisodeTest {
         assertEquals(NextUp(1, 1, continuing = false), up)
         assertTrue(NextEpisode.of(listOf(ep(1, 1, played = true, at = 1)))!!.season == 1)
     }
+
+    @Test fun following_is_the_next_in_order_whatever_the_listing_order_and_null_at_the_end() {
+        val listing = listOf(3 to 1, 1 to 2, 1 to 1, 2 to 1)
+        assertEquals(1 to 2, NextEpisode.following(listing, 1, 1))
+        assertEquals(2 to 1, NextEpisode.following(listing, 1, 2))
+        assertEquals(3 to 1, NextEpisode.following(listing, 2, 1))
+        assertNull(NextEpisode.following(listing, 3, 1))
+    }
 }

@@ -355,6 +355,8 @@ class MoviesPanel(
     fun onResume() {
         // An episode picked on the player's paused screen: find a copy of it, as the series page would.
         PlayerActivity.takeEpisodeRequest()?.let { r -> if (isVisible) ui.post { streamPickedEpisode(r) } }
+        // A Continue watching stream whose saved link had expired: find a fresh copy, as Stream now would.
+        if (isVisible) PlayerActivity.takeStreamAgain()?.let { r -> ui.post { streamAgain(r) } }
         if (!playbackStarted || !isVisible || !jellyfin.isConnected) return
         playbackStarted = false
         val gen = generation
@@ -425,7 +427,7 @@ class MoviesPanel(
             val episode = p.getOrNull(2)?.toIntOrNull()?.let { s -> p.getOrNull(3)?.toIntOrNull()?.let { s to it } }
             val t = Title(imdb, if (episode == null) Kind.MOVIE else Kind.SHOW, p.getOrNull(1) ?: imdb, null, null, null, emptyList(),
                 null, null, null, null, imdb, null)
-            streamNow(entry(t), page, episode)
+            if (episode == null) streamWithoutEpisode(entry(t), page, null) else streamNow(entry(t), page, episode)
             return
         }
         // "loading": the stream loading screen as it first appears, without asking the server for anything.
@@ -4104,6 +4106,45 @@ class MoviesPanel(
             ?: entry(Title(r.imdbId, Kind.SHOW, r.seriesName, null, null, null, emptyList(), null, null, null, null, r.imdbId, null))
         val name = e.title.name.ifBlank { r.seriesName }
         streamNow(e, streamReturnFocus?.takeIf { it.isAttachedToWindow } ?: page, r.season to r.episode, "$name · S${r.season} E${r.episode}")
+    }
+
+    /**
+     * Streams a Continue watching title again after its saved link stopped working. The player that opens resumes where
+     * this TV left off, as it keeps the resume point by the title's IMDb id (and episode), not by the link.
+     */
+    private fun streamAgain(r: StreamAgainRequest) {
+        val kind = if (r.episode != null) Kind.SHOW else Kind.MOVIE
+        val e = lastStreamed?.takeIf { r.imdbId != null && it.title.imdbId == r.imdbId && it.title.kind == kind }
+            ?: entry(Title(r.imdbId ?: "stream:${r.name}", kind, r.name, null, null, null, emptyList(), null, null, null, null, r.imdbId, null))
+        val focus = activity.currentFocus?.takeIf { it.isAttachedToWindow } ?: page
+        if (r.episode == null) streamWithoutEpisode(e, focus, r.shownTitle) else streamNow(e, focus, r.episode, r.shownTitle)
+    }
+
+    /**
+     * Streams a title that was started without an episode, such as a series' card or a Continue watching entry that did not
+     * keep which episode it was. A series plays its next-up episode, as the series page's own button does (the first one
+     * when nothing is watched), so the episode is known and its credits and next-episode card work. A film, or anything
+     * Cinemeta does not list as a series, streams as before.
+     */
+    private fun streamWithoutEpisode(e: Entry, button: View, shownTitle: String?) {
+        val imdb = e.title.imdbId?.takeIf { it.startsWith("tt") }
+        if (imdb == null) { streamNow(e, button, null, shownTitle); return }
+        val watched = streamedEpisodes(e).filter { it.played }
+            .map { com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season, it.episode, true, 0L, it.atMs) }
+        worker.execute {
+            val listing = com.danielportelabyrne.cinema.data.stremio.StremioClient().series(imdb)
+            val up = listing?.takeIf { it.episodes.isNotEmpty() }?.let { l ->
+                com.danielportelabyrne.cinema.data.movies.NextEpisode.of(
+                    l.episodes.map { com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season, it.episode, false, 0L, null) }, watched)?.let { next -> next to l }
+            }
+            activity.runOnUiThread {
+                if (up == null) { streamNow(e, button, null, shownTitle); return@runOnUiThread }
+                val (next, series) = up
+                val name = series.name.ifBlank { e.title.name }
+                val t = Title(imdb, Kind.SHOW, name, null, null, null, emptyList(), null, null, null, null, imdb, null)
+                streamNow(entry(t), button, next.season to next.episode, "$name · S${next.season} E${next.episode}")
+            }
+        }
     }
 
     private fun closeStreamLoading() {

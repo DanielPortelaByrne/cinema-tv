@@ -186,10 +186,19 @@ class CreditsStartTest {
         assertEquals(50 * 60_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Start", 0), ch(1, "End Credits", 50)), hour))
     }
 
-    @Test fun without_one_it_is_thirty_seconds_before_the_end() {
-        assertEquals(hour - 30_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Chapter 1", 0), ch(1, "Chapter 2", 30)), hour))
+    @Test fun without_one_the_credits_are_guessed_from_the_length() {
+        // An hour's credits are guessed at about 3.6 minutes (6 % of the length), not 30 seconds.
+        assertEquals(hour - 216_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Chapter 1", 0), ch(1, "Chapter 2", 30)), hour))
         // "Credits" right at the start (an opening titles chapter) is not the end credits.
-        assertEquals(hour - 30_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Opening credits", 1)), hour))
+        assertEquals(hour - 216_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Opening credits", 1)), hour))
+    }
+
+    @Test fun the_guessed_tail_scales_with_the_length_within_limits() {
+        assertEquals(60_000L, PlayerMath.guessedTailMs(10 * 60_000L))      // 6 % of 10 min is 36 s: a minute at least
+        assertEquals(72_000L, PlayerMath.guessedTailMs(20 * 60_000L))      // 6 % of 20 min
+        assertEquals(90_000L, PlayerMath.guessedTailMs(25 * 60_000L))      // 6 % of 25 min
+        assertEquals(4 * 60_000L, PlayerMath.guessedTailMs(90 * 60_000L))  // never more than four minutes
+        assertEquals(20 * 60_000L - 72_000L, PlayerMath.creditsStartMs(emptyList(), 20 * 60_000L))
     }
 
     @Test fun a_short_unnamed_last_chapter_near_the_end_is_the_credits() {
@@ -197,13 +206,27 @@ class CreditsStartTest {
         val fallout = (0..7).map { ch(it, "Chapter ${it + 1}", it * 6) } + Chapter(8, "Chapter 9", 3_377_165L, null)
         assertEquals(3_377_165L, PlayerMath.creditsStartMs(fallout, 3_609_731L))
         // A long last act is not the credits, nor is a named scene.
-        assertEquals(hour - 30_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Chapter 1", 0), ch(1, "Chapter 2", 50)), hour))
-        assertEquals(hour - 30_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Chapter 1", 0), ch(1, "The showdown", 57)), hour))
+        assertEquals(hour - 216_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Chapter 1", 0), ch(1, "Chapter 2", 50)), hour))
+        assertEquals(hour - 216_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Chapter 1", 0), ch(1, "The showdown", 57)), hour))
     }
 
     @Test fun short_or_unknown_lengths_give_nothing() {
         assertNull(PlayerMath.creditsStartMs(emptyList(), 5 * 60_000L))
         assertNull(PlayerMath.creditsStartMs(emptyList(), 0L))
+    }
+
+    @Test fun a_known_start_beats_the_learned_tail_and_the_guess() {
+        val hour = 60 * 60_000L
+        assertEquals(2_400_000L, PlayerMath.creditsStartMs(emptyList(), hour, knownStartMs = 2_400_000L, learnedTailMs = 200_000L))
+        // Without one, the learned tail: a viewer habitually leaves 200 s before the end.
+        assertEquals(hour - 200_000L, PlayerMath.creditsStartMs(emptyList(), hour, learnedTailMs = 200_000L))
+        // An implausible known start is ignored, and so is an implausible learned tail: the guess is used.
+        assertEquals(hour - 216_000L, PlayerMath.creditsStartMs(emptyList(), hour, knownStartMs = 100_000L, learnedTailMs = 50 * 60_000L))
+    }
+
+    @Test fun a_named_credits_chapter_still_beats_everything() {
+        val hour = 60 * 60_000L
+        assertEquals(50 * 60_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Start", 0), ch(1, "End Credits", 50)), hour, knownStartMs = 40 * 60_000L, learnedTailMs = 200_000L))
     }
 }
 

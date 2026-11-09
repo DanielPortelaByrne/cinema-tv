@@ -106,6 +106,11 @@ class CinemaSettings(platform: Platform) {
         get() = prefs.getString("stream_progress", null)
         set(v) { prefs.edit().putString("stream_progress", v).apply() }
 
+    /** Where viewers have left each series' episodes, and the credits answers already had (see CreditsStore). Kept on this TV only. */
+    var creditsStore: String?
+        get() = prefs.getString("credits_store", null)
+        set(v) { prefs.edit().putString("credits_store", v).apply() }
+
     /** The searches run lately on [keyboard], most recent first. Kept on this TV only. */
     fun recentSearches(keyboard: SearchKeyboard): List<String> = RecentSearches.parse(prefs.getString(keyboard.key, null))
 

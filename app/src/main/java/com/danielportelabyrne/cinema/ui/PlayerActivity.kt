@@ -27,6 +27,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -64,9 +65,34 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 
 private const val TAG = "SmartStream"
+/** Where the next-episode card's credits come from, and when it comes up (for checking it on a TV's logcat). */
+private const val CREDITS_TAG = "Credits"
 
 /** A streamed episode picked on the paused screen, for the Movies page to find a copy of once the player has closed. */
 data class EpisodeRequest(val imdbId: String, val seriesName: String, val season: Int, val episode: Int)
+
+/**
+ * A Continue watching stream whose saved link no longer plays (the stream service's links expire after a few hours, and
+ * idle streams are dropped), for the Movies page to find a fresh copy of. The player then resumes at the saved point.
+ */
+data class StreamAgainRequest(val imdbId: String?, val name: String, val episode: Pair<Int, Int>?, val shownTitle: String)
+
+/**
+ * Retries loads as before, except an address the server refuses outright: an expired or invalid link (403, 410), and a
+ * stream the service no longer has (404) when the link was saved by Continue watching. Retrying those only kept the
+ * loading screen up for about 25 seconds before failing anyway.
+ */
+@UnstableApi
+class DeadLinkPolicy(retries: Int, private val savedLink: Boolean) : DefaultLoadErrorHandlingPolicy(retries) {
+    override fun getRetryDelayMsFor(info: androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+        val code = (info.exception as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+        return if (code != null && isDead(code, savedLink)) C.TIME_UNSET else super.getRetryDelayMsFor(info)
+    }
+
+    companion object {
+        fun isDead(code: Int, savedLink: Boolean): Boolean = code == 403 || code == 410 || (savedLink && code == 404)
+    }
+}
 
 /** One stream the player may try, in order. Serialised through the launch intent. */
 data class PlayItem(
@@ -122,6 +148,10 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var history: PlaybackStore
     private lateinit var continueStore: ContinueWatching
     private var payload: String? = null
+    /** Opened from a Continue watching card: the saved links may have expired, and a fresh copy can be found instead. */
+    private var fromContinue = false
+    /** Some attempt showed a picture. Until then a dead saved link means finding the title again, not giving up. */
+    private var playedAny = false
     /** Restart was pressed: play from 0:00 and let neither the server's nor this TV's resume point move it. */
     private var forcedStart = false
     private lateinit var network: NetworkEstimator
@@ -152,25 +182,141 @@ class PlayerActivity : AppCompatActivity() {
     }
     /** The next-episode card is up while the credits still play (it appears as they begin, not at the file's end). */
     private var creditsCard = false
+    /** Where this episode's credits begin, as TheIntroDB (a stream) or the server (a library episode) gave it; null when unknown. */
+    private var knownCreditsMs: Long? = null
+    /** The Jellyfin series of the library episode playing, which keys what is learned about its credits. */
+    private var librarySeriesId: String? = null
+    /** How long before the end this series' viewers have tended to leave, read for the series in [learnedKey]. */
+    private var learnedTailMs: Long? = null
+    private var learnedKey: String? = null
 
     /** Once a second: when an episode with a next one reaches its credits, the next-episode card comes up. */
     private val creditsTick = object : Runnable {
         override fun run() {
             if (isFinishing || isDestroyed) return
-            if (::player.isInitialized && !ended && !creditsCard && nextPlan != null && nextItem != null && !autoplay.cancelled && foreground && player.isPlaying) {
+            if (::player.isInitialized && !ended && !creditsCard && hasNext() && !autoplay.cancelled && foreground && player.isPlaying) {
                 val duration = player.duration.takeIf { it != C.TIME_UNSET } ?: 0L
-                val start = com.danielportelabyrne.cinema.data.player.PlayerMath.creditsStartMs(itemChapters, duration)
-                if (start != null && player.currentPosition >= start) showCreditsCard()
+                val start = creditsStartFor(duration)
+                if (start != null && player.currentPosition >= start) {
+                    Log.i(CREDITS_TAG, "Credits card at ${player.currentPosition} ms of $duration ms (credits start $start ms, known $knownCreditsMs, learned tail $learnedTailMs)")
+                    showCreditsCard()
+                }
             }
             handler.postDelayed(this, 1000)
         }
     }
 
+    /** What the autoplay plays after this one: a library episode by its id, a streamed one by its number. Null when none follows. */
+    private fun nextAutoplayId(): String? = nextItem?.id ?: streamNextEpisode()?.let { "stream:${it.season}:${it.episode}" }
+
+    /** Whether something follows this episode, so the next-episode card can come up for it. */
+    private fun hasNext(): Boolean = (nextPlan != null && nextItem != null) || streamNextEpisode() != null
+
+    /** The viewer is in the credits: the card is up, or the position is at or past where the credits begin. */
+    private fun pastCredits(): Boolean {
+        if (creditsCard) return true
+        if (!::player.isInitialized) return false
+        val start = creditsStartFor(player.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
+        return start != null && player.currentPosition >= start
+    }
+
+    /** Where this episode's credits begin, from the best thing known (see PlayerMath.creditsStartMs). */
+    private fun creditsStartFor(durationMs: Long): Long? =
+        com.danielportelabyrne.cinema.data.player.PlayerMath.creditsStartMs(itemChapters, durationMs, knownCreditsMs, learnedTail())
+
+    /** The series whose credits are learned from this episode: a stream's by its IMDb id, a library episode's by its Jellyfin series. */
+    private fun creditsSeriesKey(): String? =
+        if (jf == null) imdbId?.takeIf { it.startsWith("tt") && streamEpisode != null } else librarySeriesId?.let { "jf:$it" }
+
+    /** How long before the end this series' viewers have tended to leave, from earlier exits; re-read when the series changes. */
+    private fun learnedTail(): Long? {
+        val key = creditsSeriesKey()
+        if (key != learnedKey) {
+            learnedKey = key
+            learnedTailMs = key?.let { com.danielportelabyrne.cinema.data.intro.CreditsStore.learnedTail(CinemaSettings(AndroidPlatform(this)).creditsStore, it) }
+        }
+        return learnedTailMs
+    }
+
+    /** Looks up where this episode's credits begin: on TheIntroDB for a stream (kept, so each episode is asked once), on the server for a library episode. */
+    private fun beginCredits() {
+        knownCreditsMs = null
+        val generation = episodeGeneration
+        val report = jf
+        if (report == null) {
+            val (season, episode) = streamEpisode ?: return
+            val imdb = imdbId?.takeIf { it.startsWith("tt") } ?: return
+            val settings = CinemaSettings(AndroidPlatform(this))
+            episodeLookup.execute {
+                val result = com.danielportelabyrne.cinema.data.intro.IntroDb().creditsStart(imdb, season, episode, settings.creditsStore, System.currentTimeMillis())
+                result.storeJson?.let { settings.creditsStore = it }
+                handler.post {
+                    if (generation == episodeGeneration && !isDestroyed) knownCreditsMs = result.startMs
+                    Log.i(CREDITS_TAG, "TheIntroDB for $imdb S${season}E$episode: credits start ${result.startMs} ms (cached or asked)")
+                }
+            }
+        } else {
+            reporter.execute {
+                val start = jellyfin.creditsStartMs(report.itemId)
+                handler.post { if (generation == episodeGeneration && !isDestroyed) knownCreditsMs = start }
+            }
+        }
+    }
+
+    /** Leaving partway into the last few minutes is the credits rolling for this series: remembered for the next episode of it. */
+    private fun learnFromExit() {
+        if (ended || !started || !::player.isInitialized) return
+        val key = creditsSeriesKey() ?: return
+        val duration = player.duration.takeIf { it > 0 } ?: return
+        val tail = com.danielportelabyrne.cinema.data.intro.CreditsLearning.tailOf(duration, player.currentPosition) ?: return
+        val settings = CinemaSettings(AndroidPlatform(this))
+        settings.creditsStore = com.danielportelabyrne.cinema.data.intro.CreditsStore.addTail(settings.creditsStore, key, tail)
+        Log.i(CREDITS_TAG, "Learned from an exit $tail ms before the end ($key)")
+        learnedKey = key
+        learnedTailMs = com.danielportelabyrne.cinema.data.intro.CreditsStore.learnedTail(settings.creditsStore, key)
+    }
+
+    /** The streamed episode after this one, in the series' order from Cinemeta. Null for a library episode or the last one. */
+    private fun streamNextEpisode(): com.danielportelabyrne.cinema.data.stremio.SeriesEpisode? {
+        if (jf != null) return null
+        val listing = streamListing ?: return null
+        val (season, episode) = streamEpisode ?: return null
+        val next = com.danielportelabyrne.cinema.data.movies.NextEpisode.following(listing.episodes.map { it.season to it.episode }, season, episode) ?: return null
+        return listing.episodes.firstOrNull { it.season == next.first && it.episode == next.second }
+    }
+
+    /** Binds the next-episode card to the streamed episode after this one, as a library episode's card is bound. */
+    private fun prepareStreamNext() {
+        if (!::nextCard.isInitialized) return
+        val next = streamNextEpisode()
+        Log.i(CREDITS_TAG, "Streamed ${streamEpisode?.let { "S${it.first} E${it.second}" }}: next episode ${next?.let { "S${it.season} E${it.episode}" } ?: "none"}, listing ${streamListing?.episodes?.size ?: 0} episodes")
+        if (next == null) return
+        val id = nextAutoplayId() ?: return
+        val series = streamListing?.name?.ifBlank { null } ?: title.substringBefore(" · ")
+        nextCard.bindEpisode("S${next.season} E${next.episode}", next.name.ifBlank { "Episode ${next.episode}" }, series)
+        next.still?.let { url -> RemoteImages.shared(this).load(url, maxWidth = 1000) { bitmap -> nextCard.artwork.setImageBitmap(bitmap) } }
+        autoplay.ready(id, SystemClock.elapsedRealtime())
+        refreshNextHook()
+        showNextEpisode()
+    }
+
+    /** Hands the streamed episode after this one to the Movies page, which finds a copy of it as it found this one. */
+    private fun playStreamNext() {
+        val next = streamNextEpisode() ?: return
+        val imdb = imdbId?.takeIf { it.startsWith("tt") } ?: return
+        val series = streamListing?.name?.ifBlank { null } ?: title.substringBefore(" · ")
+        recordStreamProgress(atEnd = true)
+        handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
+        creditsCard = false
+        pendingEpisode = EpisodeRequest(imdb, series, next.season, next.episode)
+        finish()
+    }
+
     private fun showCreditsCard() {
-        val next = nextItem ?: return
+        val nextId = nextAutoplayId() ?: return
         val now = SystemClock.elapsedRealtime()
         creditsCard = true
-        autoplay = EpisodeAutoplay(CREDITS_COUNTDOWN_MS).also { it.ready(next.id, now); it.end(now) }
+        autoplay = EpisodeAutoplay(CREDITS_COUNTDOWN_MS).also { it.ready(nextId, now); it.end(now) }
         Perf.mark("player.creditsCard at ${player.currentPosition} of ${player.duration}")
         view.hideController()
         chrome?.setState(com.danielportelabyrne.cinema.data.player.PlayerUi.Hidden)
@@ -211,6 +357,7 @@ class PlayerActivity : AppCompatActivity() {
         history = PlaybackStore(this)
         continueStore = ContinueWatching(this)
         payload = intent.getStringExtra(EXTRA_PAYLOAD)
+        fromContinue = intent.getBooleanExtra(EXTRA_RESUMED, false)
         network = NetworkEstimator(this)
         if (items.isEmpty()) { fallBackToStremio("nothing to play"); return }
 
@@ -469,7 +616,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun showNextEpisode() {
-        if (!ended || !foreground || nextPlan == null || autoplay.cancelled) return
+        if (!ended || !foreground || !hasNext() || autoplay.cancelled) return
         view.hideController()
         chrome?.setState(com.danielportelabyrne.cinema.data.player.PlayerUi.Hidden)
         nextCard.showCard()
@@ -494,6 +641,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun startNextEpisode() {
+        if (nextPlan == null) { playStreamNext(); return }
         val plan = nextPlan ?: return
         val next = nextItem ?: return
         handler.removeCallbacks(autoplayTick)
@@ -600,6 +748,7 @@ class PlayerActivity : AppCompatActivity() {
             handler.post {
                 if (isFinishing || isDestroyed || listing == null || listing.episodes.isEmpty()) return@post
                 streamListing = listing
+                prepareStreamNext()
                 showStreamSeason(episode.first)
             }
         }
@@ -632,7 +781,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun startAttempt(i: Int, play: Boolean = true) {
         index = i
-        if (i == 0) audioFallbackQueued = false
+        if (i == 0) { audioFallbackQueued = false; beginCredits() }
         val item = items[i]
         started = false; ended = false; recorded = false; keepAwake()
         startupMs = null; bufferEvents = 0; bufferMs = 0; bufferStart = 0; seeking = false; playMs = 0; playingSince = 0
@@ -649,7 +798,7 @@ class PlayerActivity : AppCompatActivity() {
         // Retry transient network errors more patiently for streams: a stalled torrent recovers far more often than it dies.
         val retries = if (slow) STREAM_LOAD_RETRIES else DEFAULT_LOAD_RETRIES
         player.setMediaSource(DefaultMediaSourceFactory(this, extractorsFor(item)).setDataSourceFactory(http)
-            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(retries))
+            .setLoadErrorHandlingPolicy(DeadLinkPolicy(retries, fromContinue))
             .createMediaSource(MediaItem.Builder().setUri(Uri.parse(item.url))
                 .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
                     .setTitle(title.ifBlank { null }).setSubtitle(sessionSubtitle).setArtist(sessionSubtitle)
@@ -705,7 +854,26 @@ class PlayerActivity : AppCompatActivity() {
      */
     private fun bufferBytes(): Int = (Runtime.getRuntime().maxMemory() / 4).coerceIn(24L * 1024 * 1024, STREAM_TARGET_BUFFER_BYTES.toLong()).toInt()
 
+    /** Continue watching opened a title, nothing has played yet, and not a live channel: a fresh copy can be looked for. */
+    private fun canStreamAgain(): Boolean = fromContinue && !playedAny && !live && jf == null && title.isNotBlank()
+
+    /**
+     * The saved links of a Continue watching card no longer play. Hands the title back to the Movies page, which finds a
+     * fresh copy exactly as Stream now does; the player that opens then starts at the saved resume point.
+     */
+    private fun streamAgain(reason: String) {
+        Log.w(TAG, "Finding a fresh copy: $reason")
+        handler.removeCallbacks(startupTimeout)
+        val episode = streamEpisode
+        // "Friends · S2 E2" is saved for an episode; the search wants the series' own name.
+        val name = (if (episode != null) title.replace(Regex("""\s*·\s*S\d+ E\d+$"""), "") else title).ifBlank { title }
+        pendingStreamAgain = StreamAgainRequest(imdbId?.takeIf { it.startsWith("tt") }, name, episode, title)
+        pendingStreamAgainAt = SystemClock.elapsedRealtime()
+        finish()
+    }
+
     private fun fallBackToStremio(reason: String) {
+        if (canStreamAgain()) { streamAgain(reason); return }
         if (streamOnly()) {
             Log.w(TAG, "Stream failed: $reason")
             CinemaToast.show(this, "Couldn't play this stream. Try again in a minute.", Toast.LENGTH_LONG)
@@ -753,6 +921,7 @@ class PlayerActivity : AppCompatActivity() {
         override fun onRenderedFirstFrame() {
             if (started) return
             started = true
+            playedAny = true
             keepAwake()
             hideLoading()
             // The film's length is known now, so the chapter marks can be placed on the scrubber.
@@ -788,15 +957,15 @@ class PlayerActivity : AppCompatActivity() {
                 if (started && !ended) reportToJellyfin("Progress")
                 if (creditsCard && !ended) {
                     // Back before the credits: the card goes, and comes back when they begin again.
-                    val start = com.danielportelabyrne.cinema.data.player.PlayerMath.creditsStartMs(itemChapters, player.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
+                    val start = creditsStartFor(player.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
                     if (start == null || new.positionMs < start) {
                         creditsCard = false; handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
-                        autoplay = EpisodeAutoplay().also { state -> nextItem?.let { state.ready(it.id, SystemClock.elapsedRealtime()) } }
+                        autoplay = EpisodeAutoplay().also { state -> nextAutoplayId()?.let { state.ready(it, SystemClock.elapsedRealtime()) } }
                     }
                 }
                 if (ended && new.positionMs < player.duration) {
                     ended = false; handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
-                    autoplay = EpisodeAutoplay().also { state -> nextItem?.let { state.ready(it.id, SystemClock.elapsedRealtime()) } }
+                    autoplay = EpisodeAutoplay().also { state -> nextAutoplayId()?.let { state.ready(it, SystemClock.elapsedRealtime()) } }
                 }
             }
         }
@@ -814,6 +983,9 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onPlayerError(error: PlaybackException) {
             Log.w(TAG, "Player error: ${error.errorCodeName}")
+            // A saved link the server now refuses will not come back, and the other saved versions are as old.
+            val code = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+            if (code != null && canStreamAgain() && DeadLinkPolicy.isDead(code, fromContinue)) { streamAgain("saved link answered $code"); return }
             fail(error.errorCodeName)
         }
     }
@@ -906,6 +1078,7 @@ class PlayerActivity : AppCompatActivity() {
 
     /** What the Jellyfin item says about the film: details, chapters, trickplay tiles and file size. */
     private fun showItem(item: JellyfinItem) {
+        if (item.isEpisode) librarySeriesId = item.seriesId
         sessionSubtitle = subtitleFor(item.year, item.genres); refreshSessionMetadata()
         // An episode usually has no backdrop, only its own still.
         val artUrl = if (item.hasBackdrop) jellyfin.backdropUrl(item.id)
@@ -1005,6 +1178,7 @@ class PlayerActivity : AppCompatActivity() {
         val next = com.danielportelabyrne.cinema.data.player.PlayerMath.chapterAt(itemChapters, pos)?.let { itemChapters.getOrNull(it.index + 1) }
         if (next != null) return { player.seekTo(next.startMs) }
         if (nextPlan != null) return { record(failed = false); startNextEpisode() }
+        if (streamNextEpisode() != null) return { playStreamNext() }
         return null
     }
 
@@ -1260,10 +1434,12 @@ class PlayerActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         if (::player.isInitialized) {
+            learnFromExit()
             saveResume()
             snapshotToContinue()
             player.pause()
-            reportToJellyfin("Stopped")
+            // Leaving in the credits: the episode counts as finished, as it does when the file runs out.
+            reportToJellyfin("Stopped", atEnd = pastCredits())
             record(failed = false)
         }
     }
@@ -1277,8 +1453,12 @@ class PlayerActivity : AppCompatActivity() {
         val episode = streamEpisode ?: return
         val id = imdbId?.takeIf { it.startsWith("tt") } ?: return
         if (jf != null || !::player.isInitialized) return
-        val duration = player.duration.takeIf { it > 0 } ?: 0L
-        val position = if (atEnd && duration > 0) duration else player.currentPosition
+        val known = player.duration.takeIf { it > 0 }
+        // Reaching the credits counts as watched, as the end does: viewers usually leave as the credits roll. A stream that
+        // reached its end also counts when its length was never reported, since the end is then the length.
+        val reached = atEnd || pastCredits()
+        val duration = known ?: if (reached) player.currentPosition else 0L
+        val position = if (reached && known != null) known else player.currentPosition
         if (position <= 0) return
         val settings = CinemaSettings(AndroidPlatform(this))
         settings.streamProgress = StreamProgress.record(settings.streamProgress, id, episode.first, episode.second, position, duration, System.currentTimeMillis())
@@ -1348,6 +1528,8 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_JF = "jf"
         private const val EXTRA_EPISODE = "episode"
         private const val EXTRA_FROM_START = "fromStart"
+        /** Set when a Continue watching card reopened a saved stream. */
+        private const val EXTRA_RESUMED = "resumed"
         /** The film's details for the chrome (year, genres, runtime, certificate, rating, overview), as JSON. */
         private const val EXTRA_META = "meta"
         private const val STARTUP_TIMEOUT_MS = 25_000L
@@ -1368,6 +1550,13 @@ class PlayerActivity : AppCompatActivity() {
 
         /** The episode the viewer picked in the player, once; null when there is none. */
         fun takeEpisodeRequest(): EpisodeRequest? = pendingEpisode.also { pendingEpisode = null }
+
+        @Volatile private var pendingStreamAgain: StreamAgainRequest? = null
+        @Volatile private var pendingStreamAgainAt = 0L
+
+        /** A Continue watching stream whose saved links no longer play, once and only just after; null when there is none. */
+        fun takeStreamAgain(): StreamAgainRequest? = pendingStreamAgain.also { pendingStreamAgain = null }
+            ?.takeIf { SystemClock.elapsedRealtime() - pendingStreamAgainAt < 60_000L }
 
         fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false, episode: Pair<Int, Int>? = null) {
             context.startActivity(playbackIntent(context, ranked, title, imdbId, report, episode).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
@@ -1408,7 +1597,7 @@ class PlayerActivity : AppCompatActivity() {
             context.startActivity(Intent(context, PlayerActivity::class.java)
                 .putExtra(EXTRA_ITEMS, o.getString("items")).putExtra(EXTRA_IMDB, o.optString("imdb").ifBlank { null })
                 .putExtra(EXTRA_TITLE, o.optString("title")).putExtra(EXTRA_PAYLOAD, payload).putExtra(EXTRA_JF, o.optString("jf").ifBlank { null })
-                .putExtra(EXTRA_EPISODE, o.optString("episode").ifBlank { null }))
+                .putExtra(EXTRA_EPISODE, o.optString("episode").ifBlank { null }).putExtra(EXTRA_RESUMED, true))
             true
         } catch (_: Exception) { false }
 

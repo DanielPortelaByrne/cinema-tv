@@ -29,17 +29,28 @@ object PlayerMath {
     private val CREDITS = Regex("(?i)\\b(end\\s*)?credits?\\b|\\boutro\\b|\\bclosing\\b")
 
     /**
-     * Where an episode's credits begin, for the next-episode card: a chapter named for them ("Credits", "End
-     * credits", "Outro") in the last part of the file, or failing that 30 seconds before the end. Null for anything
-     * too short to tell, or with no known length.
+     * Where an episode's credits begin, for the next-episode card, from the best thing known, in this order: a chapter
+     * named for them ("Credits", "End credits", "Outro") in the last part of the file; the start a community database or
+     * the server gave ([knownStartMs]); a short unnamed last chapter; where this series' viewers have tended to leave
+     * ([learnedTailMs], how long before the end); and failing all of those, [guessedTailMs] before the end. Null for
+     * anything too short to tell, or with no known length.
      */
-    fun creditsStartMs(chapters: List<Chapter>, durationMs: Long): Long? {
+    fun creditsStartMs(chapters: List<Chapter>, durationMs: Long, knownStartMs: Long? = null, learnedTailMs: Long? = null): Long? {
         if (durationMs < 10 * 60_000L) return null
         chapters.lastOrNull { CREDITS.containsMatchIn(it.name) && it.startMs >= durationMs * 0.6 && it.startMs < durationMs - 5_000 }?.let { return it.startMs }
+        if (knownStartMs != null && com.danielportelabyrne.cinema.data.intro.CreditsTimes.plausible(knownStartMs, durationMs)) return knownStartMs
         // Chapters with no real names ("Chapter 9"): a short last one in the final tenth is almost always the credits.
         chapters.maxByOrNull { it.startMs }?.takeIf { GENERIC.matches(it.name.trim()) && it.startMs >= durationMs * 0.9 && durationMs - it.startMs in 45_000L..6 * 60_000L }?.let { return it.startMs }
-        return durationMs - 30_000L
+        val learned = learnedTailMs?.takeIf { it > 0 }?.let { durationMs - it }
+        if (learned != null && com.danielportelabyrne.cinema.data.intro.CreditsTimes.plausible(learned, durationMs)) return learned
+        return durationMs - guessedTailMs(durationMs)
     }
+
+    /**
+     * How long the credits last when the file has no credits chapter: about 6 % of the length, between a minute and four
+     * minutes (so an hour-long episode's credits begin about three and a half minutes before the end).
+     */
+    fun guessedTailMs(durationMs: Long): Long = (durationMs * 0.06).toLong().coerceIn(60_000L, 4 * 60_000L)
 
     // --- Streams -----------------------------------------------------------------------------------
 
