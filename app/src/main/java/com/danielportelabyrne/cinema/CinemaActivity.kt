@@ -117,9 +117,10 @@ class CinemaActivity : AppCompatActivity() {
         })
 
         val start = {
-            // Nothing to show until there is a Jellyfin server: first run, or after Reset everything.
+            // First run offers independent Live TV as well as the existing server setup.
             when {
-                !settings.setupDone || !jellyfin.hasServer -> setup.startFirstRun()
+                !settings.setupDone -> setup.startFirstRun()
+                !jellyfin.hasServer -> openMovies()
                 // The server is known but the sign-in was lost (a token rejected, or the app data partly wiped): say so.
                 !jellyfin.isConnected -> setup.startSignBackIn()
                 else -> openMovies()
@@ -245,6 +246,12 @@ class CinemaActivity : AppCompatActivity() {
     /** Debug builds only: `--es debug_cinema_dest <name>` opens a page directly, for screenshots. */
     private fun handleDebugIntent(intent: android.content.Intent?) {
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        if (intent?.getStringExtra("debug_cinema_dest") == "live") {
+            startActivity(android.content.Intent(this, com.danielportelabyrne.cinema.ui.live.LiveTvActivity::class.java).apply {
+                intent.getStringExtra("debug_live_channel")?.let { putExtra("debug_live_channel", it) }
+            })
+            return
+        }
         intent?.getStringExtra("debug_setup_step")?.let { if (moviesPanel.isVisible) moviesPanel.hide(); setup.debugOpen(it); return }
         // "debug_update_url": offers the app file at that address as build 999999, to try the whole update on a device.
         intent?.getStringExtra("debug_update_url")?.let { url ->

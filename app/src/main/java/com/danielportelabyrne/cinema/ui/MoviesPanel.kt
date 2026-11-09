@@ -174,6 +174,7 @@ class MoviesPanel(
         object LbFollow : Dest()
         /** Music: the server's album lists, one album, one artist. */
         object Music : Dest()
+        object Live : Dest()
         class MusicAlbum(val id: String) : Dest()
         class MusicArtist(val id: String, val name: String) : Dest()
         /** Not a page: the rail's gear opens Settings over Cinema. */
@@ -489,6 +490,10 @@ class MoviesPanel(
     }
 
     private fun go(dest: Dest, remember: Boolean = false) {
+        if (dest === Dest.Live) {
+            activity.startActivity(android.content.Intent(activity, com.danielportelabyrne.cinema.ui.live.LiveTvActivity::class.java))
+            return
+        }
         // Leaving a page ends its phone typing: the search that asked for it is no longer on screen.
         closePhoneTyping()
         if (remember) trail.addLast(current) else trail.clear()
@@ -542,6 +547,7 @@ class MoviesPanel(
         val destinations = listOf(
             Triple("Search", R.drawable.ic_cin_search, Dest.Search),
             Triple("Home", R.drawable.ic_cin_home, Dest.Home),
+            Triple("Live TV", R.drawable.ic_cin_tv, Dest.Live),
             Triple("Films", R.drawable.ic_cin_film, Dest.Films),
             Triple("Series", R.drawable.ic_cin_tv, Dest.Series),
             Triple("Documentaries", R.drawable.ic_cin_doc, Dest.Docs),
@@ -809,6 +815,7 @@ class MoviesPanel(
             is Dest.MusicAlbum -> buildMusicAlbum(d.id, gen)
             is Dest.MusicArtist -> buildMusicArtist(d.id, d.name, gen)
             Dest.Settings -> Unit
+            Dest.Live -> Unit
         }
         Perf.took("movies.build (main thread)", Perf.now() - buildStart)
     }
@@ -823,6 +830,7 @@ class MoviesPanel(
         Dest.Downloads -> AmbientBackground.DOWNLOADS
         Dest.Search -> AmbientBackground.SEARCH
         Dest.Settings -> AmbientBackground.SETTINGS
+        Dest.Live -> AmbientBackground.HOME
         Dest.Letterboxd, Dest.LbSearch, Dest.LbFollow, is Dest.LbPerson, is Dest.LbListPage -> AmbientBackground.LETTERBOXD
         Dest.Music, is Dest.MusicAlbum, is Dest.MusicArtist -> AmbientBackground.MUSIC
         // A service's page takes the service's own colour; a genre's, the colour of its tile.

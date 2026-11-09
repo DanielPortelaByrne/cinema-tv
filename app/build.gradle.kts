@@ -71,7 +71,10 @@ android {
     buildTypes {
         debug {
             // CI installs its build on a real TV next to the owner's own Cinema: -Pcinema.appIdSuffix=.ci
-            providers.gradleProperty("cinema.appIdSuffix").orNull?.let { applicationIdSuffix = it }
+            providers.gradleProperty("cinema.appIdSuffix").orNull?.let {
+                applicationIdSuffix = it
+                if (it == ".livetv") resValue("string", "app_name", "Cinema Live TV test")
+            }
         }
         release {
             isMinifyEnabled = false

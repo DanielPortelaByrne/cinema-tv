@@ -6,11 +6,15 @@ Everything is set up on the TV the first time it opens. Nothing about anyone's s
 
 For the Linux desktop and Steam Deck version, see [Flatpak installation, controls and building](flatpak/README.md).
 
+## Live TV
+
+Choose **Live TV** in Cinema's navigation rail, or **Watch Live TV · no server needed** on first run. Browse real, externally programmed broadcasts by country and category, save favourites, and keep a stream playing while browsing the guide. Reviewed direct streams use Media3; other broadcasters open their official providers. No personal media library or downloads are required. See [Live TV controls, sources and build instructions](docs/LIVE_TV.md) and the [UK verification report](docs/LIVE_TV_VERIFICATION.md).
+
 ## What it needs
 
 | Service | Required? | What it's for |
 |---|---|---|
-| Jellyfin | **Yes** | Your library, playback, resume points. Sign in with username and password, or Quick Connect. |
+| Jellyfin | For your personal library; **not needed for Live TV** | Your library, playback, resume points. Sign in with username and password, or Quick Connect. |
 | Seerr (Jellyseerr or Overseerr) | Optional | Requesting films and series. Sign in with your Jellyfin account or a Seerr email account. |
 | Sonarr and Radarr | Optional | The Downloads page, single-episode requests, deleting from the library. Found automatically through Seerr when you sign in as a Seerr admin, or entered by hand (address and API key). |
 | Torrent client | Optional | "Download next" and "Download now" controls, live speed and seeds. Works with **qBittorrent**, **Transmission** and **Deluge**. Any other client (rTorrent, Flood, Usenet clients...) still shows progress and can be cancelled through Sonarr and Radarr. |

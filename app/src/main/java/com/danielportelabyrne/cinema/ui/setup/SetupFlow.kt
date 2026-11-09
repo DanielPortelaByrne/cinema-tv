@@ -138,9 +138,13 @@ class SetupFlow(
     // --- The steps ---------------------------------------------------------------------------------
 
     private fun welcome() {
-        val p = page(null, "Cinema", "Your Jellyfin library, and what is streaming everywhere else, in one place. " +
-            "Setting up takes a couple of minutes: you will need your Jellyfin address and sign-in, and optionally your Seerr.")
+        val p = page(null, "Cinema", "Your library, streaming services and live television in one place. " +
+            "Watch Live TV immediately, or connect Jellyfin and optionally Seerr for your personal library.")
         backTo = null
+        p.secondary("Watch Live TV · no server needed") {
+            close()
+            activity.startActivity(android.content.Intent(activity, com.danielportelabyrne.cinema.ui.live.LiveTvActivity::class.java))
+        }
         p.secondary("Set up from my phone") { phoneStep(PhoneKind.SETUP, back = ::welcome) }
         p.secondary("Restore from my phone") { phoneStep(PhoneKind.RESTORE, back = ::welcome) }
         p.primary("Set up with the remote", R.drawable.ic_cin_chev) { jellyfinServer() }

@@ -45,3 +45,5 @@ keystore.properties
 result
 result-*
 *.idsig
+.verification/
+.kotlin/
