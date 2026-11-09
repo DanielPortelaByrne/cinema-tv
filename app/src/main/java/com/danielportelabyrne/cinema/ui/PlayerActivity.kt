@@ -178,7 +178,26 @@ class PlayerActivity : AppCompatActivity() {
         override fun run() { saveResume(); snapshotToContinue(); handler.postDelayed(this, 15_000) }
     }
     private val reportTick = object : Runnable {
-        override fun run() { reportToJellyfin("Progress"); recordStreamProgress(); handler.postDelayed(this, REPORT_EVERY_MS) }
+        override fun run() { reportToJellyfin("Progress"); recordStreamProgress(); warmNextIfNear(); handler.postDelayed(this, REPORT_EVERY_MS) }
+    }
+    /** The episode and the one after it whose stream was last asked for ahead of time, so it is asked once. */
+    private var warmedNext: Pair<Pair<Int, Int>, Pair<Int, Int>>? = null
+
+    /**
+     * A few minutes before a streamed episode ends, has the Movies page find the next one's stream, so Play on the
+     * credits card starts quicker. Once for each pair of episodes. Library episodes need no search, so they are skipped.
+     */
+    private fun warmNextIfNear() {
+        if (jf != null || !::player.isInitialized) return
+        val current = streamEpisode ?: return
+        val next = streamNextEpisode() ?: return
+        if (warmedNext == (current to (next.season to next.episode))) return
+        val duration = player.duration.takeIf { it > 0 } ?: return
+        if (duration - player.currentPosition > WARM_NEXT_BEFORE_END_MS) return
+        val imdb = imdbId?.takeIf { it.startsWith("tt") } ?: return
+        val series = streamListing?.name?.ifBlank { null } ?: title.substringBefore(" · ")
+        warmedNext = current to (next.season to next.episode)
+        onUpcomingEpisode?.invoke(EpisodeRequest(imdb, series, next.season, next.episode))
     }
     /** The next-episode card is up while the credits still play (it appears as they begin, not at the file's end). */
     private var creditsCard = false
@@ -1542,10 +1561,15 @@ class PlayerActivity : AppCompatActivity() {
         private const val RESUME_DRIFT_MS = 5_000L
         /** How often Jellyfin hears the position while playing. */
         private const val REPORT_EVERY_MS = 5_000L
+        /** How early the next streamed episode's stream is searched for: under the Movies page's add-on cache (8 minutes). */
+        private const val WARM_NEXT_BEFORE_END_MS = 6 * 60_000L
         /** A torrent has to find peers and buffer first. */
         private const val ENGINE_STARTUP_TIMEOUT_MS = 75_000L
 
         /** Starts playback of [ranked] in order, capped at three attempts. */
+        /** Set by the Movies page: finds the next streamed episode's stream before it is asked for, a few minutes early. */
+        @Volatile var onUpcomingEpisode: ((EpisodeRequest) -> Unit)? = null
+
         @Volatile private var pendingEpisode: EpisodeRequest? = null
 
         /** The episode the viewer picked in the player, once; null when there is none. */

@@ -50,6 +50,9 @@ import com.danielportelabyrne.cinema.data.movies.Genre
 import com.danielportelabyrne.cinema.data.movies.Kind
 import com.danielportelabyrne.cinema.data.movies.ByteSize
 import com.danielportelabyrne.cinema.data.movies.EpisodeOutcome
+import com.danielportelabyrne.cinema.data.movies.EpisodeWatch
+import com.danielportelabyrne.cinema.data.movies.NextEpisode
+import com.danielportelabyrne.cinema.data.movies.NextUp
 import com.danielportelabyrne.cinema.data.movies.EpisodeState
 import com.danielportelabyrne.cinema.data.movies.LibraryRef
 import com.danielportelabyrne.cinema.data.movies.LibraryRemover
@@ -292,6 +295,8 @@ class MoviesPanel(
     private val pageEnd: Int get() = Cinema.px(activity, 96)
 
     fun show() {
+        // The player asks, a few minutes before a streamed episode ends, for the next one to be searched for (see warmUpcoming).
+        PlayerActivity.onUpcomingEpisode = { r -> ui.post { warmUpcoming(r) } }
         Perf.mark("movies.show")
         Perf.begin("movies.open->firstRow"); Perf.begin("movies.open->firstPoster"); Perf.begin("movies.open->hero")
         overlay.visibility = View.VISIBLE
@@ -342,6 +347,7 @@ class MoviesPanel(
         if (current !== Dest.Home || trail.isNotEmpty()) { generation++; builtAt = 0L }
     }
     fun close() {
+        PlayerActivity.onUpcomingEpisode = null
         jellyfin.stopLibraryPolling()
         navigationFocusListener?.let { if (top.viewTreeObserver.isAlive) top.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
         worker.shutdownNow(); shelfPool.shutdownNow(); slowPool.shutdownNow(); infoPool.shutdownNow(); images.close(); if (lbStarted) lb.close()
@@ -3775,6 +3781,10 @@ class MoviesPanel(
             setOnClickListener { streamNow(e, this) }
         }
         val gap = Cinema.px(activity, 20); val h = Cinema.px(activity, 76)
+        // A series streamed here: its next-up episode ("Continue watching S1E03"), filled in by seasonSection once it is known.
+        val nextStream = if (t.kind == Kind.SHOW && !inLibrary && seerr.hasStreamService)
+            CinemaButton(activity, CinemaButton.Kind.PRIMARY, "", R.drawable.ic_cin_play).apply { visibility = View.GONE } else null
+        nextStream?.let { buttons.addView(it, LinearLayout.LayoutParams(-2, h).apply { marginEnd = gap }) }
         buttons.addView(primary, LinearLayout.LayoutParams(-2, h))
         // A series' season download, beside Request all seasons: drawSeasons sets it to the season in view.
         heroSeasonButton = if (t.kind == Kind.SHOW) CinemaButton(activity, CinemaButton.Kind.GLASS, "Download", R.drawable.ic_cin_dl).apply { visibility = View.GONE } else null
@@ -3826,7 +3836,7 @@ class MoviesPanel(
         topRow.addView(posterBox, LinearLayout.LayoutParams(Cinema.px(activity, 300), Cinema.px(activity, 450)).apply { marginStart = Cinema.px(activity, 48); topMargin = -Cinema.px(activity, 12) })
         column.addView(topRow, LinearLayout.LayoutParams(-1, -2))
 
-        if (t.kind == Kind.SHOW) seasonSection(column, e, primary)
+        if (t.kind == Kind.SHOW) seasonSection(column, e, primary, nextStream)
         lbFilmSection(column, e)
         val more = related.filter { it.key != t.key }.take(14)
         var moreHeading: View? = null
@@ -4003,6 +4013,33 @@ class MoviesPanel(
                 }
             }
         }
+    }
+
+    /**
+     * Starts finding an episode's stream now, so Play starts quicker when it is pressed. Same keys as [streamNow] (the same
+     * title, year, season and episode), so nothing is asked twice. Does nothing without a signed-in stream service.
+     */
+    private fun warmEpisodeStream(e: Entry, season: Int, episode: Int) {
+        if (!seerr.hasStreamService || !seerr.isSignedIn) return
+        slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, season, episode) }
+        e.title.imdbId?.let { addonAnswersFor(it, season to episode) }
+    }
+
+    /**
+     * The player's next streamed episode, a few minutes before the current one ends: its stream is found now, as Play would
+     * find it. The entry is built as [streamPickedEpisode] builds it, so the search keys match when it is played.
+     */
+    private fun warmUpcoming(r: EpisodeRequest) {
+        val e = lastStreamed?.takeIf { it.title.imdbId == r.imdbId }
+            ?: entry(Title(r.imdbId, Kind.SHOW, r.seriesName, null, null, null, emptyList(), null, null, null, null, r.imdbId, null))
+        warmEpisodeStream(e, r.season, r.episode)
+    }
+
+    /** The library's next-up episode for a library series (see NextEpisode.of), or null when it has none. */
+    private fun libraryNextUp(e: Entry, owned: List<JellyfinItem>): NextUp? {
+        val episodes = owned.filter { (it.season ?: 0) > 0 && it.episode != null }
+        val streamed = streamedEpisodes(e).filter { it.played }.map { EpisodeWatch(it.season, it.episode, true, 0L, it.atMs) }
+        return NextEpisode.of(episodes.map { EpisodeWatch(it.season!!, it.episode!!, it.played, it.resumeMs, it.playedMs) }, streamed)
     }
 
     /** Streams a seeded copy from the home stream service into the player, without waiting for a download. */
@@ -4193,7 +4230,7 @@ class MoviesPanel(
      * download button, then a rail of episode title cards. Each card plays its episode (from the library, or streamed)
      * and asks Sonarr for that one episode. A season shows its episodes from Seerr's listing, merged with what Jellyfin holds.
      */
-    private fun seasonSection(parent: LinearLayout, e: Entry, primary: CinemaButton?) {
+    private fun seasonSection(parent: LinearLayout, e: Entry, primary: CinemaButton?, nextStream: CinemaButton? = null) {
         val tmdb = e.title.tmdbId?.toLongOrNull()
         val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         parent.addView(box, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 60) })
@@ -4210,11 +4247,33 @@ class MoviesPanel(
             val states = HashMap<Pair<Int, Int>, EpisodeState>()
             val downloads = ArrayList<QueueItem>()
             var refresh: () -> Unit = {}
+            // Where the viewer got to: the library's next-up for a library series, else the one after the last stream played here.
+            val streamedHere = streamedEpisodes(e)
+            val nextUp: NextUp? = if (e.library?.isSeries == true) libraryNextUp(e, owned)
+                else NextEpisode.forStream(seasons.filter { it.number > 0 }.flatMap { s -> (1..s.episodeCount).map { s.number to it } }, streamedHere)
             activity.runOnUiThread {
                 if (!detailOpen || !box.isAttachedToWindow) return@runOnUiThread
-                refresh = drawSeasons(box, e, tmdb, seasons, owned, states, downloads)
+                refresh = drawSeasons(box, e, tmdb, seasons, owned, states, downloads, nextUp)
                 resumeOnHero(primary, e, owned)
                 Perf.end("seasons.draw", "${owned.size} episodes, ${seasons.size} seasons")
+            }
+            // A series streamed here: its next-up episode goes on the title's buttons once it has aired. Looked up here, off the UI thread.
+            if (nextStream != null && nextUp != null && e.library == null && tmdb != null && signedIn) {
+                val aired = seerr.episodes(tmdb, nextUp.season).firstOrNull { it.number == nextUp.episode }
+                    ?.let { !EpisodeCards.unaired(it.airDate, EpisodeCards.today()) } == true
+                if (aired) activity.runOnUiThread {
+                    if (!detailOpen || !nextStream.isAttachedToWindow) return@runOnUiThread
+                    val code = "S${nextUp.season}E${nextUp.episode.toString().padStart(2, '0')}"
+                    val label = "${e.title.name} · S${nextUp.season} E${nextUp.episode}"
+                    nextStream.setText(if (nextUp.continuing) "Continue watching $code" else "Watch $code")
+                    nextStream.setOnClickListener { v -> streamNow(e, v, nextUp.season to nextUp.episode, label) }
+                    nextStream.visibility = View.VISIBLE
+                    // Only once the viewer has started this series here, so browsing does not ask the stream service about every title.
+                    if (streamedHere.isNotEmpty()) warmEpisodeStream(e, nextUp.season, nextUp.episode)
+                    // Focus moves to it from the page's first button, or from nowhere; never from a button the viewer has moved to.
+                    val f = overlay.findFocus()
+                    if (f == null || f === primary) nextStream.requestFocus()
+                }
             }
             if (!signedIn) return@execute
             Perf.begin("seasons.arr")
@@ -4243,10 +4302,7 @@ class MoviesPanel(
     private fun resumeOnHero(primary: CinemaButton?, e: Entry, owned: List<JellyfinItem>) {
         if (primary == null || e.library?.isSeries != true) return
         val episodes = owned.filter { (it.season ?: 0) > 0 && it.episode != null }
-        val streamed = streamedEpisodes(e).filter { it.played }.map { com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season, it.episode, true, 0L, it.atMs) }
-        val up = com.danielportelabyrne.cinema.data.movies.NextEpisode.of(episodes.map {
-            com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season!!, it.episode!!, it.played, it.resumeMs, it.playedMs)
-        }, streamed) ?: return
+        val up = libraryNextUp(e, owned) ?: return
         val ep = episodes.firstOrNull { it.season == up.season && it.episode == up.episode } ?: return
         val code = "S${ep.season}E${ep.episode.toString().padStart(2, '0')}"
         primary.setText(if (up.continuing) "Continue watching $code" else "Watch $code")
@@ -4255,7 +4311,7 @@ class MoviesPanel(
 
     /** Returns a restate of the shown season, for when Sonarr's episode states or downloads arrive later. */
     private fun drawSeasons(box: LinearLayout, e: Entry, tmdb: Long?, seasons: List<SeasonState>, owned: List<JellyfinItem>,
-                            states: MutableMap<Pair<Int, Int>, EpisodeState>, downloads: List<QueueItem>): () -> Unit {
+                            states: MutableMap<Pair<Int, Int>, EpisodeState>, downloads: List<QueueItem>, nextUp: NextUp? = null): () -> Unit {
         box.removeAllViews()
         if (seasons.isEmpty()) {
             box.addView(note(if (!seerr.isSignedIn && e.library == null) "Press Queue download to sign in, then the seasons and episodes will be listed here." else "No season information available."))
@@ -4287,7 +4343,9 @@ class MoviesPanel(
 
         val tabs = LinkedHashMap<View, SeasonState>()
         val paints = HashMap<View, () -> Unit>()
-        var shown = seasons.first()
+        // The season being watched opens first (its next-up episode), else Season 1 as before.
+        val opening = seasons.firstOrNull { it.number == nextUp?.season } ?: seasons.first()
+        var shown = opening
         var loading = 0
         var railTarget: View? = null
         var restateShown: () -> Unit = {}
@@ -4385,6 +4443,14 @@ class MoviesPanel(
             card.play.setOnClickListener { v ->
                 if (mine != null) { playbackStarted = true; remember(e.title, streamed = false); JellyfinPlayback.play(activity, jellyfin, mine, label, "jf:${mine.id}") }
                 else streamNow(e, v, s.number to ep.number, label)
+            }
+            // The whole blurb, with the still and the episode's facts. Play (when there is one to press) reuses the card's own Play disc.
+            card.onInfo = {
+                val about = (ep.overview ?: mine?.overview)?.trim().orEmpty()
+                val facts = EpisodeCards.metaParts(runtime, resume?.second, ep.airDate).joinToString(" · ").ifBlank { null }
+                val actions = if (look.playShown) listOf(SheetAction(if (mine != null) "Play" else "Stream", label, primary = true) { card.play.performClick() }) else emptyList()
+                infoSheet.show("S${s.number} · E${ep.number}", ep.name.ifBlank { "Episode ${ep.number}" }, facts,
+                    listOf(about.ifBlank { "No description yet." }), card.stillBitmap(), actions, imageSizeDp = 320 to 180)
             }
             card.download.setOnClickListener {
                 when (look.state) {
@@ -4501,10 +4567,16 @@ class MoviesPanel(
                                 }
                             }
                         }
-                        railTarget = cards.firstOrNull { it.mine != null && !it.mine.played && it.mine.resumeMs > 0 }?.card?.firstStop
+                        // The next-up episode when this season holds it; else the library episode part-way through; else the first.
+                        railTarget = cards.firstOrNull { nextUp != null && s.number == nextUp.season && it.card.number == nextUp.episode }?.card?.firstStop
+                            ?: cards.firstOrNull { it.mine != null && !it.mine.played && it.mine.resumeMs > 0 }?.card?.firstStop
                             ?: cards.first().card.firstStop
                     }
                     settle()
+                    // Scrolls the rail to the next-up episode so it is in view, without moving focus.
+                    if (nextUp != null && s.number == nextUp.season) cards.firstOrNull { it.card.number == nextUp.episode }?.card?.let { c ->
+                        rail.scroller.post { (rail.scroller as android.widget.HorizontalScrollView).scrollTo((c.left - Cinema.px(activity, 24)).coerceAtLeast(0), 0) }
+                    }
                     restateShown = {
                         val held = cards.firstOrNull { it.card.hasFocus() }
                         val focused = held?.card?.findFocus()
@@ -4547,7 +4619,11 @@ class MoviesPanel(
             tabs[tab] = s
             tabRow.addView(tab, LinearLayout.LayoutParams(-2, Cinema.px(activity, 62)).apply { if (i > 0) marginStart = Cinema.px(activity, 10) })
         }
-        showSeason(seasons.first())
+        showSeason(opening)
+        // Brings the opening season's tab into view on the strip, which may be far along a long series.
+        tabs.entries.firstOrNull { it.value === opening }?.key?.let { tab ->
+            tabScroller.post { tabScroller.scrollTo((tab.left - Cinema.px(activity, 26)).coerceAtLeast(0), 0) }
+        }
         return { restateShown() }
     }
 

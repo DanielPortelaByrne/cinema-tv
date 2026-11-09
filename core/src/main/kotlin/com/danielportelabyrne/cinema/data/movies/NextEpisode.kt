@@ -26,6 +26,22 @@ object NextEpisode {
         return (after ?: inOrder.first()).let { NextUp(it.season, it.episode, continuing = false) }
     }
 
+    /**
+     * What a streamed series' main button plays. [episodes] are the series' episodes as (season, episode), in any order;
+     * [streamed] is what was played here (StreamProgress). The episode played most recently decides it: not finished, it
+     * is played again, carrying on when at least [minResumeMs] in ("Continue watching S1E3"); finished, the one after it
+     * is next ("Watch S1E4"). Nothing played yet gives the first episode. Null when there are no episodes, or the last
+     * one has been finished.
+     */
+    fun forStream(episodes: List<Pair<Int, Int>>, streamed: List<StreamedEpisode>, minResumeMs: Long = 60_000L): NextUp? {
+        if (episodes.isEmpty()) return null
+        val inOrder = episodes.distinct().sortedWith(compareBy<Pair<Int, Int>>({ it.first }, { it.second }))
+        val last = streamed.maxByOrNull { it.atMs }
+            ?: return inOrder.first().let { NextUp(it.first, it.second, continuing = false) }
+        if (!last.played) return NextUp(last.season, last.episode, continuing = last.positionMs >= minResumeMs)
+        return following(inOrder, last.season, last.episode)?.let { NextUp(it.first, it.second, continuing = false) }
+    }
+
     /** The episode after [season] and [episode] in [episodes] (given in any order), or null when it is the last one. */
     fun following(episodes: List<Pair<Int, Int>>, season: Int, episode: Int): Pair<Int, Int>? =
         episodes.sortedWith(compareBy<Pair<Int, Int>>({ it.first }, { it.second }))

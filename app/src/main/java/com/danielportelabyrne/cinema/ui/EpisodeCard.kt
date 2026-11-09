@@ -35,6 +35,11 @@ import com.danielportelabyrne.cinema.design.cinema.StripeDrawable
 class EpisodeCard(context: Context, val number: Int, name: String, overview: String?) : FrameLayout(context) {
     val play = ActionDisc(context, 78, R.drawable.ic_cin_play, 34, nudge = 2f)
     val download = ActionDisc(context, 62, R.drawable.ic_cin_dl, 28)
+    /** Opens the whole blurb in a sheet: the overview above is cut to two lines. Shown only when there is a blurb. */
+    val info = ActionDisc(context, 62, R.drawable.ic_cin_info, 28)
+    private val fullOverview = overview?.trim().orEmpty()
+    /** Opens the episode's details sheet. An unaired card with no discs is pressed as a whole, so it opens this too. */
+    var onInfo: (() -> Unit)? = null
     /** Deletes this episode's file. Shown only while the card has focus and the episode is downloaded. */
     val delete = ActionDisc(context, 56, R.drawable.ic_cin_trash, 26)
     /** Whether the episode is on disk, so it can be deleted. */
@@ -114,6 +119,7 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         // Discs are larger than they look (room for the focus rings), so the 22 px gap is taken back off their margins.
         actions.addView(play, LinearLayout.LayoutParams(play.box, play.box))
         actions.addView(download, LinearLayout.LayoutParams(download.box, download.box).apply { marginStart = p(22) - play.pad - download.pad })
+        actions.addView(info, LinearLayout.LayoutParams(info.box, info.box).apply { marginStart = p(22) - download.pad - info.pad })
         still.addView(actions, LayoutParams(-1, -1))
         airs.setPadding(p(18), p(10), p(18), p(10)); airs.background = Cinema.glass(context, 22f, 0xA80C0806.toInt())
         still.addView(airs, LayoutParams(-2, -2, Gravity.CENTER))
@@ -133,6 +139,11 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         download.onFocus = { post { refresh() } }
         delete.onFocus = { post { refresh() } }
         delete.setOnClickListener { onDelete?.invoke() }
+        info.onFocus = { post { refresh() } }
+        info.contentDescription = "About episode $number"
+        info.setOnClickListener { onInfo?.invoke() }
+        // Pressing the card itself (only an unaired card with no discs is a single stop) opens the details.
+        setOnClickListener { if (cardStop) onInfo?.invoke() }
         still.addView(delete, LayoutParams(delete.box, delete.box, Gravity.BOTTOM or Gravity.END).apply { rightMargin = p(12); bottomMargin = p(16) })
         buildPlaceholder()
     }
@@ -148,7 +159,8 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
 
     /** Every focus stop on the card, left to right. */
     val focusStops: List<View> get() = if (cardStop) listOf(this) else listOfNotNull(
-        play.takeIf { it.visibility == VISIBLE && it.isFocusable }, download.takeIf { it.visibility == VISIBLE && it.isFocusable })
+        play.takeIf { it.visibility == VISIBLE && it.isFocusable }, download.takeIf { it.visibility == VISIBLE && it.isFocusable },
+        info.takeIf { it.visibility == VISIBLE && it.isFocusable })
 
     /** Where Down from the season bar lands. */
     val firstStop: View get() = focusStops.firstOrNull() ?: this
@@ -160,6 +172,7 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         this -> stopsAtCard(look)
         play -> !stopsAtCard(look) && look.playShown
         download -> !stopsAtCard(look) && look.downloadShown && look.downloadFocusable
+        info -> !stopsAtCard(look) && fullOverview.isNotEmpty()
         else -> false
     }
 
@@ -185,6 +198,9 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         deletable = look.state == CardState.LIBRARY
         download.isFocusable = look.downloadFocusable
         download.isClickable = look.downloadFocusable
+        info.visibility = if (fullOverview.isNotEmpty()) VISIBLE else GONE
+        info.isFocusable = fullOverview.isNotEmpty(); info.isClickable = info.isFocusable
+        info.set(R.drawable.ic_cin_info, Cinema.CREAM, ring = false, progress = null)
         when (look.state) {
             CardState.LIBRARY -> download.set(R.drawable.ic_cin_check, Cinema.SAFFRON, ring = false, progress = null, alpha = 0.9f)
             CardState.REQUESTED, CardState.UNAIRED_REQUESTED -> download.set(R.drawable.ic_cin_clock, Cinema.SAFFRON, ring = false, progress = null)
@@ -236,6 +252,9 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
     }
 
     fun setStill(bitmap: Bitmap) { image.setImageBitmap(bitmap); placeholder.visibility = GONE }
+
+    /** The still as loaded, for the details sheet; null while there is none. */
+    fun stillBitmap(): Bitmap? = (image.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
 
     /** No still anywhere: the espresso placeholder with the big episode number and a stripe foot. */
     fun showPlaceholder() { image.setImageDrawable(null); placeholder.visibility = VISIBLE }

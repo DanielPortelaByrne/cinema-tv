@@ -64,4 +64,48 @@ class NextEpisodeTest {
         assertEquals(3 to 1, NextEpisode.following(listing, 2, 1))
         assertNull(NextEpisode.following(listing, 3, 1))
     }
+
+    private fun streamed(s: Int, e: Int, positionMs: Long, at: Long, durationMs: Long = 2_700_000L) =
+        StreamedEpisode(s, e, positionMs = positionMs, durationMs = durationMs, atMs = at)
+
+    @Test fun stream_nothing_played_gives_the_first_episode_in_order() {
+        assertEquals(NextUp(1, 1, continuing = false), NextEpisode.forStream(listOf(2 to 1, 1 to 2, 1 to 1), emptyList()))
+    }
+
+    @Test fun stream_no_episodes_gives_no_button() {
+        assertNull(NextEpisode.forStream(emptyList(), emptyList()))
+    }
+
+    @Test fun stream_part_watched_past_a_minute_is_continued() {
+        val up = NextEpisode.forStream(listOf(1 to 1, 1 to 2, 1 to 3), listOf(streamed(1, 3, positionMs = 600_000, at = 50)))
+        assertEquals(NextUp(1, 3, continuing = true), up)
+    }
+
+    @Test fun stream_opened_for_under_a_minute_is_not_continued() {
+        val up = NextEpisode.forStream(listOf(1 to 1, 1 to 2, 1 to 3), listOf(streamed(1, 3, positionMs = 20_000, at = 50)))
+        assertEquals(NextUp(1, 3, continuing = false), up)
+    }
+
+    @Test fun stream_finished_gives_the_next_episode() {
+        val up = NextEpisode.forStream(listOf(1 to 3, 1 to 4, 1 to 5), listOf(streamed(1, 3, positionMs = 2_600_000, at = 50)))
+        assertEquals(NextUp(1, 4, continuing = false), up)
+    }
+
+    @Test fun stream_finished_at_a_season_end_gives_the_next_season() {
+        val eps = listOf(1 to 9, 1 to 10, 2 to 1)
+        val up = NextEpisode.forStream(eps, listOf(streamed(1, 10, positionMs = 2_600_000, at = 50)))
+        assertEquals(NextUp(2, 1, continuing = false), up)
+    }
+
+    @Test fun stream_most_recent_by_time_decides_not_episode_order() {
+        val eps = listOf(1 to 2, 1 to 3, 1 to 5, 1 to 6)
+        val up = NextEpisode.forStream(eps, listOf(
+            streamed(1, 5, positionMs = 2_600_000, at = 10),   // older, finished
+            streamed(1, 2, positionMs = 2_600_000, at = 90)))  // newer, finished
+        assertEquals(NextUp(1, 3, continuing = false), up)
+    }
+
+    @Test fun stream_last_episode_finished_gives_nothing_next() {
+        assertNull(NextEpisode.forStream(listOf(1 to 1, 1 to 2), listOf(streamed(1, 2, positionMs = 2_600_000, at = 50))))
+    }
 }
