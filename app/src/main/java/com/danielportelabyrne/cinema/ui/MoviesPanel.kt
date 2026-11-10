@@ -69,6 +69,7 @@ import com.danielportelabyrne.cinema.ui.room.SheetAction
 import com.danielportelabyrne.cinema.data.movies.SonarrClient
 import com.danielportelabyrne.cinema.data.movies.SeerrRequest
 import com.danielportelabyrne.cinema.data.movies.Stage
+import com.danielportelabyrne.cinema.data.movies.StreamStart
 import com.danielportelabyrne.cinema.data.movies.StreamStatus
 import com.danielportelabyrne.cinema.data.stream.RankedStream
 import com.danielportelabyrne.cinema.data.stream.StreamCandidate
@@ -350,6 +351,7 @@ class MoviesPanel(
         PlayerActivity.onUpcomingEpisode = null
         jellyfin.stopLibraryPolling()
         navigationFocusListener?.let { if (top.viewTreeObserver.isAlive) top.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
+        cancelDwellStart(); aheadStreams.clear(); preStartPool.shutdownNow()
         worker.shutdownNow(); shelfPool.shutdownNow(); slowPool.shutdownNow(); infoPool.shutdownNow(); images.close(); if (lbStarted) lb.close()
     }
 
@@ -3863,7 +3865,10 @@ class MoviesPanel(
         // A film that can only be streamed: have the stream service search for it now, so Stream now starts quicker.
         if (!inLibrary && t.kind == Kind.MOVIE && seerr.isSignedIn) {
             slowPool.execute { seerr.prepareStream(t.name, t.year, runtimeMin = t.runtimeMin) }
-            t.imdbId?.let { addonAnswersFor(it, null) }   // and ask the add-ons now, as Stremio does when a page opens
+            // and ask the add-ons now, as Stremio does when a page opens (a title from the Home spotlight has no IMDb id yet: found first)
+            slowPool.execute { imdbOf(e)?.let { addonAnswersFor(it, null) } }
+            // Rest on the page for a few seconds and the stream itself is found, so Stream now opens at once.
+            startStreamAfterDwell(e, null)
         }
         detailEntry = e
         // A series' progress lives on its episode cards, so its page is drawn again; a film just redoes its buttons.
@@ -3911,6 +3916,7 @@ class MoviesPanel(
 
     private fun closeDetail(restoreFocus: Boolean) {
         if (!detailOpen) return
+        cancelDwellStart()
         detailFocusListener?.let { if (detail.viewTreeObserver.isAlive) detail.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
         detailFocusListener = null
         detailEntry = null; detailButtons = null
@@ -4022,7 +4028,7 @@ class MoviesPanel(
     private fun warmEpisodeStream(e: Entry, season: Int, episode: Int) {
         if (!seerr.hasStreamService || !seerr.isSignedIn) return
         slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, season, episode) }
-        e.title.imdbId?.let { addonAnswersFor(it, season to episode) }
+        slowPool.execute { imdbOf(e)?.let { addonAnswersFor(it, season to episode) } }
     }
 
     /**
@@ -4030,9 +4036,11 @@ class MoviesPanel(
      * find it. The entry is built as [streamPickedEpisode] builds it, so the search keys match when it is played.
      */
     private fun warmUpcoming(r: EpisodeRequest) {
-        val e = lastStreamed?.takeIf { it.title.imdbId == r.imdbId }
+        val e = lastStreamed?.takeIf { knownImdb(it) == r.imdbId }
             ?: entry(Title(r.imdbId, Kind.SHOW, r.seriesName, null, null, null, emptyList(), null, null, null, null, r.imdbId, null))
         warmEpisodeStream(e, r.season, r.episode)
+        // The next episode is almost sure to be played, so its stream is found now, not after a rest.
+        preStartStream(e, r.season to r.episode)
     }
 
     /** The library's next-up episode for a library series (see NextEpisode.of), or null when it has none. */
@@ -4077,54 +4085,34 @@ class MoviesPanel(
             screen.message(message); screen.stats(null, null, null, null)
             ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 3500)
         }
+        cancelDwellStart()
         slowPool.execute {
-            // What the owner's Stremio add-ons offer for it, asked from this TV so their addresses never leave it.
-            // The service's own search runs meanwhile (skipped if the page already asked for it).
-            slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null) }
-            val addons = if (e.title.imdbId != null) stremioAddons() else emptyList()
-            val asked = Perf.now()
-            val answers = e.title.imdbId?.let { imdb -> runCatching { addonAnswersFor(imdb, episode).get() }.getOrNull() }
-                ?: com.danielportelabyrne.cinema.data.stremio.AddonAnswers.NONE
-            val candidates = answers.torrents.sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
-            android.util.Log.i("StreamNow", "add-ons offered ${answers.torrents.size} torrents, ${answers.links.size} links " +
-                "(${answers.links.count { !it.uncached }} cached) in ${Perf.now() - asked} ms for ${e.title.name} " +
-                "(${addons.size} add-ons, ${addons.count { it.streams }} stream, imdb ${e.title.imdbId != null})")
-            // A direct link as good as the best torrent plays at once, as Stremio does with a debrid service.
-            val runtimeSec = ((e.title.runtimeMin ?: if (episode == null) 110 else 45) * 60L)
-            val links = com.danielportelabyrne.cinema.data.stream.DirectLinks.choose(answers.links, answers.torrents,
-                com.danielportelabyrne.cinema.data.stream.DeviceProfile.detect(activity),
-                com.danielportelabyrne.cinema.data.stream.NetworkEstimator(activity).current(), runtimeSec)
-            val working = links.firstOrNull { linkAnswers(it.candidate.url!!, it.candidate.headers) }
-            if (working != null) {
-                android.util.Log.i("StreamNow", "playing a direct link from ${working.candidate.provider}: ${working.candidate.meta.qualityLabel()}")
-                activity.runOnUiThread {
-                    Perf.end("stream.press->startReply", "DIRECT")
-                    if (token != streamToken) return@runOnUiThread
+            // A stream found while the viewer rested on the page is used as it is (or waited for, if it is still being found).
+            // Anything else, or a search that failed, is searched for now.
+            val ahead = aheadStreams.take(streamKey(e, episode))?.let { pending -> runCatching { pending.get(130, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull() }
+                ?.takeIf { it.links != null || it.service?.status == StreamStatus.READY }
+            if (ahead != null) android.util.Log.i("StreamNow", "using the stream found ahead of time for ${e.title.name}")
+            val found = ahead ?: findStream(e, episode)
+            activity.runOnUiThread {
+                Perf.end("stream.press->startReply", if (found.links != null) "DIRECT" else found.service?.status?.name.orEmpty())
+                if (token != streamToken) return@runOnUiThread   // cancelled with Back
+                fun play(ranked: List<RankedStream>) {
                     screen.message("Found a copy. Starting the player…")
                     remember(e.title, streamed = true)
-                    PlayerActivity.launch(activity, listOf(working) + links.filter { it !== working }, label, e.title.imdbId,
+                    PlayerActivity.launch(activity, ranked, label, found.imdb,
                         artUrl = e.title.backdropUrl ?: e.title.posterUrl,
                         meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode)
+                    // The player opens over this same screen; take it down once it is covered.
                     ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
                 }
-                return@execute
-            }
-            val result = seerr.startStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null, candidates)
-            activity.runOnUiThread {
-                Perf.end("stream.press->startReply", result.status.name)
-                if (token != streamToken) return@runOnUiThread   // cancelled with Back
+                found.links?.let { play(it); return@runOnUiThread }
+                val result = found.service ?: return@runOnUiThread failed("The stream service isn't reachable.")
                 android.util.Log.i("StreamNow", "status=${result.status} for ${e.title.name}")
                 when (result.status) {
                     StreamStatus.READY -> {
                         val url = result.url ?: return@runOnUiThread failed("The stream service didn't send a link. Try again in a minute.")
-                        screen.message("Found a copy. Starting the player…")
-                        remember(e.title, streamed = true)
                         val candidate = StreamCandidate("stream:${e.title.key}", PlayerActivity.STREAM_PROVIDER, result.label ?: e.title.name, url, null, StreamMetadata())
-                        PlayerActivity.launch(activity, listOf(RankedStream(candidate, 100, 0L, false, Verdict.RECOMMENDED, null, emptyList())), label, e.title.imdbId,
-                            artUrl = e.title.backdropUrl ?: e.title.posterUrl,
-                            meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode)
-                        // The player opens over this same screen; take it down once it is covered.
-                        ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
+                        play(listOf(RankedStream(candidate, 100, 0L, false, Verdict.RECOMMENDED, null, emptyList())))
                     }
                     StreamStatus.NOT_SIGNED_IN -> { closeStreamLoading(); seerrSheet.show(seerr, jellyfin) { streamNow(e, button, episode, shownTitle) } }
                     StreamStatus.NOT_FOUND -> failed("No seeded copy of ${e.title.name} was found on your indexers.")
@@ -4135,11 +4123,108 @@ class MoviesPanel(
         }
     }
 
+    /** What finding a stream came to: direct links from the add-ons (the one that answered first), or the stream service's answer. */
+    private class Found(val links: List<RankedStream>?, val service: StreamStart?, val imdb: String?)
+
+    /**
+     * Finds a stream for [e] (and [episode]): the add-ons are asked, a direct link that answers is used, and otherwise the
+     * stream service starts a seeded copy. Slow, so never on the UI thread. Used when Play is pressed, and ahead of that
+     * ([preStartStream]) once the viewer has rested on the page.
+     */
+    private fun findStream(e: Entry, episode: Pair<Int, Int>?): Found {
+        val imdb = imdbOf(e)
+        // What the owner's Stremio add-ons offer for it, asked from this TV so their addresses never leave it.
+        // The service's own search runs meanwhile (skipped if the page already asked for it).
+        slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null) }
+        val addons = if (imdb != null) stremioAddons() else emptyList()
+        val asked = Perf.now()
+        val answers = imdb?.let { id -> runCatching { addonAnswersFor(id, episode).get() }.getOrNull() }
+            ?: com.danielportelabyrne.cinema.data.stremio.AddonAnswers.NONE
+        val candidates = answers.torrents.sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
+        android.util.Log.i("StreamNow", "add-ons offered ${answers.torrents.size} torrents, ${answers.links.size} links " +
+            "(${answers.links.count { !it.uncached }} cached) in ${Perf.now() - asked} ms for ${e.title.name} " +
+            "(${addons.size} add-ons, ${addons.count { it.streams }} stream, imdb ${imdb != null})")
+        // A direct link as good as the best torrent plays at once, as Stremio does with a debrid service.
+        val runtimeSec = ((e.title.runtimeMin ?: if (episode == null) 110 else 45) * 60L)
+        val links = com.danielportelabyrne.cinema.data.stream.DirectLinks.choose(answers.links, answers.torrents,
+            com.danielportelabyrne.cinema.data.stream.DeviceProfile.detect(activity),
+            com.danielportelabyrne.cinema.data.stream.NetworkEstimator(activity).current(), runtimeSec)
+        val working = links.firstOrNull { linkAnswers(it.candidate.url!!, it.candidate.headers) }
+        if (working != null) {
+            android.util.Log.i("StreamNow", "playing a direct link from ${working.candidate.provider}: ${working.candidate.meta.qualityLabel()}")
+            return Found(listOf(working) + links.filter { it !== working }, null, imdb)
+        }
+        return Found(null, seerr.startStream(e.title.name, e.title.year, episode?.first, episode?.second, if (episode == null) e.title.runtimeMin else null, candidates), imdb)
+    }
+
+    // --- Streams found ahead of time ---------------------------------------------------------------
+
+    /** Streams found while the viewer rested on a page, kept a few minutes so Play can open one at once. */
+    private val aheadStreams = com.danielportelabyrne.cinema.data.stream.AheadStreams<Found> { android.os.SystemClock.elapsedRealtime() }
+    /** One search ahead of time at a time, so resting on a page never queues up work on the home server. */
+    private val preStartPool = Executors.newSingleThreadExecutor { r -> Thread(r, "pre-start").apply { isDaemon = true } }
+    private var dwellStart: Runnable? = null
+    private var dwellKey: String? = null
+
+    private fun streamKey(e: Entry, episode: Pair<Int, Int>?) = e.title.key + (episode?.let { ":${it.first}:${it.second}" } ?: "")
+
+    /**
+     * Finds the stream for [e] (and [episode]) now, without playing it, and keeps it for Play. Does nothing without a
+     * signed-in stream service, or when one is already held for it. A search that waits its turn skips itself if another
+     * page has been rested on since.
+     */
+    private fun preStartStream(e: Entry, episode: Pair<Int, Int>?) {
+        if (!seerr.hasStreamService || !seerr.isSignedIn || streamLoading != null) return
+        val key = streamKey(e, episode)
+        aheadStreams.begin(key) {
+            preStartPool.submit(java.util.concurrent.Callable {
+                if (!aheadStreams.holds(key)) throw java.util.concurrent.CancellationException()
+                val at = android.os.SystemClock.elapsedRealtime()
+                android.util.Log.i("StreamNow", "finding ${e.title.name}${episode?.let { " S${it.first} E${it.second}" }.orEmpty()} ahead of time")
+                findStream(e, episode).also { android.util.Log.i("StreamNow", "found ahead of time in ${android.os.SystemClock.elapsedRealtime() - at} ms") }
+            })
+        }
+    }
+
+    /** Rested on [e] (a film, or an episode) for [DWELL_START_MS]: its stream is found ahead of time, so Play opens it at once. */
+    private fun startStreamAfterDwell(e: Entry, episode: Pair<Int, Int>?) {
+        cancelDwellStart()
+        if (!seerr.hasStreamService || !seerr.isSignedIn) return
+        val r = Runnable { dwellStart = null; dwellKey = null; if (detailOpen && streamLoading == null) preStartStream(e, episode) }
+        dwellStart = r; dwellKey = streamKey(e, episode)
+        ui.postDelayed(r, DWELL_START_MS)
+    }
+
+    /** Stops the wait for a rest, when the viewer moves on. With [forKey], only if the wait is for that title. */
+    private fun cancelDwellStart(forKey: String? = null) {
+        if (forKey != null && dwellKey != forKey) return
+        dwellStart?.let { ui.removeCallbacks(it) }
+        dwellStart = null; dwellKey = null
+    }
+
+    // --- IMDb ids ------------------------------------------------------------------------------------
+
+    private val imdbMemo = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** The IMDb id for [e] if it is already known, without asking anyone: its own, or one found before. */
+    private fun knownImdb(e: Entry): String? = e.title.imdbId ?: imdbMemo[e.title.key]
+
+    /**
+     * The IMDb id for [e]: its own, or Seerr's for its TMDB id. A title opened from the Home spotlight has only the TMDB id,
+     * and without the IMDb id the add-ons cannot be asked. Asks Seerr, so never on the UI thread.
+     */
+    private fun imdbOf(e: Entry): String? {
+        knownImdb(e)?.let { return it }
+        val tmdb = e.title.tmdbId?.toLongOrNull() ?: return null
+        if (!seerr.isSignedIn) return null
+        return runCatching { seerr.imdbId(e.title.kind, tmdb) }.getOrNull()?.also { imdbMemo[e.title.key] = it }
+    }
+
     /** The title last streamed, so an episode picked in the player is streamed with everything the page knew of it. */
     private var lastStreamed: Entry? = null
 
     private fun streamPickedEpisode(r: EpisodeRequest) {
-        val e = lastStreamed?.takeIf { it.title.imdbId == r.imdbId }
+        val e = lastStreamed?.takeIf { knownImdb(it) == r.imdbId }
             ?: entry(Title(r.imdbId, Kind.SHOW, r.seriesName, null, null, null, emptyList(), null, null, null, null, r.imdbId, null))
         val name = e.title.name.ifBlank { r.seriesName }
         streamNow(e, streamReturnFocus?.takeIf { it.isAttachedToWindow } ?: page, r.season to r.episode, "$name · S${r.season} E${r.episode}")
@@ -4151,7 +4236,7 @@ class MoviesPanel(
      */
     private fun streamAgain(r: StreamAgainRequest) {
         val kind = if (r.episode != null) Kind.SHOW else Kind.MOVIE
-        val e = lastStreamed?.takeIf { r.imdbId != null && it.title.imdbId == r.imdbId && it.title.kind == kind }
+        val e = lastStreamed?.takeIf { r.imdbId != null && knownImdb(it) == r.imdbId && it.title.kind == kind }
             ?: entry(Title(r.imdbId ?: "stream:${r.name}", kind, r.name, null, null, null, emptyList(), null, null, null, null, r.imdbId, null))
         val focus = activity.currentFocus?.takeIf { it.isAttachedToWindow } ?: page
         if (r.episode == null) streamWithoutEpisode(e, focus, r.shownTitle) else streamNow(e, focus, r.episode, r.shownTitle)
@@ -4270,6 +4355,8 @@ class MoviesPanel(
                     nextStream.visibility = View.VISIBLE
                     // Only once the viewer has started this series here, so browsing does not ask the stream service about every title.
                     if (streamedHere.isNotEmpty()) warmEpisodeStream(e, nextUp.season, nextUp.episode)
+                    // Rest on the page a few seconds and the stream itself is found, so the button opens it at once.
+                    startStreamAfterDwell(e, nextUp.season to nextUp.episode)
                     // Focus moves to it from the page's first button, or from nowhere; never from a button the viewer has moved to.
                     val f = overlay.findFocus()
                     if (f == null || f === primary) nextStream.requestFocus()
@@ -4507,10 +4594,12 @@ class MoviesPanel(
                 if (lit && mine == null && !look.unaired && seerr.isSignedIn) slowPool.execute { seerr.prepareStream(e.title.name, e.title.year, s.number, ep.number) }
                 // The add-ons are asked once the viewer has rested on the episode, not for every card passed while scrolling.
                 ui.removeCallbacks(addonPrefetch)
-                if (lit && mine == null && !look.unaired) e.title.imdbId?.let { imdb ->
-                    addonPrefetch = Runnable { addonAnswersFor(imdb, s.number to ep.number) }
+                if (lit && mine == null && !look.unaired) {
+                    addonPrefetch = Runnable { slowPool.execute { imdbOf(e)?.let { addonAnswersFor(it, s.number to ep.number) } } }
                     ui.postDelayed(addonPrefetch, ADDON_PREFETCH_DELAY_MS)
-                }
+                    // And once it has been rested on a few seconds longer, the stream itself is found, so Play opens it at once.
+                    startStreamAfterDwell(e, s.number to ep.number)
+                } else if (!lit) cancelDwellStart(streamKey(e, s.number to ep.number))
             }
             return Shown(card, mine, { look }, ::latest) { look = latest(); rebind() }
         }
@@ -4968,6 +5057,7 @@ class MoviesPanel(
         const val HERO_BACKDROP_PX = 1920
         const val STORAGE_TTL_MS = 60 * 60_000L
         const val REST_PREFETCH_MS = 350L   // how long focus rests on a poster before its backdrop is fetched
+        const val DWELL_START_MS = 6_000L   // how long a film page, or an episode, is rested on before its stream is found ahead of time
         const val RETURN_REFRESH_DELAY_MS = 1_500L
         const val EAGER_SHELVES = 2
         const val PREWARM_DELAY_MS = 4_000L
