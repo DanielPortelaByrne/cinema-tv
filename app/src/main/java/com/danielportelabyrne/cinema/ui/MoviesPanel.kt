@@ -4160,7 +4160,9 @@ class MoviesPanel(
     // --- Streams found ahead of time ---------------------------------------------------------------
 
     /** Streams found while the viewer rested on a page, kept a few minutes so Play can open one at once. */
-    private val aheadStreams = com.danielportelabyrne.cinema.data.stream.AheadStreams<Found> { android.os.SystemClock.elapsedRealtime() }
+    // Kept a little under the stream service's own hold (5 minutes): after that, Play asks the service again, which checks
+    // the engine still has the stream rather than handing back a link that would have to be fetched again from scratch.
+    private val aheadStreams = com.danielportelabyrne.cinema.data.stream.AheadStreams<Found>(ttlMs = 4 * 60_000L) { android.os.SystemClock.elapsedRealtime() }
     /** One search ahead of time at a time, so resting on a page never queues up work on the home server. */
     private val preStartPool = Executors.newSingleThreadExecutor { r -> Thread(r, "pre-start").apply { isDaemon = true } }
     private var dwellStart: Runnable? = null
@@ -5057,7 +5059,7 @@ class MoviesPanel(
         const val HERO_BACKDROP_PX = 1920
         const val STORAGE_TTL_MS = 60 * 60_000L
         const val REST_PREFETCH_MS = 350L   // how long focus rests on a poster before its backdrop is fetched
-        const val DWELL_START_MS = 6_000L   // how long a film page, or an episode, is rested on before its stream is found ahead of time
+        const val DWELL_START_MS = 4_000L   // how long a film page, or an episode, is rested on before its stream is found ahead of time
         const val RETURN_REFRESH_DELAY_MS = 1_500L
         const val EAGER_SHELVES = 2
         const val PREWARM_DELAY_MS = 4_000L
