@@ -84,6 +84,9 @@ class ResumeCard(context: Context, private val featured: Boolean = false) : Line
     /** How far through the title it is, 0 to 1. */
     fun setProgress(fraction: Float) { bar.progress = fraction.coerceIn(0f, 1f) }
 
+    /** Shows or hides the wavy bar (a finished or unmeasured card has none); its room stays, so cards keep one height. */
+    fun showBar(on: Boolean) { bar.visibility = if (on) View.VISIBLE else View.INVISIBLE }
+
     fun setStill(bitmap: Bitmap) = image.setImageBitmap(bitmap)
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {

@@ -52,7 +52,7 @@ private fun paper(context: Context, radiusDp: Int): GradientDrawable = GradientD
 // ---------------------------------------------------------------------------------------------
 
 /** The sideboard: projects standing on a walnut ledge. One caption below the ledge follows the focused object. */
-class SheetAction(val label: String, val sublabel: String? = null, val primary: Boolean = false, val run: () -> Unit)
+class SheetAction(val label: String, val sublabel: String? = null, val primary: Boolean = false, val icon: Int? = null, val run: () -> Unit)
 
 /**
  * A calm centred card for details and confirmations, and the app's own replacement for
@@ -97,40 +97,63 @@ class InfoSheet(private val container: FrameLayout) {
         container.setBackgroundColor(ContextCompat.getColor(context, R.color.sheet_scrim))
         // The Cinema card: dark warm glass, an eyebrow, the title in Fraunces, the words, then the choices and Close.
         val pad = Cinema.px(context, 48)
+        // A wide picture (a still) is a banner across the top with the words over it and the choices underneath.
+        val wide = image != null && imageSizeDp.first > imageSizeDp.second
         val card = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = if (wide) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             clipChildren = false; clipToPadding = false
-            setPadding(pad, Cinema.px(context, 44), pad, Cinema.px(context, 44))
+            if (wide) setPadding(0, 0, 0, Cinema.px(context, 34)) else setPadding(pad, Cinema.px(context, 44), pad, Cinema.px(context, 44))
             background = Cinema.glass(context, 32f, 0xF5120D0A.toInt())
             elevation = context.dp(24).toFloat()
         }
         var imageView: View? = null
-        if (image != null) {
+        if (image != null && !wide) {
             card.addView(android.widget.ImageView(context).also { imageView = it }.apply {
                 setImageBitmap(image); scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
                 clipToOutline = true
                 outlineProvider = object : android.view.ViewOutlineProvider() {
                     override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(context, 18)) }
                 }
-            }, LinearLayout.LayoutParams(context.dp(imageSizeDp.first), context.dp(imageSizeDp.second)).apply { marginEnd = Cinema.px(context, 44) })
+            }, LinearLayout.LayoutParams(context.dp(imageSizeDp.first), context.dp(imageSizeDp.second)).apply { marginEnd = Cinema.px(context, 44); if (imageSizeDp.first > imageSizeDp.second) gravity = Gravity.CENTER_VERTICAL })
         }
         val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         val measure = Cinema.px(context, 860)
-        card.addView(column, LinearLayout.LayoutParams(0, -2, 1f))
+        // The words go over the banner when there is one, else at the head of the column.
+        val textHost: LinearLayout = if (wide) LinearLayout(context).apply { orientation = LinearLayout.VERTICAL } else column
+        if (wide) {
+            val radius = Cinema.pxf(context, 32)
+            val banner = FrameLayout(context).apply {
+                clipToOutline = true
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height + radius.toInt(), radius) }
+                }
+            }
+            val picture = android.widget.ImageView(context).apply { setImageBitmap(image); scaleType = android.widget.ImageView.ScaleType.CENTER_CROP }
+            imageView = picture
+            banner.addView(picture, FrameLayout.LayoutParams(-1, -1))
+            banner.addView(View(context).apply {
+                background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x00000000, 0x66120D0A, 0xF2120D0A.toInt()))
+            }, FrameLayout.LayoutParams(-1, -1))
+            textHost.setPadding(pad, 0, pad, Cinema.px(context, 22))
+            banner.addView(textHost, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            card.addView(banner, LinearLayout.LayoutParams(-1, Cinema.px(context, 300)))
+            column.setPadding(pad, 0, pad, 0)
+            card.addView(column, LinearLayout.LayoutParams(-1, -2))
+        } else card.addView(column, LinearLayout.LayoutParams(0, -2, 1f))
 
         // A caller's own "Close" becomes the Close button rather than a second one.
         val closeAction = actions.firstOrNull { it.label == "Close" }
         val actions = actions.filter { it.label != "Close" }
         val danger = actions.any { isDestructive(it.label) }
-        column.addView(Cinema.eyebrow(context, listOf(kicker.lowercase(Locale.UK).replaceFirstChar { it.uppercase() }), color = if (danger) Cinema.DANGER_TEXT else Cinema.SAFFRON))
-        column.addView(Cinema.title(context, title, if (title.length > 28) 48 else 60, maxLines = 3).apply { maxWidth = measure },
+        textHost.addView(Cinema.eyebrow(context, listOf(kicker.lowercase(Locale.UK).replaceFirstChar { it.uppercase() }), color = if (danger) Cinema.DANGER_TEXT else Cinema.SAFFRON))
+        textHost.addView(Cinema.title(context, title, if (title.length > 28) 48 else 60, maxLines = 3).apply { maxWidth = measure },
             LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 16) })
         subtitle?.let {
-            column.addView(Cinema.text(context, it, 20, Cinema.SAFFRON, weight = 600, tracking = 0.06f).apply { maxWidth = measure },
+            textHost.addView(Cinema.text(context, it, 20, Cinema.SAFFRON, weight = 600, tracking = 0.06f).apply { maxWidth = measure },
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 14) })
         }
         lines.forEach {
-            column.addView(Cinema.text(context, it, 24, Cinema.READING, weight = 300).apply { maxWidth = measure; setLineSpacing(0f, 1.22f) },
+            textHost.addView(Cinema.text(context, it, 24, Cinema.READING, weight = 300).apply { maxWidth = measure; setLineSpacing(0f, 1.22f) },
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 18) })
         }
 
@@ -141,13 +164,13 @@ class InfoSheet(private val container: FrameLayout) {
         if (actions.isNotEmpty()) {
             val stack = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
             actions.forEach { action ->
-                val row = choiceRow(action)
+                val row = choiceRow(action, compact = wide)
                 row.setOnClickListener { hide(); action.run() }
                 stack.addView(row, LinearLayout.LayoutParams(-1, -2).apply { if (stack.childCount > 0) topMargin = Cinema.px(context, 12) })
                 built += row
                 if (first == null) first = row
             }
-            column.addView(stack, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(context, 34) })
+            column.addView(stack, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(context, if (wide) 24 else 34) })
         }
         val close = CinemaButton(context, CinemaButton.Kind.GLASS, "Close").apply { setOnClickListener { hide(); closeAction?.run() } }
         column.addView(close, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, if (actions.isEmpty()) 36 else 22) })
@@ -156,7 +179,7 @@ class InfoSheet(private val container: FrameLayout) {
 
         // Beside a picture the card hugs its words (up to a reading measure) rather than a fixed width.
         // Without a picture it hugs its words too: never narrower than a comfortable card, never wider than reading allows.
-        val cardWidth = if (image == null) {
+        val cardWidth = if (wide) pad * 2 + Cinema.px(context, 820) else if (image == null) {
             val words = (0 until column.childCount).map { column.getChildAt(it) }.filterIsInstance<TextView>()
                 .maxOfOrNull { it.paint.measureText(it.text.toString()) + it.paddingLeft + it.paddingRight }?.toInt() ?: 0
             val choices = if (actions.isEmpty()) 0 else Cinema.px(context, 620)
@@ -181,15 +204,25 @@ class InfoSheet(private val container: FrameLayout) {
     private fun isDestructive(label: String) = listOf("Cancel", "Delete", "Remove", "Stop", "Withdraw").any { label.startsWith(it) }
 
     /** A choice in the sheet: glass at rest, cream when focused; its line on what it does sits beneath its name. */
-    private fun choiceRow(action: SheetAction): LinearLayout {
+    private fun choiceRow(action: SheetAction, compact: Boolean = false): LinearLayout {
         val destructive = isDestructive(action.label)
         val restName = if (destructive) Cinema.DANGER_TEXT else Cinema.CREAM
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isFocusable = true; isClickable = true
-            setPadding(Cinema.px(context, 30), Cinema.px(context, 18), Cinema.px(context, 30), Cinema.px(context, 18))
+            setPadding(Cinema.px(context, 30), Cinema.px(context, if (compact) 11 else 18), Cinema.px(context, 30), Cinema.px(context, if (compact) 11 else 18))
             contentDescription = action.label
         }
-        if (action.primary) row.addView(View(context).apply { background = StripeDrawable(horizontalBands = false, radius = Cinema.pxf(context, 4)) },
+        // With an icon: a round disc holding it (saffron for the suggested choice, red for a destructive one). Without: the stripe mark.
+        var disc: android.graphics.drawable.GradientDrawable? = null
+        var glyph: android.widget.ImageView? = null
+        val iconColour = if (destructive) Cinema.DANGER_TEXT else if (action.primary) Cinema.SAFFRON else Cinema.CREAM
+        if (action.icon != null) {
+            disc = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Cinema.alpha(iconColour, 0.16f)) }
+            val frame = FrameLayout(context).apply { background = disc }
+            glyph = Cinema.icon(context, action.icon, iconColour)
+            frame.addView(glyph, FrameLayout.LayoutParams(Cinema.px(context, 30), Cinema.px(context, 30), Gravity.CENTER))
+            row.addView(frame, LinearLayout.LayoutParams(Cinema.px(context, 58), Cinema.px(context, 58)).apply { marginEnd = Cinema.px(context, 24) })
+        } else if (action.primary) row.addView(View(context).apply { background = StripeDrawable(horizontalBands = false, radius = Cinema.pxf(context, 4)) },
             LinearLayout.LayoutParams(Cinema.px(context, 8), Cinema.px(context, 40)).apply { marginEnd = Cinema.px(context, 22) })
         val words = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val name = Cinema.text(context, action.label, 25, restName, weight = 600).apply { maxLines = 1 }
@@ -204,6 +237,8 @@ class InfoSheet(private val container: FrameLayout) {
             row.background = if (f) lit else rest
             name.setTextColor(if (f) Cinema.INK else restName)
             sub?.setTextColor(if (f) 0xFF6A5848.toInt() else Cinema.MUTED)
+            glyph?.setColorFilter(if (f) Cinema.INK else iconColour)
+            disc?.setColor(if (f) Cinema.alpha(Cinema.INK, 0.10f) else Cinema.alpha(iconColour, 0.16f))
         }
         return row
     }

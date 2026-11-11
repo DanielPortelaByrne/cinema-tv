@@ -67,6 +67,9 @@ class JellyfinClient(platform: Platform) {
     private val token: String? get() = prefs.getString("token", null)
     private val userId: String? get() = prefs.getString("userId", null)
 
+    /** Who owns per-user lists on this TV: this server and this signed-in user, so nothing leaks between them. */
+    val ownerScope: String get() = com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope(server, userId)
+
     /**
      * What a player needs to fetch a stream: the token travels in a header, never in the address. Jellyfin 12
      * answers 401 to the older X-Emby-Token header and to ?api_key=, so it has to be the Authorization header.
@@ -132,6 +135,9 @@ class JellyfinClient(platform: Platform) {
 
     @Volatile private var library: List<JellyfinItem> = emptyList()
     @Volatile private var libraryAt = 0L
+
+    /** The library as already loaded; never fetches. */
+    val loadedLibrary: List<JellyfinItem> get() = library
 
     private val libraryFlight = SingleFlight<List<JellyfinItem>>()
     @Volatile private var restored = false

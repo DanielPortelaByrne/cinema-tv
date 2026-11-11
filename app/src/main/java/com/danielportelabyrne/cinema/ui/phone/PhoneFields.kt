@@ -58,7 +58,7 @@ fun bindPhone(edit: EditText, fieldId: String, label: String, secret: Boolean = 
     edit.addTextChangedListener(target)
     edit.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(v: View) { if (v.hasFocus()) PhoneInput.focus(target) }
-        override fun onViewDetachedFromWindow(v: View) { PhoneInput.blur(target) }
+        override fun onViewDetachedFromWindow(v: View) { PhoneInput.forget(target) }
     })
     if (edit.hasFocus()) PhoneInput.focus(target)
 }

@@ -70,7 +70,7 @@ class SetupFlow(
     private val pool = Executors.newCachedThreadPool()
     private val queue by lazy { QueueClient(seerr, AndroidPlatform(activity)) }
     /** The phone pairing on screen, if any: its QR page is the only thing that keeps its server open. */
-    private val phone = PhonePairing(jellyfin, seerr, settings, ui, ::phoneFinished) { queue }
+    private val phone = PhonePairing(jellyfin, seerr, settings, ui, ::phoneFinished, AndroidPlatform(activity)) { queue }
     /** The page showing a QR for saving the sign-in, so its confirmation can be written onto it. */
     private var savePage: Page? = null
     private var settingsMode = false

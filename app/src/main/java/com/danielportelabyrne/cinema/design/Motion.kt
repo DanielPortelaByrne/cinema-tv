@@ -29,6 +29,12 @@ object Motion {
     /** Gentle ease-out with no bounce. Used for focus, fades and sheets. */
     val SETTLE = PathInterpolator(0f, 0f, 0.2f, 1f)
 
+    /**
+     * Quick to start, long soft landing, no overshoot: (0.22, 1.0, 0.36, 1.0). The Cinema page's rows moving up and down
+     * (see CinemaContentScrollView) and the navigation rail opening and closing share it.
+     */
+    val GLIDE = PathInterpolator(0.22f, 1f, 0.36f, 1f)
+
     /** Master switch: false makes every scroll, focus and select change instant. */
     const val ENABLED = true
 

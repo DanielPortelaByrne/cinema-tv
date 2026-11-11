@@ -53,6 +53,8 @@ object PhoneInput {
     private var server: PairingServer? = null
     @Volatile private var socket: PhoneSocket? = null
     private var target: PhoneTextTarget? = null
+    /** The box last in use: pressing the phone button moves focus off it, but the phone should still type into it. */
+    private var lastTarget: PhoneTextTarget? = null
     private var card: View? = null
     private var pushPending: Runnable? = null
 
@@ -77,9 +79,13 @@ object PhoneInput {
     /** [field] now has focus: the phone types into it. */
     fun focus(field: PhoneTextTarget) {
         target = field
+        lastTarget = field
         pairing?.touch()
         pushNow()
     }
+
+    /** [field] left the screen for good: it is not the box to go back to. */
+    fun forget(field: PhoneTextTarget) { if (lastTarget === field) lastTarget = null; blur(field) }
 
     /** [field] lost focus or left the screen. If it was the target, the phone is told nothing is selected. */
     fun blur(field: PhoneTextTarget) {
@@ -206,6 +212,8 @@ object PhoneInput {
      */
     fun toggleQr() {
         val a = activity ?: return
+        // Focus has just moved to this button: the box that had it stays the one the phone types into.
+        if (target == null) lastTarget?.let { target = it; pushNow() }
         if (isConnected) {
             CinemaToast.show(a, "Your phone is connected. What you type on it lands in the box you have selected.", Toast.LENGTH_LONG)
             return

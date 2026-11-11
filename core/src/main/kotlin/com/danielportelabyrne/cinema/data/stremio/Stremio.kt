@@ -92,10 +92,11 @@ object StremioApi {
     } catch (_: Exception) { emptyList() }
 
     /** The full film page for [film] from Cinemeta's answer, or null when it is not a film answer. */
-    fun title(json: String, film: StremioFilm): Title? = try {
+    fun title(json: String, film: StremioFilm, kind: Kind = Kind.MOVIE): Title? = try {
         val m = JSONObject(json).optJSONObject("meta") ?: return null
-        Title(
-            key = film.imdbId, kind = Kind.MOVIE, name = m.optString("name").ifBlank { film.name },
+        // Asked as a series, only a series answers: Cinemeta says what the title is.
+        if (kind == Kind.SHOW && m.optString("type") != "series") null else Title(
+            key = film.imdbId, kind = kind, name = m.optString("name").ifBlank { film.name },
             year = Regex("\\d{4}").find(m.optString("year"))?.value?.toIntOrNull() ?: film.year,
             overview = m.optString("description").ifBlank { null },
             runtimeMin = Regex("\\d+").find(m.optString("runtime"))?.value?.toIntOrNull(),
@@ -267,6 +268,10 @@ class StremioClient(private val send: (method: String, url: String, body: String
 
     /** Every episode of the series with IMDb id [imdbId], from Cinemeta; null when it can't be read. */
     fun series(imdbId: String): SeriesListing? = send("GET", "https://v3-cinemeta.strem.io/meta/series/$imdbId.json", null)?.let { StremioApi.series(it) }
+
+    /** The page for a saved title that turns out to be a series (Cinemeta's film lookup finds nothing for it); null when it is not one either. */
+    fun seriesPage(film: StremioFilm): Title? =
+        send("GET", "https://v3-cinemeta.strem.io/meta/series/${film.imdbId}.json", null)?.let { StremioApi.title(it, film, Kind.SHOW) }
 
     fun filmPage(film: StremioFilm): Title =
         send("GET", "https://v3-cinemeta.strem.io/meta/movie/${film.imdbId}.json", null)?.let { StremioApi.title(it, film) } ?: StremioApi.bare(film)

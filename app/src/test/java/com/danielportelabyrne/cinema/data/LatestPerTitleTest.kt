@@ -1,5 +1,7 @@
 package com.danielportelabyrne.cinema.data
 
+import com.danielportelabyrne.cinema.data.movies.Kind
+import com.danielportelabyrne.cinema.data.movies.PlayedEntry
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -34,5 +36,35 @@ class LatestPerTitleTest {
 
     @Test fun nothing_in_nothing_out() {
         assertEquals(emptyList<String>(), latest())
+    }
+
+    // --- By identity (what the TV's Continue watching provider uses)
+
+    private data class Row(val title: String, val subtitle: String, val lastMs: Long, val id: PlayedEntry?)
+    private fun byId(vararg r: Row) = latestPerIdentity(r.toList(), { it.id }, { it.title }, { it.lastMs }).map { it.subtitle }
+    private fun ep(seriesImdb: String? = null, seriesJf: String? = null, s: Int = 1, e: Int = 1) =
+        PlayedEntry(Kind.SHOW, seriesImdbId = seriesImdb, seriesJellyfinId = seriesJf, season = s, episode = e)
+
+    @Test fun two_series_with_the_same_name_stay_apart() {
+        assertEquals(listOf("new", "old"), byId(Row("The Office", "old", 100, ep("tt1")), Row("The Office", "new", 200, ep("tt2"))))
+    }
+
+    @Test fun a_stream_and_the_library_copy_join_by_the_series_ids_not_the_name() {
+        val library = ep(seriesImdb = "tt5", seriesJf = "abc", s = 1, e = 3)
+        val stream = ep(seriesImdb = "tt5", s = 1, e = 4)
+        assertEquals(listOf("stream"), byId(Row("Ruby Gloom", "library", 100, library), Row("Ruby Gloom (2006) · S1 E4", "stream", 200, stream)))
+    }
+
+    @Test fun a_film_joins_its_other_copy_by_any_shared_id() {
+        val a = PlayedEntry(Kind.MOVIE, tmdbId = "9", jellyfinId = "j9")
+        val b = PlayedEntry(Kind.MOVIE, tmdbId = "9", imdbId = "tt9")
+        assertEquals(listOf("b"), byId(Row("Heat", "a", 100, a), Row("Heat (1995)", "b", 200, b)))
+        assertEquals(listOf("show", "film"), byId(Row("X", "film", 100, a), Row("X", "show", 200, ep("tt9"))))   // a film is never a series
+    }
+
+    @Test fun rows_without_ids_fall_back_to_their_names_among_themselves_only() {
+        assertEquals(listOf("b"), byId(Row("Clip", "a", 100, null), Row("Clip · S1 E2", "b", 200, null)))
+        // A row with ids is never joined to one without by name.
+        assertEquals(listOf("named", "id"), byId(Row("Clip", "id", 100, ep("tt1")), Row("Clip", "named", 200, null)))
     }
 }

@@ -371,14 +371,31 @@ object JellyfinApi {
     }
 }
 
-/** What the player needs to tell Jellyfin how far playback has got. [startMs] is where the server says the viewer left off. */
-data class JellyfinReport(val base: String, val itemId: String, val sourceId: String, val startMs: Long) {
-    fun toJson(): String = JSONObject().put("base", base).put("itemId", itemId).put("sourceId", sourceId).put("startMs", startMs).toString()
+/**
+ * What the player needs to tell Jellyfin how far playback has got. [startMs] is where the server says the viewer left off,
+ * or, when [settledAtMs] is set, a resume point already settled from this TV's own records (Continue watching), saved at
+ * that wall-clock time.
+ */
+data class JellyfinReport(val base: String, val itemId: String, val sourceId: String, val startMs: Long, val settledAtMs: Long = 0L) {
+    fun toJson(): String = JSONObject().put("base", base).put("itemId", itemId).put("sourceId", sourceId).put("startMs", startMs)
+        .apply { if (settledAtMs > 0) put("settledAt", settledAtMs) }.toString()
+
+    /**
+     * Where to start once the full item has arrived ([played], [resumeMs] and [playedAtMs] are the server's, fresh). The
+     * server decides, a finished item starting from the beginning, unless this report carries a point settled from a record
+     * made here after the server last saw the item: the fresher record wins, and at the same moment the server does, as
+     * Continue watching decides (ContinueEngine.reconcile).
+     */
+    fun freshStart(played: Boolean, resumeMs: Long, playedAtMs: Long?): Long {
+        val server = if (played) 0L else resumeMs.coerceAtLeast(0L)
+        if (settledAtMs <= 0L) return server
+        return if (settledAtMs > (playedAtMs ?: 0L)) startMs else server
+    }
 
     companion object {
         fun fromJson(json: String?): JellyfinReport? = try {
             val o = JSONObject(json ?: return null)
-            JellyfinReport(o.getString("base"), o.getString("itemId"), o.getString("sourceId"), o.optLong("startMs", 0L))
+            JellyfinReport(o.getString("base"), o.getString("itemId"), o.getString("sourceId"), o.optLong("startMs", 0L), o.optLong("settledAt", 0L))
         } catch (_: Exception) { null }
     }
 }

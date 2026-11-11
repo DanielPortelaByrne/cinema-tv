@@ -11,10 +11,11 @@ object NextEpisode {
      * What the series' main button should play. [episodes] are the library's episodes (the only ones the button can play);
      * [streamed] are episodes finished in a stream, which can make the most recent watch without being in the library.
      * The episode watched most recently decides it: part-way through, it is continued ("Continue watching S3E2"); finished,
-     * the one after it in order is next ("Watch S3E3"), wrapping to the first. With nothing watched yet it is the first
-     * episode ("Watch S1E1"). Null when the library holds no episodes.
+     * the one after it in order is next ("Watch S3E3"). With nothing watched yet it is the first episode ("Watch S1E1").
+     * Null when the library holds no episodes, and when the episode finished last is the last one there is: a finished
+     * series is never offered from its first episode again unless [wrapAtEnd] asks for that (a deliberate rewatch).
      */
-    fun of(episodes: List<EpisodeWatch>, streamed: List<EpisodeWatch> = emptyList()): NextUp? {
+    fun of(episodes: List<EpisodeWatch>, streamed: List<EpisodeWatch> = emptyList(), wrapAtEnd: Boolean = false): NextUp? {
         if (episodes.isEmpty()) return null
         val inOrder = episodes.sortedWith(compareBy<EpisodeWatch>({ it.season }, { it.episode }))
         // A part-watched stream cannot be carried on from (only library files resume), so only finished streams count.
@@ -23,7 +24,7 @@ object NextEpisode {
         val inLibrary = episodes.any { it.season == last.season && it.episode == last.episode }
         if (inLibrary && !last.played && last.resumeMs > 0) return NextUp(last.season, last.episode, continuing = true)
         val after = inOrder.firstOrNull { it.season > last.season || (it.season == last.season && it.episode > last.episode) }
-        return (after ?: inOrder.first()).let { NextUp(it.season, it.episode, continuing = false) }
+        return (after ?: inOrder.first().takeIf { wrapAtEnd })?.let { NextUp(it.season, it.episode, continuing = false) }
     }
 
     /**
@@ -38,7 +39,8 @@ object NextEpisode {
         val inOrder = episodes.distinct().sortedWith(compareBy<Pair<Int, Int>>({ it.first }, { it.second }))
         val last = streamed.maxByOrNull { it.atMs }
             ?: return inOrder.first().let { NextUp(it.first, it.second, continuing = false) }
-        if (!last.played) return NextUp(last.season, last.episode, continuing = last.positionMs >= minResumeMs)
+        // The latest viewing decides, never the furthest point ever reached: a finished episode watched again and stopped is carried on.
+        if (!last.finishedLast) return NextUp(last.season, last.episode, continuing = last.resumeMs >= minResumeMs)
         return following(inOrder, last.season, last.episode)?.let { NextUp(it.first, it.second, continuing = false) }
     }
 

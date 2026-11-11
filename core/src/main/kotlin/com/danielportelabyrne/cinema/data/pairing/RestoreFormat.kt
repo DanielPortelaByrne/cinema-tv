@@ -2,6 +2,10 @@ package com.danielportelabyrne.cinema.data.pairing
 
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession
+import com.danielportelabyrne.cinema.data.movies.Favourites
+import com.danielportelabyrne.cinema.data.movies.FavouritesStore
+import com.danielportelabyrne.cinema.data.movies.PlayHistory
+import com.danielportelabyrne.cinema.data.movies.PlayHistoryStore
 import com.danielportelabyrne.cinema.data.movies.SeerrClient
 import com.danielportelabyrne.cinema.data.movies.Watchlist
 import com.danielportelabyrne.cinema.data.movies.SeerrSession
@@ -26,8 +30,12 @@ object RestoreFormat {
     const val KIND = "cinema-restore"
     const val VERSION = 1
 
-    /** The JSON for this TV's settings and sign-ins. Sign-ins that are not present are left out. */
-    fun build(settings: CinemaSettings, jellyfin: JellyfinClient, seerr: SeerrClient): String {
+    /**
+     * The JSON for this TV's settings and sign-ins. Sign-ins that are not present are left out. [favourites] and [history],
+     * when given, add the signed-in user's favourites and play history (an older Cinema reading the file passes over them).
+     */
+    fun build(settings: CinemaSettings, jellyfin: JellyfinClient, seerr: SeerrClient,
+              favourites: FavouritesStore? = null, history: PlayHistoryStore? = null): String {
         val root = JSONObject().put("kind", KIND).put("version", VERSION)
         jellyfin.savedSession()?.let {
             root.put("jellyfin", JSONObject().put("server", it.server).put("token", it.token).put("userId", it.userId))
@@ -57,6 +65,9 @@ object RestoreFormat {
         // What the owner has built up on the TV: who they follow on Letterboxd, and the whole watchlist (the one imported from Stremio too).
         s.put("letterboxdFollowing", org.json.JSONArray(settings.letterboxdFollowing))
         s.put("watchlist", org.json.JSONArray(Watchlist.toJson(settings.watchlist)))
+        // The favourites and play history of the user this file signs in (they are kept per server and user).
+        favourites?.let { s.put("favourites", org.json.JSONArray(Favourites.toJson(it.list(jellyfin.ownerScope)))) }
+        history?.let { s.put("history", org.json.JSONArray(PlayHistory.toJson(it.list(jellyfin.ownerScope)))) }
         root.put("settings", s)
         return root.toString()
     }
@@ -65,7 +76,8 @@ object RestoreFormat {
      * Writes a restore file's contents back. Everything is read and checked first, so a malformed file changes nothing.
      * Throws [RestoreException] when the file is not a Cinema restore file or was made by a newer Cinema.
      */
-    fun apply(json: String, settings: CinemaSettings, jellyfin: JellyfinClient, seerr: SeerrClient) {
+    fun apply(json: String, settings: CinemaSettings, jellyfin: JellyfinClient, seerr: SeerrClient,
+              favourites: FavouritesStore? = null, history: PlayHistoryStore? = null) {
         val root = try { JSONObject(json) } catch (_: Exception) { throw RestoreException("Not a Cinema restore file") }
         if (root.optString("kind") != KIND) throw RestoreException("Not a Cinema restore file")
         val version = root.optInt("version", 0)
@@ -100,6 +112,9 @@ object RestoreFormat {
             (0 until list.length()).mapNotNull { i -> list.optString(i).trim().takeIf { it.isNotEmpty() } }.distinctBy { it.lowercase() }
         }
         val watchlist = s.optJSONArray("watchlist")?.let { Watchlist.parse(it.toString()) }
+        // Absent in a file from an older build: nothing here changes. Present, they are added to what this TV has, never replacing it.
+        val favouriteList = s.optJSONArray("favourites")?.let { Favourites.parse(it.toString()) }
+        val historyList = s.optJSONArray("history")?.let { PlayHistory.parse(it.toString()) }
         val stremio = text(s, "stremioKey").ifBlank { null }
         val helper = text(s, "requestHelperUrl").ifBlank { null }
         val stream = text(s, "streamServiceUrl").ifBlank { null }
@@ -120,6 +135,10 @@ object RestoreFormat {
         }
         jellyfinSession?.let { jellyfin.restoreSession(it) }
         seerrSession?.let { seerr.restoreSession(it) }
+        // Under the user the file signs in, as they were kept (without a sign-in in the file, the list kept before any server).
+        val scope = if (jellyfinSession != null) jellyfin.ownerScope else ""
+        favouriteList?.let { favourites?.merge(scope, it) }
+        historyList?.let { history?.merge(scope, it) }
         settings.setupDone = true
     }
 

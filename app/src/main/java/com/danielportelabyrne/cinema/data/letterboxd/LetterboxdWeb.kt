@@ -143,7 +143,11 @@ class LetterboxdWeb(private val activity: Activity, private val allowBrowser: Bo
                 isFocusable = false; isFocusableInTouchMode = false; alpha = 0.01f
                 // A WebView only runs its scripts properly while attached; a 1-pixel one in a corner is never seen.
                 addJavascriptInterface(PageBridge(), "cinemaPage")
-                (activity.window.decorView as ViewGroup).addView(this, ViewGroup.LayoutParams(1, 1))
+                // Inside a holder that never lets focus in: a page that focuses one of its fields would otherwise take the
+                // remote's focus from the screen the viewer is on, and the D-pad would stop moving.
+                val holder = android.widget.FrameLayout(activity).apply { descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS; isFocusable = false }
+                holder.addView(this, ViewGroup.LayoutParams(1, 1))
+                (activity.window.decorView as ViewGroup).addView(holder, ViewGroup.LayoutParams(1, 1))
             }.also { webView = it }
             fun poll(attempt: Int) {
                 // Ready once the browser check has gone: no "Just a moment" title, none of its widgets, and something on the
@@ -193,7 +197,7 @@ class LetterboxdWeb(private val activity: Activity, private val allowBrowser: Bo
         fun receive(token: String, html: String) { pageSink?.invoke(token, html) }
     }
 
-    fun close() { main.post { webView?.let { (it.parent as? ViewGroup)?.removeView(it); it.destroy() }; webView = null } }
+    fun close() { main.post { webView?.let { val holder = it.parent as? ViewGroup; holder?.removeView(it); (holder?.parent as? ViewGroup)?.removeView(holder); it.destroy() }; webView = null } }
 
     companion object {
         /**

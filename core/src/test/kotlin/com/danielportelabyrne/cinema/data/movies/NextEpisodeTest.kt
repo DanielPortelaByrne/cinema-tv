@@ -50,11 +50,27 @@ class NextEpisodeTest {
         assertEquals(NextUp(3, 2, continuing = false), NextEpisode.of(library, streamed))
     }
 
-    @Test fun a_finished_series_wraps_to_the_first_episode() {
-        val up = NextEpisode.of(listOf(ep(1, 1), ep(1, 2, played = true, at = 300)))!!
+    @Test fun a_finished_series_is_not_offered_from_its_first_episode_again() {
+        assertNull(NextEpisode.of(listOf(ep(1, 1), ep(1, 2, played = true, at = 300))))
+        assertNull(NextEpisode.of(listOf(ep(1, 1, played = true, at = 1))))
+        // Earlier episodes watched long ago do not change that: the last one finished decides.
+        assertNull(NextEpisode.of(listOf(ep(1, 1, played = true, at = 1), ep(1, 2, played = true, at = 5), ep(2, 1, played = true, at = 9))))
+    }
+
+    @Test fun a_finished_series_wraps_only_when_asked() {
+        val up = NextEpisode.of(listOf(ep(1, 1), ep(1, 2, played = true, at = 300)), wrapAtEnd = true)!!
         assertFalse(up.continuing)
         assertEquals(NextUp(1, 1, continuing = false), up)
-        assertTrue(NextEpisode.of(listOf(ep(1, 1, played = true, at = 1)))!!.season == 1)
+    }
+
+    @Test fun a_last_episode_part_watched_is_still_continued() {
+        assertEquals(NextUp(1, 2, continuing = true), NextEpisode.of(listOf(ep(1, 1, played = true, at = 1), ep(1, 2, resumeMs = 600_000, at = 5))))
+    }
+
+    @Test fun finishing_a_stream_past_the_librarys_last_episode_does_not_wrap() {
+        val library = listOf(ep(1, 1, played = true, at = 1), ep(1, 2))
+        val streamed = listOf(ep(2, 4, played = true, at = 50))
+        assertNull(NextEpisode.of(library, streamed))
     }
 
     @Test fun following_is_the_next_in_order_whatever_the_listing_order_and_null_at_the_end() {

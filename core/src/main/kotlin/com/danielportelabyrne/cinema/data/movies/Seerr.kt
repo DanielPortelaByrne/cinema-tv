@@ -10,6 +10,7 @@ import java.net.URL
 
 private const val TAG = "Seerr"
 private const val TITLE_TTL_MS = 2 * 60_000L
+private const val LISTING_TTL_MS = 6 * 60 * 60_000L
 
 private val titles = TimedCache<String>(TITLE_TTL_MS)
 private val listings = TimedCache<String>(6 * 60 * 60_000L)
@@ -45,6 +46,23 @@ object SeerrApi {
     /** The IMDb id in a title's details (`externalIds.imdbId`), or null when Seerr has none for it. */
     fun imdbId(json: String): String? = try {
         JSONObject(json).optJSONObject("externalIds")?.optString("imdbId")?.trim()?.takeIf { it.startsWith("tt") && it.length > 2 }
+    } catch (_: Exception) { null }
+
+    /**
+     * A title's genres and the services it streams on in [country] (TMDB's watch providers: subscription, free or with
+     * ads), from its details. Services are null when the details carry no providers at all, so they are not known.
+     */
+    fun facts(json: String, kind: Kind, tmdbId: Long, country: String, atMs: Long): TitleFacts? = try {
+        val o = JSONObject(json)
+        val g = o.optJSONArray("genres")
+        val genres = (0 until (g?.length() ?: 0)).mapNotNull { g!!.optJSONObject(it)?.optString("name")?.ifBlank { null } }
+        val providers = o.optJSONArray("watchProviders")
+        val services = providers?.let { p ->
+            val here = (0 until p.length()).mapNotNull { p.optJSONObject(it) }.firstOrNull { it.optString("iso_3166_1").equals(country, ignoreCase = true) }
+            listOf("flatrate", "free", "ads").flatMap { k -> here?.optJSONArray(k)?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optString("name")?.ifBlank { null } } }.orEmpty() }
+                .map { Catalog.serviceName(it) }.distinct()
+        }
+        TitleFacts(kind, tmdbId.toString(), imdbId(json), null, genres.ifEmpty { null }, services, atMs)
     } catch (_: Exception) { null }
 
     /** Seerr's media status numbers: 1 unknown, 2 pending, 3 processing, 4 partly available, 5 available. */
@@ -205,6 +223,10 @@ class SeerrClient(platform: Platform) {
 
     private fun title(kind: Kind, tmdbId: Long): String? = SeerrApi.path(kind, tmdbId).let { p -> titles.get(base + p) { get(p) } }
 
+    /** A title's genres and services (see SeerrApi.facts). Blocks; null when not signed in or not found. */
+    fun titleFacts(kind: Kind, tmdbId: Long): TitleFacts? =
+        if (!isSignedIn) null else title(kind, tmdbId)?.let { SeerrApi.facts(it, kind, tmdbId, Catalog.country, System.currentTimeMillis()) }
+
     fun warm(kind: Kind, tmdbId: Long) {
         val page = title(kind, tmdbId) ?: return
         if (kind == Kind.SHOW) SeerrSeasons.parseSeasons(page).firstOrNull()?.let { episodes(tmdbId, it.number) }
@@ -332,6 +354,24 @@ class SeerrClient(platform: Platform) {
 
     fun episodes(tmdbId: Long, season: Int): List<EpisodeInfo> = (SeerrApi.path(Kind.SHOW, tmdbId) + "/season/$season").let { p ->
         listings.get(base + p) { get(p) }?.let { SeerrSeasons.parseEpisodes(it) }.orEmpty()
+    }
+
+    /**
+     * The episodes of a series as already held (its seasons and their listings, up to six hours old), or null when its seasons
+     * are not held yet. Never fetches, so it is safe on any thread. See [warmCatalogue].
+     */
+    fun cachedCatalogue(tmdbId: Long): EpisodeCatalogue? {
+        val seasons = titles.peek(base + SeerrApi.path(Kind.SHOW, tmdbId), LISTING_TTL_MS)?.let { SeerrSeasons.parseSeasons(it) } ?: return null
+        val listed = seasons.filter { it.number > 0 }.flatMap { s ->
+            listings.peek(base + SeerrApi.path(Kind.SHOW, tmdbId) + "/season/${s.number}", LISTING_TTL_MS)?.let { SeerrSeasons.parseEpisodes(it) }.orEmpty()
+        }
+        return EpisodeCatalogue.fromTmdb(seasons, listed)
+    }
+
+    /** Fetches a series' seasons and every season's listing into the caches [cachedCatalogue] reads. Blocks: not for the main thread. */
+    fun warmCatalogue(tmdbId: Long) {
+        if (!isSignedIn) return
+        seasons(tmdbId).filter { it.number > 0 }.forEach { episodes(tmdbId, it.number) }
     }
 
     fun titleInfo(kind: Kind, tmdbId: Long): Pair<String, String?>? = title(kind, tmdbId)?.let { SeerrRequests.parseTitle(it) }

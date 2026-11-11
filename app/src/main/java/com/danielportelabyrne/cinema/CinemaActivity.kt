@@ -312,6 +312,8 @@ class CinemaActivity : AppCompatActivity() {
                         // finds first, which for Down was the rail.
                         if (target === overlay && moviesPanel.recoverFocus(direction)) return true
                         (FocusFinder.getInstance().findNextFocus(target, null, direction) ?: target).requestFocus()
+                    } else if (target === overlay && direction == View.FOCUS_LEFT && moviesPanel.leftKey(focused, event.repeatCount == 0)) {
+                        // Swallowed at the page's left edge: a held Left never spills into the rail (see NavGate).
                     } else if (target === overlay && moviesPanel.navigate(focused, direction)) {
                         // The rail and the loading screen move focus themselves.
                     } else if (target === overlay) {

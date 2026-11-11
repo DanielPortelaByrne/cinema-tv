@@ -14,6 +14,9 @@ class TimedCache<V : Any>(private val ttlMs: Long, private val clock: () -> Long
         }
     }
 
+    /** What is held for [key] now, if it is younger than [maxAgeMs] (this cache's own limit by default). Never fetches. */
+    fun peek(key: String, maxAgeMs: Long = ttlMs): V? = held[key]?.takeIf { clock() - it.at < maxAgeMs }?.value
+
     fun forget(prefix: String = "") { held.keys.removeIf { it.startsWith(prefix) } }
 
     private fun fresh(key: String): V? = held[key]?.takeIf { clock() - it.at < ttlMs }?.value

@@ -100,6 +100,18 @@ class PosterCard(context: Context, posterW: Int, posterH: Int, titled: Boolean =
         poster.addView(pill, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(Cinema.px(context, 12), 0, 0, Cinema.px(context, 12)) })
     }
 
+    private var starBadge: View? = null
+
+    /** A small filled star in the top right corner while the title is a favourite. Calling again with false takes it away. */
+    fun favourite(on: Boolean) {
+        if (on == (starBadge != null)) return
+        if (!on) { poster.removeView(starBadge); starBadge = null; return }
+        val pill = FrameLayout(context).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xD10C0806.toInt()) } }
+        pill.addView(Cinema.icon(context, R.drawable.ic_cin_star, Cinema.SAFFRON), FrameLayout.LayoutParams(Cinema.px(context, 20), Cinema.px(context, 20), Gravity.CENTER))
+        poster.addView(pill, FrameLayout.LayoutParams(Cinema.px(context, 36), Cinema.px(context, 36), Gravity.TOP or Gravity.END).apply { setMargins(0, Cinema.px(context, 10), Cinema.px(context, 10), 0) })
+        starBadge = pill
+    }
+
     private var watcherRow: LinearLayout? = null
 
     /**

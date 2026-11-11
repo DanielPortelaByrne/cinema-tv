@@ -39,12 +39,40 @@ class FrostView(context: Context, private val sources: List<View>, private val r
 
     /** The tint over the blur. Without blur it is forced close to opaque. */
     var tint: Int = Cinema.RAIL_FILL
-        set(value) { field = value; invalidate() }
+        set(value) { if (field != value) { field = value; invalidate() } }
+
+    /**
+     * How much of the glass shows, from its left edge, in px; the rest is clipped away by the pill's outline. Lets the rail
+     * open and close by revealing glass already laid out at full width, so nothing is measured again while it moves.
+     * Negative: all of it.
+     */
+    var visibleWidth: Int = -1
+        set(value) {
+            if (field == value) return
+            field = value
+            // Moving: a plain rectangle clip (cheap), the pill's outline left at full width. At rest: the pill's own outline.
+            if (forcedShift != null) { clipBounds = android.graphics.Rect(0, 0, shownWidth, height) } else { clipBounds = null; invalidateOutline() }
+            invalidate()
+        }
+
+    /** While the rail moves, the glass is photographed with [shiftSource] already at [forcedShift] (where it will end up). */
+    var shiftSource: View? = null
+    var forcedShift: Float? = null
+        set(value) { if (field == value) return; val was = field; field = value; if ((was == null) != (value == null)) { clipBounds = null; invalidateOutline() } }
+
+    /** A new picture now, not after the usual wait. */
+    fun refreshNow() {
+        if (node == null) { invalidate(); return }
+        removeCallbacks(snapshotTask); queued = false
+        takeSnapshot()
+    }
+
+    private val shownWidth: Int get() = if (visibleWidth < 0) width else minOf(visibleWidth, width)
 
     init {
         isFocusable = false; isClickable = false; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(context, radiusPx)) }
+            override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, if (forcedShift != null) v.width else shownWidth, v.height, Cinema.pxf(context, radiusPx)) }
         }
         clipToOutline = true
     }
@@ -94,7 +122,8 @@ class FrostView(context: Context, private val sources: List<View>, private val r
         bmp.eraseColor(Cinema.BG)
         val save = c.save()
         c.scale(SCALE, SCALE)
-        c.clipRect(0, 0, width, height)
+        // Only the glass that shows, except while the rail moves: then all of it, so the part it reveals is frosted already.
+        c.clipRect(0, 0, if (forcedShift != null) width else shownWidth.coerceAtLeast(1), height)
         c.translate(-left.toFloat(), -top.toFloat())
         sources.forEach { s ->
             if (s.visibility != VISIBLE) return@forEach
@@ -102,6 +131,9 @@ class FrostView(context: Context, private val sources: List<View>, private val r
             // scroll off here too would draw a scrolled page shifted up by its scroll, not directly beneath the glass.
             val inner = c.save()
             c.translate(s.left.toFloat(), s.top.toFloat())
+            forcedShift?.let { if (s === shiftSource) c.translate(it - s.translationX, 0f) }
+            // A source that is itself moved (the page pushed aside while the rail is open) is drawn where it shows.
+            if (!s.matrix.isIdentity) c.concat(s.matrix)
             try { drawUnder(s, c) } catch (_: Exception) { }   // a source that cannot draw in software is left out, not fatal
             c.restoreToCount(inner)
         }

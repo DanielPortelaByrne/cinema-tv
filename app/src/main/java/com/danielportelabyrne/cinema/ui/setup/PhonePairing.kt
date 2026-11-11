@@ -66,6 +66,8 @@ class PhonePairing(
     private val settings: CinemaSettings,
     private val ui: Handler,
     private val onDone: (PhoneKind) -> Unit,
+    /** Where the favourites and play history are kept, so a restore file carries them both ways. Null leaves them out. */
+    private val personal: com.danielportelabyrne.cinema.platform.Platform? = null,
     /** The download-queue helper, which finds the torrent client Sonarr and Radarr use and signs in to it. */
     private val queue: () -> QueueClient,
 ) {
@@ -348,7 +350,8 @@ class PhonePairing(
         if (pin.length != PIN_LENGTH) return "Enter the 6-digit PIN."
         return try {
             val plain = RestoreBundle.open(sealed, pin)
-            RestoreFormat.apply(String(plain, Charsets.UTF_8), settings, jellyfin, seerr)
+            RestoreFormat.apply(String(plain, Charsets.UTF_8), settings, jellyfin, seerr,
+                personal?.let { com.danielportelabyrne.cinema.data.movies.FavouritesStore(it) }, personal?.let { com.danielportelabyrne.cinema.data.movies.PlayHistoryStore(it) })
             importStremioWatchlistIfEmpty()
             null
         } catch (e: RestoreException) {
@@ -377,7 +380,8 @@ class PhonePairing(
         if (pin.length != PIN_LENGTH) {
             return PairingResponse.html(400, PairingPages.save(code, "The PIN is 6 digits. Type all six."))
         }
-        val plain = RestoreFormat.build(settings, jellyfin, seerr).toByteArray(Charsets.UTF_8)
+        val plain = RestoreFormat.build(settings, jellyfin, seerr,
+            personal?.let { com.danielportelabyrne.cinema.data.movies.FavouritesStore(it) }, personal?.let { com.danielportelabyrne.cinema.data.movies.PlayHistoryStore(it) }).toByteArray(Charsets.UTF_8)
         return PairingResponse.file(FILE_NAME, RestoreBundle.seal(plain, pin))
     }
 

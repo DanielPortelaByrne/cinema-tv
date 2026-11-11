@@ -44,6 +44,11 @@ import android.widget.TextView
 import com.danielportelabyrne.cinema.data.settings.CinemaSettings
 import com.danielportelabyrne.cinema.data.settings.Integration
 import com.danielportelabyrne.cinema.data.movies.StreamProgress
+import com.danielportelabyrne.cinema.data.movies.HistoryTarget
+import com.danielportelabyrne.cinema.data.movies.Kind
+import com.danielportelabyrne.cinema.data.movies.PlayHistoryStore
+import com.danielportelabyrne.cinema.data.movies.PlaySession
+import com.danielportelabyrne.cinema.data.movies.PlayedEntry
 import com.danielportelabyrne.cinema.data.stream.NetworkEstimator
 import com.danielportelabyrne.cinema.data.stream.PlaybackRecord
 import com.danielportelabyrne.cinema.data.stream.PlaybackStore
@@ -144,6 +149,10 @@ class PlayerActivity : AppCompatActivity() {
     private val jfSession = com.danielportelabyrne.cinema.data.jellyfin.JellyfinPlaybackSession()
     private val reporter by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
     private var title: String = ""
+    /** This viewing, for the play history: counts real playing time and says when history should hear of it. Null for live TV and unidentified plays. */
+    private var playSession: PlaySession? = null
+    private var historyTarget: HistoryTarget? = null
+    private val historyStore by lazy { PlayHistoryStore(AndroidPlatform(this)) }
 
     private lateinit var history: PlaybackStore
     private lateinit var continueStore: ContinueWatching
@@ -178,7 +187,7 @@ class PlayerActivity : AppCompatActivity() {
         override fun run() { saveResume(); snapshotToContinue(); handler.postDelayed(this, 15_000) }
     }
     private val reportTick = object : Runnable {
-        override fun run() { reportToJellyfin("Progress"); recordStreamProgress(); warmNextIfNear(); handler.postDelayed(this, REPORT_EVERY_MS) }
+        override fun run() { reportToJellyfin("Progress"); recordStreamProgress(); recordHistory(); warmNextIfNear(); handler.postDelayed(this, REPORT_EVERY_MS) }
     }
     /** The episode and the one after it whose stream was last asked for ahead of time, so it is asked once. */
     private var warmedNext: Pair<Pair<Int, Int>, Pair<Int, Int>>? = null
@@ -325,6 +334,7 @@ class PlayerActivity : AppCompatActivity() {
         val imdb = imdbId?.takeIf { it.startsWith("tt") } ?: return
         val series = streamListing?.name?.ifBlank { null } ?: title.substringBefore(" · ")
         recordStreamProgress(atEnd = true)
+        recordHistory(credits = true)
         handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
         creditsCard = false
         pendingEpisode = EpisodeRequest(imdb, series, next.season, next.episode)
@@ -373,6 +383,7 @@ class PlayerActivity : AppCompatActivity() {
         if (streamEpisode == null && intent.getStringExtra(EXTRA_JF).isNullOrBlank())
             Regex("""S(\d+) E(\d+)$""").find(title)?.let { m -> streamEpisode = m.groupValues[1].toInt() to m.groupValues[2].toInt() }
         art = intent.getStringExtra(EXTRA_ART)
+        beginHistory(HistoryTarget.fromJson(intent.getStringExtra(EXTRA_HISTORY)))
         history = PlaybackStore(this)
         continueStore = ContinueWatching(this)
         payload = intent.getStringExtra(EXTRA_PAYLOAD)
@@ -551,7 +562,8 @@ class PlayerActivity : AppCompatActivity() {
      * again with it; a resume point that moved (watched elsewhere, or the list was a few minutes old) means a seek.
      */
     private fun applyFreshItem(report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport, fresh: JellyfinItem) {
-        val start = if (fresh.played) 0L else fresh.resumeMs
+        // A fresher resume point from this TV (Continue watching's) is kept; an older one gives way to the server's.
+        val start = report.freshStart(fresh.played, fresh.resumeMs, fresh.playedMs)
         val updated = report.copy(sourceId = fresh.sourceId, startMs = if (forcedStart) 0L else start)
         jf = updated
         itemAudioCodec = fresh.audioCodec
@@ -619,7 +631,7 @@ class PlayerActivity : AppCompatActivity() {
         episodeLookup.execute {
             val next = jellyfin.followingEpisode(current) ?: return@execute
             val name = listOfNotNull(next.seriesName, next.episodeLabel(), next.name).joinToString(" · ")
-            val plan = JellyfinPlayback.prepare(jellyfin, next, name, "jf:${next.id}")
+            val plan = JellyfinPlayback.prepare(jellyfin, next, name, "jf:${next.id}", seriesIds())
             handler.post {
                 if (generation != episodeGeneration || isFinishing || isDestroyed) return@post
                 nextItem = next; nextPlan = plan
@@ -679,11 +691,12 @@ class PlayerActivity : AppCompatActivity() {
     private fun switchToEpisode(item: JellyfinItem) {
         if (item.id == jf?.itemId) { player.play(); chrome?.setState(com.danielportelabyrne.cinema.data.player.PlayerUi.Hidden); return }
         saveResume(); snapshotToContinue()
+        recordHistory(credits = pastCredits())
         reportToJellyfin("Stopped")
         record(failed = false)
         creditsCard = false; handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
         val name = listOfNotNull(item.seriesName, item.episodeLabel(), item.name).joinToString(" · ")
-        beginEpisode(JellyfinPlayback.prepare(jellyfin, item, name, "jf:${item.id}"), item)
+        beginEpisode(JellyfinPlayback.prepare(jellyfin, item, name, "jf:${item.id}", seriesIds()), item)
     }
 
     /**
@@ -691,11 +704,12 @@ class PlayerActivity : AppCompatActivity() {
      * trickplay, overview) and the episode after it are fetched once it is under way, never before.
      */
     private fun beginEpisode(plan: JellyfinPlayback.Plan, item: JellyfinItem) {
-        val nextIntent = playbackIntent(this, plan.streams, plan.title, plan.resumeKey, plan.report)
+        val nextIntent = playbackIntent(this, plan.streams, plan.title, plan.resumeKey, plan.report, history = plan.history)
         intent = nextIntent
         items = parse(nextIntent.getStringExtra(EXTRA_ITEMS))
         imdbId = plan.resumeKey; title = plan.title; jf = plan.report
         payload = nextIntent.getStringExtra(EXTRA_PAYLOAD)
+        beginHistory(plan.history)
         nextItem = null; nextPlan = null; autoplay = EpisodeAutoplay(); episodeGeneration++; forcedStart = false
         itemChapters = emptyList(); itemTrickplay = null; itemSizeBytes = null
         chrome?.let { c ->
@@ -960,7 +974,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 Player.STATE_READY -> { closeBuffer(); seeking = false }
                 Player.STATE_ENDED -> if (!ended) {
-                    closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); recordStreamProgress(atEnd = true); resumePrefs.edit().remove(resumeKey() ?: "").apply()
+                    closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); recordStreamProgress(atEnd = true); recordHistory(ended = true); resumePrefs.edit().remove(resumeKey() ?: "").apply()
                     continueStore.save(ResumeItem(title, null, packageName, null, player.duration, player.duration, null, System.currentTimeMillis()), null)
                     if (!foreground) autoplay.cancel()
                     autoplay.end(SystemClock.elapsedRealtime())
@@ -997,6 +1011,7 @@ class PlayerActivity : AppCompatActivity() {
                 reportToJellyfin("Progress")
             }
             val now = SystemClock.elapsedRealtime()
+            playSession?.setPlaying(isPlaying, now, System.currentTimeMillis())
             if (isPlaying) playingSince = now else if (playingSince != 0L) { playMs += now - playingSince; playingSince = 0 }
         }
 
@@ -1427,6 +1442,7 @@ class PlayerActivity : AppCompatActivity() {
         if (started && !ended && player.duration > 0) {
             val p = player.currentPosition
             if (p > 60_000 && p < player.duration * 0.95) resumePrefs.edit().putLong(id, p).apply()
+            else if (p <= 60_000) resumePrefs.edit().remove(id).apply()   // sought back to the start: don't resume from the old point
         }
     }
 
@@ -1459,6 +1475,7 @@ class PlayerActivity : AppCompatActivity() {
             player.pause()
             // Leaving in the credits: the episode counts as finished, as it does when the file runs out.
             reportToJellyfin("Stopped", atEnd = pastCredits())
+            recordHistory(credits = pastCredits())
             record(failed = false)
         }
     }
@@ -1467,11 +1484,51 @@ class PlayerActivity : AppCompatActivity() {
      * Tells Jellyfin where playback is. "Playing" opens the session, "Progress" updates it (also on pause), and
      * "Stopped" closes it with the final position, at which point Jellyfin counts a title as watched if it is near the end.
      */
+    /**
+     * Starts counting a viewing for the play history. [given] says who it is (the launching page knows the ids and art); a
+     * stream saved before that existed is worked out from its IMDb id and episode. A channel or a library play with no
+     * identity is not recorded.
+     */
+    private fun seriesIds() = historyTarget?.entry?.takeIf { it.isEpisode }?.let { it.seriesImdbId to it.seriesTmdbId }
+
+    private fun beginHistory(given: HistoryTarget?) {
+        playSession = null; historyTarget = null
+        if (live) return
+        val target = given ?: imdbId?.takeIf { it.startsWith("tt") && jf == null }?.let { id ->
+            val episode = streamEpisode
+            val entry = if (episode != null) PlayedEntry(Kind.SHOW, seriesImdbId = id, title = title.substringBefore(" · "), season = episode.first, episode = episode.second)
+            else PlayedEntry(Kind.MOVIE, imdbId = id, title = title)
+            HistoryTarget(jellyfin.ownerScope, entry)
+        } ?: return
+        historyTarget = target
+        playSession = PlaySession(target)
+    }
+
+    /**
+     * Tells the play history where this viewing is, at the checkpoints that already exist (the report tick, pause, stop,
+     * the end). History only hears of it after 30 s of real playing or a real end; see [PlaySession].
+     */
+    private fun recordHistory(ended: Boolean = false, credits: Boolean = false) {
+        val session = playSession ?: return
+        if (live || !started || !::player.isInitialized) return
+        val mono = SystemClock.elapsedRealtime(); val wall = System.currentTimeMillis()
+        session.setPlaying(player.isPlaying, mono, wall)
+        val duration = player.duration.takeIf { it > 0 } ?: 0L
+        val trusted = !seeking && player.playbackState == Player.STATE_READY
+        val known = streamEpisode?.let { (s, e) -> streamListing?.episodes?.firstOrNull { it.season == s && it.episode == e } }
+        val more = known?.let { PlayedEntry(Kind.SHOW, episodeTitle = it.name.ifBlank { null }, still = it.still) }
+        val entry = session.checkpoint(mono, wall, player.currentPosition, duration, trusted, ended, more, credits) ?: return
+        val settings = CinemaSettings(AndroidPlatform(this))
+        historyStore.record(session.scope, entry, settings.streamProgress)
+    }
+
     /** Keeps how far a stream episode got, here, since a stream leaves no record in Jellyfin. Library playback is reported to Jellyfin instead. */
     private fun recordStreamProgress(atEnd: Boolean = false) {
         val episode = streamEpisode ?: return
         val id = imdbId?.takeIf { it.startsWith("tt") } ?: return
         if (jf != null || !::player.isInitialized) return
+        // A checkpoint mid-seek or while buffering is not a real position: wait for the next one.
+        if (!atEnd && (seeking || player.playbackState != Player.STATE_READY)) return
         val known = player.duration.takeIf { it > 0 }
         // Reaching the credits counts as watched, as the end does: viewers usually leave as the credits roll. A stream that
         // reached its end also counts when its length was never reported, since the end is then the length.
@@ -1508,7 +1565,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        recordStreamProgress()
+        recordStreamProgress(); recordHistory()
         lbWorker.shutdownNow(); lbPictures.shutdownNow()
         episodeGeneration++
         episodeLookup.shutdownNow(); statusPoller.shutdownNow()
@@ -1545,6 +1602,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_LIVE = "live"
         private const val EXTRA_ART = "art"
         private const val EXTRA_JF = "jf"
+        private const val EXTRA_HISTORY = "history"
         private const val EXTRA_EPISODE = "episode"
         private const val EXTRA_FROM_START = "fromStart"
         /** Set when a Continue watching card reopened a saved stream. */
@@ -1582,8 +1640,8 @@ class PlayerActivity : AppCompatActivity() {
         fun takeStreamAgain(): StreamAgainRequest? = pendingStreamAgain.also { pendingStreamAgain = null }
             ?.takeIf { SystemClock.elapsedRealtime() - pendingStreamAgainAt < 60_000L }
 
-        fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false, episode: Pair<Int, Int>? = null) {
-            context.startActivity(playbackIntent(context, ranked, title, imdbId, report, episode).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
+        fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false, episode: Pair<Int, Int>? = null, history: HistoryTarget? = null) {
+            context.startActivity(playbackIntent(context, ranked, title, imdbId, report, episode, history).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
                 .putExtra(EXTRA_FROM_START, fromStart).putExtra(EXTRA_EPISODE, episode?.let { "${it.first}:${it.second}" }))
         }
 
@@ -1592,7 +1650,7 @@ class PlayerActivity : AppCompatActivity() {
             .put("rating", m.rating ?: 0.0).put("overview", m.overview ?: "").toString()
 
         /** [episode] goes into the saved payload too, so a streamed episode reopened from Continue watching still knows which it is. */
-        private fun playbackIntent(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport?, episode: Pair<Int, Int>? = null): Intent {
+        private fun playbackIntent(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport?, episode: Pair<Int, Int>? = null, history: HistoryTarget? = null): Intent {
             val a = JSONArray()
             ranked.filter { it.playable }.take(3).forEach { r ->
                 val c = r.candidate
@@ -1601,9 +1659,9 @@ class PlayerActivity : AppCompatActivity() {
                     .put("bitrate", r.requiredBps).put("label", c.meta.qualityLabel()).put("engine", c.viaEngine))
             }
             val payload = JSONObject().put("items", a.toString()).put("imdb", imdbId ?: "").put("title", title).put("jf", report?.toJson() ?: "")
-                .put("episode", episode?.let { "${it.first}:${it.second}" } ?: "").toString()
+                .put("episode", episode?.let { "${it.first}:${it.second}" } ?: "").put("history", history?.toJson() ?: "").toString()
             return Intent(context, PlayerActivity::class.java)
-                .putExtra(EXTRA_ITEMS, a.toString()).putExtra(EXTRA_IMDB, imdbId).putExtra(EXTRA_TITLE, title).putExtra(EXTRA_PAYLOAD, payload).putExtra(EXTRA_JF, report?.toJson())
+                .putExtra(EXTRA_ITEMS, a.toString()).putExtra(EXTRA_IMDB, imdbId).putExtra(EXTRA_TITLE, title).putExtra(EXTRA_PAYLOAD, payload).putExtra(EXTRA_JF, report?.toJson()).putExtra(EXTRA_HISTORY, history?.toJson())
         }
 
         /** Plays one live channel from [url]. [headers] carry any sign-in the stream needs. */
@@ -1616,12 +1674,12 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         /** Reopens a stream saved by a Continue watching card. Returns false if the payload is unusable. */
-        fun resume(context: Activity, payload: String): Boolean = try {
+        fun resume(context: Activity, payload: String, fromStart: Boolean = false): Boolean = try {
             val o = JSONObject(payload)
             context.startActivity(Intent(context, PlayerActivity::class.java)
                 .putExtra(EXTRA_ITEMS, o.getString("items")).putExtra(EXTRA_IMDB, o.optString("imdb").ifBlank { null })
                 .putExtra(EXTRA_TITLE, o.optString("title")).putExtra(EXTRA_PAYLOAD, payload).putExtra(EXTRA_JF, o.optString("jf").ifBlank { null })
-                .putExtra(EXTRA_EPISODE, o.optString("episode").ifBlank { null }).putExtra(EXTRA_RESUMED, true))
+                .putExtra(EXTRA_EPISODE, o.optString("episode").ifBlank { null }).putExtra(EXTRA_HISTORY, o.optString("history").ifBlank { null }).putExtra(EXTRA_RESUMED, true).putExtra(EXTRA_FROM_START, fromStart))
             true
         } catch (_: Exception) { false }
 

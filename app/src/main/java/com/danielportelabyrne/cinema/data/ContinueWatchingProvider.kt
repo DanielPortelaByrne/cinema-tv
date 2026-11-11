@@ -10,6 +10,10 @@ import android.os.ParcelFileDescriptor
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
+import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
+import com.danielportelabyrne.cinema.data.movies.ContinueEngine
+import com.danielportelabyrne.cinema.data.movies.Kind
+import com.danielportelabyrne.cinema.data.movies.PlayedEntry
 import java.io.File
 import java.io.FileNotFoundException
 import java.net.HttpURLConnection
@@ -56,7 +60,9 @@ object ContinueWatchingContract {
  * a stream's saved payload stays inside this app: a reader only gets the key it sends back to resume.
  */
 class ContinueWatchingProvider : ContentProvider() {
-    private data class Row(val key: String, val title: String, val subtitle: String?, val progressMs: Long, val durationMs: Long, val lastMs: Long)
+    /** [identity] is who the row is (its ids), when this app knows them; a row is never matched to another by its name alone. */
+    private data class Row(val key: String, val title: String, val subtitle: String?, val progressMs: Long, val durationMs: Long, val lastMs: Long,
+                           val identity: com.danielportelabyrne.cinema.data.movies.PlayedEntry? = null)
 
     override fun onCreate(): Boolean = true
 
@@ -82,17 +88,29 @@ class ContinueWatchingProvider : ContentProvider() {
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?): Int = 0
 
     private fun rows(context: Context): List<Row> {
-        // Only streams with a saved payload can be reopened, so the rest are left out.
-        val streams = ContinueWatching(context).load(12).filter { it.payload != null }.map {
-            Row(ContinueWatchingContract.streamKey(it.title), it.title, it.subtitle, it.positionMs, it.durationMs, it.lastEngagedMs)
-        }
         val client = JellyfinClient(AndroidPlatform(context))
-        val library = if (client.isConnected) client.continueWatching() else emptyList()
-        val jellyfin = library.map { item ->
-            Row(ContinueWatchingContract.jellyfinKey(item.id), item.displayTitle, item.displaySubtitle, item.resumeMs, (item.runtimeMin ?: 0) * 60_000L, item.playedMs ?: 0L)
+        // Only streams with a saved payload can be reopened, so the rest are left out. A payload names what it plays.
+        val streams = ContinueWatching(context).load(12).filter { it.payload != null }.map {
+            Row(ContinueWatchingContract.streamKey(it.title), it.title, it.subtitle, it.positionMs, it.durationMs, it.lastEngagedMs,
+                ContinueEngine.savedStreamEntry(it.payload!!, client.ownerScope)?.let { e ->
+                    e.copy(jellyfinId = ContinueEngine.jellyfinKey(e.jellyfinId), seriesJellyfinId = ContinueEngine.jellyfinKey(e.seriesJellyfinId)) })
         }
-        // One row a title: a series shows only the episode watched most recently.
-        return latestPerTitle(streams + jellyfin, { it.title }, { it.lastMs }).take(12)
+        val resumable = if (client.isConnected) client.continueWatching() else emptyList()
+        // The library's series give a library episode its series' IMDb and TMDB ids, which a stream of it is known by.
+        val series = if (resumable.any { it.isEpisode }) client.library().filter { it.isSeries }.associateBy { ContinueEngine.jellyfinKey(it.id) } else emptyMap()
+        val jellyfin = resumable.map { item ->
+            Row(ContinueWatchingContract.jellyfinKey(item.id), item.displayTitle, item.displaySubtitle, item.resumeMs, (item.runtimeMin ?: 0) * 60_000L, item.playedMs ?: 0L,
+                identityOf(item, series[ContinueEngine.jellyfinKey(item.seriesId)]))
+        }
+        // One row a title, by its ids: a series shows only the episode watched most recently.
+        return latestPerIdentity(streams + jellyfin, { it.identity }, { it.title }, { it.lastMs }).take(12)
+    }
+
+    private fun identityOf(item: JellyfinItem, series: JellyfinItem?): PlayedEntry? = when {
+        item.isMovie -> PlayedEntry(Kind.MOVIE, tmdbId = item.tmdbId, imdbId = item.imdbId, jellyfinId = ContinueEngine.jellyfinKey(item.id))
+        item.isEpisode -> PlayedEntry(Kind.SHOW, jellyfinId = ContinueEngine.jellyfinKey(item.id), seriesJellyfinId = ContinueEngine.jellyfinKey(item.seriesId),
+            seriesImdbId = series?.imdbId, seriesTmdbId = series?.tmdbId, season = item.season, episode = item.episode)
+        else -> null
     }
 
     private fun art(context: Context, key: String): File? {

@@ -79,6 +79,46 @@ class RestoreFormatTest {
         assertTrue(settings.watchlist.isEmpty())
     }
 
+    @Test fun favourites_and_history_travel_with_the_user_and_merge_into_what_is_there() {
+        val old = MemoryPlatform()
+        val (settings, jellyfin, seerr) = tv(old)
+        jellyfin.restoreSession(JellyfinSession("http://192.168.1.20:8096", "jf-token", "user-1"))
+        val favs = com.danielportelabyrne.cinema.data.movies.FavouritesStore(old)
+        val hist = com.danielportelabyrne.cinema.data.movies.PlayHistoryStore(old)
+        favs.toggle(jellyfin.ownerScope, com.danielportelabyrne.cinema.data.movies.Favourite(
+            com.danielportelabyrne.cinema.data.movies.Kind.MOVIE, "1", "tt1", "jf1", "Heat", 1995, null, null, 10))
+        hist.record(jellyfin.ownerScope, com.danielportelabyrne.cinema.data.movies.PlayedEntry(
+            com.danielportelabyrne.cinema.data.movies.Kind.SHOW, seriesImdbId = "tt5", title = "Show", season = 2, episode = 3, playedAt = 50, positionMs = 900_000, durationMs = 2_700_000))
+        val json = RestoreFormat.build(settings, jellyfin, seerr, favs, hist)
+
+        // A TV that already has a favourite of its own keeps it, and gains the file's.
+        val fresh = MemoryPlatform()
+        val (s2, j2, se2) = tv(fresh)
+        val favs2 = com.danielportelabyrne.cinema.data.movies.FavouritesStore(fresh)
+        val hist2 = com.danielportelabyrne.cinema.data.movies.PlayHistoryStore(fresh)
+        val scope = com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope("http://192.168.1.20:8096", "user-1")
+        favs2.toggle(scope, com.danielportelabyrne.cinema.data.movies.Favourite(com.danielportelabyrne.cinema.data.movies.Kind.MOVIE, "2", null, null, "Mine", null, null, null, 20))
+        RestoreFormat.apply(json, s2, j2, se2, favs2, hist2)
+        assertEquals(listOf("Mine", "Heat"), favs2.list(j2.ownerScope).map { it.name })
+        assertEquals(listOf(2 to 3), hist2.list(j2.ownerScope).map { it.season to it.episode })
+        assertEquals(900_000L, hist2.list(j2.ownerScope).single().positionMs)
+        // Restoring the same file again adds nothing twice.
+        RestoreFormat.apply(json, s2, j2, se2, favs2, hist2)
+        assertEquals(2, favs2.list(j2.ownerScope).size)
+        assertEquals(1, hist2.list(j2.ownerScope).size)
+    }
+
+    @Test fun a_file_without_favourites_or_history_leaves_them_alone() {
+        val p = MemoryPlatform()
+        val (settings, jellyfin, seerr) = tv(p)
+        val favs = com.danielportelabyrne.cinema.data.movies.FavouritesStore(p)
+        favs.toggle("", com.danielportelabyrne.cinema.data.movies.Favourite(com.danielportelabyrne.cinema.data.movies.Kind.MOVIE, "1", null, null, "Kept", null, null, null, 1))
+        RestoreFormat.apply("""{"kind":"cinema-restore","version":1,"settings":{"region":"GB"}}""", settings, jellyfin, seerr, favs, null)
+        assertEquals("Kept", favs.list("").single().name)
+        // And a file made without them says nothing of them.
+        assertFalse(org.json.JSONObject(RestoreFormat.build(settings, jellyfin, seerr)).getJSONObject("settings").has("favourites"))
+    }
+
     @Test fun sign_ins_that_were_not_signed_in_are_left_out_of_the_file() {
         val (settings, jellyfin, seerr) = tv(MemoryPlatform())
         val json = org.json.JSONObject(RestoreFormat.build(settings, jellyfin, seerr))

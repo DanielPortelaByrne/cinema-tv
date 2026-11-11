@@ -40,6 +40,20 @@ import com.danielportelabyrne.cinema.data.ContinueWatching
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
+import com.danielportelabyrne.cinema.data.movies.Favourite
+import com.danielportelabyrne.cinema.data.movies.Favourites
+import com.danielportelabyrne.cinema.data.movies.FavouritesStore
+import com.danielportelabyrne.cinema.data.movies.KnownTitle
+import com.danielportelabyrne.cinema.data.movies.ContinueAction
+import com.danielportelabyrne.cinema.data.movies.ContinueDismissals
+import com.danielportelabyrne.cinema.data.movies.PersonalFilter
+import com.danielportelabyrne.cinema.data.movies.PersonalPage
+import com.danielportelabyrne.cinema.data.movies.TitleFacts
+import com.danielportelabyrne.cinema.data.movies.TitleFactsStore
+import com.danielportelabyrne.cinema.data.movies.PlayHistoryStore
+import com.danielportelabyrne.cinema.data.movies.RecentCard
+import com.danielportelabyrne.cinema.data.movies.RecentTarget
+import com.danielportelabyrne.cinema.data.movies.RecentlyWatched
 import com.danielportelabyrne.cinema.data.letterboxd.Lb
 import com.danielportelabyrne.cinema.data.letterboxd.LbFilm
 import com.danielportelabyrne.cinema.data.letterboxd.LbList
@@ -48,6 +62,16 @@ import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.CatalogRepository
 import com.danielportelabyrne.cinema.data.movies.Genre
 import com.danielportelabyrne.cinema.data.movies.Kind
+import com.danielportelabyrne.cinema.ui.EpisodeCards
+import com.danielportelabyrne.cinema.data.movies.SavedStream
+import com.danielportelabyrne.cinema.data.movies.ContinueSource
+import com.danielportelabyrne.cinema.data.movies.ContinueOpen
+import com.danielportelabyrne.cinema.data.movies.ContinueInputs
+import com.danielportelabyrne.cinema.data.movies.ContinueEpisode
+import com.danielportelabyrne.cinema.data.movies.ContinueEntry
+import com.danielportelabyrne.cinema.data.movies.ContinueEngine
+import com.danielportelabyrne.cinema.data.movies.ContinueCards
+import android.util.Log
 import com.danielportelabyrne.cinema.data.movies.ByteSize
 import com.danielportelabyrne.cinema.data.movies.EpisodeOutcome
 import com.danielportelabyrne.cinema.data.movies.EpisodeWatch
@@ -225,6 +249,7 @@ class MoviesPanel(
     /** Groups this page's picture requests, so a rebuilt page drops the ones the old page still had queued. */
     private var pageTag = Any()
     private val catalog = CatalogRepository(AndroidPlatform(activity))
+    private val favourites by lazy { FavouritesStore(AndroidPlatform(activity)) }
     private val picks by lazy { com.danielportelabyrne.cinema.data.movies.PicksRepository(AndroidPlatform(activity), seerr, jellyfin, com.danielportelabyrne.cinema.data.movies.WatchHistory(AndroidPlatform(activity))) }
     private val ui = Handler(Looper.getMainLooper())
     @Volatile private var generation = 0
@@ -240,12 +265,12 @@ class MoviesPanel(
     private var searchPending: Runnable? = null
 
     init {
-        jellyfin.onLibraryChanged = { ui.post { rebadge(generation) } }
+        jellyfin.onLibraryChanged = { ui.post { rebadge(generation); refreshPersonal(generation) } }
         jellyfin.startLibraryPolling()
         // A few seconds after the app starts, read Home's first shelves into memory (from disk; the network only
         // when there is no copy yet), so the first open of Movies does not pay for reading and parsing them.
         ui.postDelayed({
-            shelfPool.execute { Catalog.homePage().take(PREWARM_SHELVES).forEach { catalog.shelf(it) } }
+            shelfPool.execute { Catalog.homePage().take(PREWARM_SHELVES).forEach { catalog.shelf(it) }; titleFacts.all() }
             if (jellyfin.isConnected) worker.execute { jellyfin.library() }
         }, PREWARM_DELAY_MS)
     }
@@ -291,6 +316,15 @@ class MoviesPanel(
         activity.findViewById<View>(R.id.cinemaRoot)?.let { if (on) it.setBackgroundColor(ink) else it.background = null }
     }
 
+    /** The page moves up and down only through its own glide (see CinemaContentScrollView), so no two moves compete. */
+    private fun pageGlideTo(y: Int) { (page as? CinemaContentScrollView)?.glideTo(y) ?: page.smoothScrollTo(0, y) }
+
+    /** A new or reopened page starts at [y] at once: any glide still running for the old one is stopped first. */
+    private fun pageJumpTo(y: Int) {
+        (page as? CinemaContentScrollView)?.let { it.stopGlide(); it.forgetFocus() }
+        page.scrollTo(0, y)
+    }
+
     /** Where page content starts: clear of the floating rail (184 mockup px), and its right edge (96). */
     private val pageStart: Int get() = Cinema.px(activity, 184)
     private val pageEnd: Int get() = Cinema.px(activity, 96)
@@ -316,7 +350,7 @@ class MoviesPanel(
 
     /** The Home page as it was left, back at the top with the featured title focused; nothing is rebuilt or refetched. */
     private fun reopen() {
-        page.scrollTo(0, 0)
+        pageJumpTo(0)
         (0 until content.childCount).map { content.getChildAt(it) }.forEach { row -> (row as? android.widget.HorizontalScrollView)?.scrollTo(0, 0) }
         lastContentFocus = null
         heroButtons.getChildAt(0)?.let { requestFocusRobust(overlay as ViewGroup, it) }
@@ -344,6 +378,10 @@ class MoviesPanel(
         closePhoneTyping()
         if (voiceActive) voice?.cancel(); closeStreamLoading(); closeDetail(restoreFocus = false); overlay.visibility = View.GONE; ui.removeCallbacks(heroTick)
         underlayers(on = true)
+        ui.removeCallbacks(flushFacts); flushFacts.run()
+        // Nothing of the rail's motion survives the panel going away: it comes back closed, with no push, dim or blur.
+        if (topBuilt) resetRail()
+        (page as? CinemaContentScrollView)?.stopGlide()
         // Home is kept for a quick reopen, so its rows keep loading; any other page is dropped.
         if (current !== Dest.Home || trail.isNotEmpty()) { generation++; builtAt = 0L }
     }
@@ -352,6 +390,7 @@ class MoviesPanel(
         jellyfin.stopLibraryPolling()
         navigationFocusListener?.let { if (top.viewTreeObserver.isAlive) top.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
         cancelDwellStart(); aheadStreams.clear(); preStartPool.shutdownNow()
+        ui.removeCallbacks(flushFacts); onFactsPool { titleFacts.flush() }; factsPool.shutdown()
         worker.shutdownNow(); shelfPool.shutdownNow(); slowPool.shutdownNow(); infoPool.shutdownNow(); images.close(); if (lbStarted) lb.close()
     }
 
@@ -361,6 +400,10 @@ class MoviesPanel(
      * Continue / Restart, the featured title's, and a series' episode cards (by reopening its page).
      */
     fun onResume() {
+        // The player may have added to the history: bring Recently watched up to date, in place.
+        if (isVisible) refreshRecent()
+        // Continue watching reads what is saved now: the player may have moved a position or finished an episode.
+        if (isVisible && personalPage() != null) { refreshFavourites(); continueRow?.let { fillContinue(it, generation) } }
         // An episode picked on the player's paused screen: find a copy of it, as the series page would.
         PlayerActivity.takeEpisodeRequest()?.let { r -> if (isVisible) ui.post { streamPickedEpisode(r) } }
         // A Continue watching stream whose saved link had expired: find a fresh copy, as Stream now would.
@@ -384,15 +427,22 @@ class MoviesPanel(
         if (gen == generation && heroSet) showHero(heroIndex)
     }
 
-    /** Back closes a title's page, then steps back through where the viewer has been, then lets the panel close. */
+    /**
+     * Back closes a title's page; with the rail open it only closes the rail, returning to the card that had focus (never
+     * also a page back). Otherwise it steps back through where the viewer has been, then to Home, then to the top of Home,
+     * then lets the panel close. Back never opens the rail: only a fresh Left does.
+     */
     fun back(): Boolean {
         if (PhoneInput.hideQr()) return true
         if (voiceActive) { voice?.cancel(); return true }
         if (streamLoading != null) { closeStreamLoading(); return true }
         if (detailOpen) { closeDetail(restoreFocus = true); return true }
+        if (top.hasFocus()) { focusContent(); return true }
         if (trail.isNotEmpty()) { current = trail.removeLast(); styleTabs(); build(); return true }
-        if (!top.hasFocus()) { activeNavigationItem()?.requestFocus(); return true }
         if (current != Dest.Home) { current = Dest.Home; styleTabs(); build(); return true }
+        // Home, somewhere down the page: back to its featured title first, so one Back too many never leaves Cinema.
+        val first = if (heroSet && ::heroButtons.isInitialized) heroButtons.getChildAt(0) else null
+        if (first != null && first.isShown && !first.hasFocus()) { pageGlideTo(0); first.requestFocus(); return true }
         return false
     }
 
@@ -516,36 +566,38 @@ class MoviesPanel(
         top.setPadding(0, Cinema.px(activity, 31), 0, Cinema.px(activity, 26))
         top.background = null
         top.elevation = 0f
+        // The rail is laid out once at its open width, labels and all; opening and closing only reveal it (see applyRail).
         (top.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            lp.width = Cinema.px(activity, RAIL_WIDTH); lp.height = -1
+            lp.width = Cinema.px(activity, RAIL_WIDTH_OPEN); lp.height = -1
             lp.setMargins(Cinema.px(activity, 32), Cinema.px(activity, 32), 0, Cinema.px(activity, 32))
             top.layoutParams = lp
         }
+        val scene = buildScene()
         // Rows fade into the ground at the right edge (`.fade-r`), once the featured title has scrolled away.
         edgeFade = View(activity).apply {
             background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(Cinema.alpha(Cinema.BG, 0f), Cinema.alpha(Cinema.BG, 0.75f), Cinema.BG))
             isFocusable = false; alpha = 0f
         }
-        body.addView(edgeFade, body.indexOfChild(page) + 1, FrameLayout.LayoutParams(Cinema.px(activity, 220), -1, Gravity.END))
+        scene.addView(edgeFade, scene.indexOfChild(page) + 1, FrameLayout.LayoutParams(Cinema.px(activity, 220), -1, Gravity.END))
         // Frosted glass behind the rail: a blur of the page and ground beneath, in a sibling so the rail's stripe bar
-        // can still draw past the pill's edge.
-        frost = FrostView(activity, listOfNotNull(ambientView, page), 46f).also { f ->
-            body.addView(f, body.indexOfChild(top), FrameLayout.LayoutParams(Cinema.px(activity, RAIL_WIDTH), -1).apply {
+        // can still draw past the pill's edge. Laid out open, like the rail, and revealed to the rail's width.
+        frost = FrostView(activity, listOfNotNull(ambientView, scene), 46f).also { f ->
+            body.addView(f, body.indexOfChild(top), FrameLayout.LayoutParams(Cinema.px(activity, RAIL_WIDTH_OPEN), -1).apply {
                 setMargins(Cinema.px(activity, 32), Cinema.px(activity, 32), 0, Cinema.px(activity, 32))
             })
         }
         // The active item's stripe bar sits just outside the pill's left edge.
         body.clipChildren = false; body.clipToPadding = false
         (page.layoutParams as? ViewGroup.MarginLayoutParams)?.let { it.marginStart = 0; page.layoutParams = it }
-        page.setOnScrollChangeListener { _, _, _, _, _ -> fillNear(); frost?.refresh(); updateEdgeFade() }
+        page.setOnScrollChangeListener { _, _, _, _, _ -> fillNear(); refreshGlass(); updateEdgeFade() }
         (page as? CinemaContentScrollView)?.navigationTarget = { activeNavigationItem() }
         val brand = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(Cinema.px(activity, 18), 0, 0, 0); contentDescription = "Cinema"
         }
         brand.addView(ImageView(activity).apply { setImageResource(R.drawable.cinema_mark) }, LinearLayout.LayoutParams(Cinema.px(activity, 56), Cinema.px(activity, 56)))
-        wordmark = Cinema.text(activity, "Cinema", 36, Cinema.CREAM, serif = true, weight = 500, tracking = -0.02f).apply { visibility = View.GONE; maxLines = 1 }
+        wordmark = Cinema.text(activity, "Cinema", 36, Cinema.CREAM, serif = true, weight = 500, tracking = -0.02f).apply { visibility = View.GONE; maxLines = 1; forceHasOverlappingRendering(false) }
         brand.addView(wordmark, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 18) })
         top.addView(brand, LinearLayout.LayoutParams(-1, Cinema.px(activity, 56)).apply { bottomMargin = Cinema.px(activity, 26) })
 
@@ -571,12 +623,17 @@ class MoviesPanel(
         top.addView(storageView, LinearLayout.LayoutParams(-1, -2))
         top.addView(navigationItem("Settings", R.drawable.ic_gear, Dest.Settings), LinearLayout.LayoutParams(-1, Cinema.px(activity, 64)).apply { topMargin = Cinema.px(activity, 12) })
         navigationFocusListener = android.view.ViewTreeObserver.OnGlobalFocusChangeListener { _, focused ->
-            if (isWithin(focused, page)) lastContentFocus = focused
+            if (focused != null && isWithin(focused, page)) { lastContentFocus = focused; lastContentAt = pageRect(focused) }
             setNavigationExpanded(isWithin(focused, top))
             styleTabs()
-            frost?.refresh(450)   // a card scaling or a row gliding beneath the rail
+            refreshGlass(450)   // a card scaling or a row gliding beneath the rail
         }.also { top.viewTreeObserver.addOnGlobalFocusChangeListener(it) }
-        setNavigationExpanded(false)
+        // Every label is shown and measured now, at the open size; the rail's clip and their alpha hide them while closed.
+        navigationLabels.values.forEach { (_, name) -> name.visibility = View.VISIBLE }
+        wordmark.visibility = View.VISIBLE
+        // The rail's clip follows its height once it is laid out.
+        top.addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyRail(railP) }
+        applyRail(0f)
         styleTabs()
     }
 
@@ -612,6 +669,7 @@ class MoviesPanel(
         val image = Cinema.icon(activity, icon, Cinema.RAIL_ICON)
         circle.addView(image, FrameLayout.LayoutParams(Cinema.px(activity, 36), Cinema.px(activity, 36), Gravity.CENTER))
         val name = Cinema.text(activity, label, 24, Cinema.RAIL_ICON, weight = 500).apply {
+            forceHasOverlappingRendering(false)   // fading it needs no offscreen copy
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             visibility = View.GONE; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
@@ -621,7 +679,13 @@ class MoviesPanel(
         tabs[row] = dest
         navigationLabels[row] = image to name
         row.setOnFocusChangeListener { _, _ -> styleTabs() }
-        row.setOnClickListener { if (dest === Dest.Settings) onOpenSettings() else if (current !== dest) go(dest) }
+        row.setOnClickListener {
+            when {
+                dest === Dest.Settings -> onOpenSettings()
+                current !== dest -> { go(dest); enterChosenPage() }
+                else -> focusContent()   // the page already shown: just back to it
+            }
+        }
         row.setOnKeyListener { _, code, event ->
             when {
                 code == android.view.KeyEvent.KEYCODE_DPAD_LEFT -> true
@@ -656,22 +720,80 @@ class MoviesPanel(
     }
 
     /**
+     * Left on the page, before focus moves (see NavGate): along a row it is an ordinary move; at the page's left edge only
+     * a fresh press enters the rail, and a row still scrolled away from its start glides back to it first. True when the
+     * key is swallowed here. Title pages and anything over the page are left alone.
+     */
+    fun leftKey(focused: View, fresh: Boolean): Boolean {
+        if (detailOpen || streamLoading != null || voiceActive || !isWithin(focused, page)) return false
+        val next = focused.focusSearch(View.FOCUS_LEFT)
+        val toRail = next != null && isWithin(next, top)
+        var row: android.widget.HorizontalScrollView? = null
+        var p = focused.parent
+        while (p != null && p !== page) { if (p is android.widget.HorizontalScrollView) { row = p; break }; p = p.parent }
+        return when (com.danielportelabyrne.cinema.ui.NavGate.left(toRail, row?.scrollX, fresh)) {
+            com.danielportelabyrne.cinema.ui.LeftAction.MOVE, com.danielportelabyrne.cinema.ui.LeftAction.ENTER_RAIL -> false
+            com.danielportelabyrne.cinema.ui.LeftAction.HOLD -> true
+            com.danielportelabyrne.cinema.ui.LeftAction.SETTLE_ROW -> { row?.smoothScrollTo(0, 0); true }
+        }
+    }
+
+    /**
      * Focus is on no card at all (a page was just rebuilt under the card that had it, or its rows are still loading): Down,
      * Up and Right pick up the page's content instead of letting the search run over the whole screen, whose nearest
      * candidate is the rail. Left still goes to the rail. False when this does not apply.
      */
     fun recoverFocus(direction: Int): Boolean {
-        if (!isVisible || direction == View.FOCUS_LEFT || streamLoading != null) return false
+        if (!isVisible || streamLoading != null) return false
+        // A title page is open: its first control, never the page hidden beneath it.
+        if (detailOpen) {
+            ArrayList<View>().also { detail.addFocusables(it, View.FOCUS_FORWARD) }.firstOrNull { it.isShown && it.isEnabled }?.requestFocus()
+            return true
+        }
+        if (direction == View.FOCUS_LEFT) return false
         focusContent()
         return true
     }
 
+    /**
+     * Back to the page from the rail: the card that had focus, else (it went, say a shelf changed meanwhile) the one now
+     * nearest where it was, else the page's first.
+     */
     private fun focusContent() {
-        val previous = lastContentFocus?.takeIf { it.isAttachedToWindow && it.isShown && it.isEnabled && it.isFocusable }
+        val previous = lastContentFocus?.takeIf { it.isAttachedToWindow && it.isShown && it.isEnabled && it.isFocusable && isWithin(it, page) }
         if (previous?.requestFocus() == true) return
         val candidates = ArrayList<View>()
         content.addFocusables(candidates, View.FOCUS_FORWARD)
-        candidates.firstOrNull { it.isShown && it.isEnabled }?.requestFocus()
+        val live = candidates.filter { it.isShown && it.isEnabled }
+        val was = lastContentAt
+        val nearest = if (was == null) null else live.minByOrNull { v ->
+            val r = pageRect(v); val dx = (r.centerX() - was.centerX()).toLong(); val dy = (r.centerY() - was.centerY()).toLong()
+            dx * dx + dy * dy
+        }
+        (nearest ?: live.firstOrNull())?.requestFocus()
+    }
+
+    /** Where the page's content focus last was, in the page's content coordinates: [focusContent]'s guide when that view is gone. */
+    private var lastContentAt: android.graphics.Rect? = null
+
+    private fun pageRect(v: View) = android.graphics.Rect(0, 0, v.width, v.height).also { if (isWithin(v, page)) page.offsetDescendantRectToMyCoords(v, it) }
+
+    /**
+     * A rail item was chosen: its page is built, and focus goes to that page's first card or button as soon as it has one,
+     * which closes the rail. Never while a title page or another layer has taken focus, or once the viewer has moved on.
+     */
+    private fun enterChosenPage() {
+        val gen = generation
+        var tries = 0
+        val attempt = object : Runnable {
+            override fun run() {
+                if (gen != generation || !isVisible || detailOpen || streamLoading != null || !top.hasFocus()) return
+                val first = ArrayList<View>().also { content.addFocusables(it, View.FOCUS_FORWARD) }.firstOrNull { it.isShown && it.isEnabled }
+                if (first != null) { lastContentFocus = null; lastContentAt = null; first.requestFocus(); return }
+                if (++tries < ENTER_PAGE_TRIES) ui.postDelayed(this, ENTER_PAGE_RETRY_MS)
+            }
+        }
+        ui.post(attempt)
     }
 
     private fun activeNavigationItem(): View? = tabs.entries.firstOrNull { it.value === railOf(current) }?.key
@@ -684,18 +806,112 @@ class MoviesPanel(
         }
         return false
     }
+    // --- The rail opening: the page pushed aside -----------------------------------------------------
+
+    /**
+     * Everything that moves aside as one when the rail opens: the ground, the page (featured title, rows) and their
+     * decorations, with a dim and the rail's edge shadow laid over them. The rail and its frost stay outside it, sharp; so
+     * do a title's page, sheets, Settings and the player.
+     */
+    private lateinit var scene: FrameLayout
+    private var railEdge: View? = null
+    /** The rail's one progress, 0 closed to 1 open; every property is read from it (see RailMotion). */
+    private var railP = 0f
+    private var railAnimator: android.animation.ValueAnimator? = null
+    private var railTarget = 0f
+    private val railTint = android.animation.ArgbEvaluator()
+    /** True while the rail is moving: the glass is not re-photographed each frame (it is taken again when the move ends). */
+    private val railMoving get() = railAnimator?.isRunning == true
+    private fun refreshGlass(forMs: Long = 0L) { if (!railMoving) frost?.refresh(forMs) }
+
+    private fun buildScene(): FrameLayout {
+        val s = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+        body.addView(s, 0, FrameLayout.LayoutParams(-1, -1))
+        ambientView?.let { a ->
+            (a.parent as? ViewGroup)?.removeView(a)
+            // The ground stays still, full screen, behind everything: only the page on top moves.
+            body.addView(a, 0, FrameLayout.LayoutParams(-1, -1))
+        }
+        (page.parent as? ViewGroup)?.removeView(page)
+        s.addView(page, FrameLayout.LayoutParams(-1, -1))
+        // Where the closed rail ends, a soft shadow falls on the page: black at 10 % to nothing, 24 mockup px wide.
+        railEdge = View(activity).apply {
+            background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(Cinema.alpha(android.graphics.Color.BLACK, 0.10f), Cinema.alpha(android.graphics.Color.BLACK, 0f)))
+            isFocusable = false; alpha = 0f; visibility = View.INVISIBLE
+        }.also { body.addView(it, body.indexOfChild(s) + 2, FrameLayout.LayoutParams(Cinema.px(activity, RAIL_EDGE), -1).apply { marginStart = Cinema.px(activity, 32 + RAIL_WIDTH); topMargin = Cinema.px(activity, 52); bottomMargin = Cinema.px(activity, 52) }) }
+        scene = s
+        return s
+    }
+
+    /** Opens or closes the rail. Only focus entering or leaving the rail calls this (see the focus listener in [buildTop]). */
     private fun setNavigationExpanded(expanded: Boolean) {
         if (navigationExpanded == expanded) return
         navigationExpanded = expanded
-        top.layoutParams = top.layoutParams.apply { width = Cinema.px(activity, if (expanded) RAIL_WIDTH_OPEN else RAIL_WIDTH) }
-        frost?.let { f ->
-            f.layoutParams = f.layoutParams.apply { width = Cinema.px(activity, if (expanded) RAIL_WIDTH_OPEN else RAIL_WIDTH) }
-            // Open, the pill lies over the page's text, so the frost is tinted a little deeper to keep the labels clear.
-            f.tint = if (expanded) 0xB8120D0A.toInt() else Cinema.RAIL_FILL
+        animateRail(if (expanded) 1f else 0f)
+    }
+
+    /**
+     * Moves the rail's progress to [target] on Motion.GLIDE, from wherever it is drawn now: an interrupted move turns
+     * round from there, taking only the time its remaining distance needs. With animations off it lands at once.
+     */
+    private fun animateRail(target: Float) {
+        railTarget = target
+        railAnimator?.let { it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }; railAnimator = null
+        val from = railP
+        val ms = RailMotion.duration(from, target)
+        if (!com.danielportelabyrne.cinema.design.Motion.animationsOn(top) || ms <= 0L) { applyRail(target); return }
+        // One cached picture of the page slides while the rail moves, rather than every row being drawn again each frame.
+        // No layer: on a slow TV caching the page costs more than drawing it.
+        // The glass is photographed with the page already where it will be, so it never reflects the old layout while it grows.
+        frost?.let { f -> f.shiftSource = if (::scene.isInitialized) scene else null; f.forcedShift = RailMotion.push(target, Cinema.pxf(activity, RAIL_WIDTH), Cinema.pxf(activity, RAIL_WIDTH_OPEN)); f.refreshNow() }
+        railAnimator = android.animation.ValueAnimator.ofFloat(from, target).apply {
+            duration = ms
+            interpolator = com.danielportelabyrne.cinema.design.Motion.GLIDE
+            addUpdateListener { applyRail(it.animatedValue as Float) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (railAnimator === animation) { railAnimator = null; applyRail(target); if (::scene.isInitialized) scene.setLayerType(View.LAYER_TYPE_NONE, null); frost?.forcedShift = null; frost?.refreshNow() }   // lands exactly on its end, then the glass is taken again
+                }
+            })
+            start()
         }
-        navigationLabels.values.forEach { (_, name) -> name.visibility = if (expanded) View.VISIBLE else View.GONE }
-        wordmark.visibility = if (expanded) View.VISIBLE else View.GONE
-        storageView.visibility = if (expanded && storageView.text.isNotBlank()) View.VISIBLE else View.GONE
+    }
+
+    /** Lands the rail closed at once, with nothing left moving: the panel hiding, or the page replaced while it shut. */
+    private fun resetRail() {
+        railAnimator?.let { it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }; railAnimator = null
+        navigationExpanded = false; railTarget = 0f
+        frost?.forcedShift = null
+        applyRail(0f)
+        if (::scene.isInitialized) scene.setLayerType(View.LAYER_TYPE_NONE, null)
+    }
+
+    /** Sets everything the rail's progress decides, from [p] alone. At 0 nothing is left on the page: no push, dim, shadow or blur. */
+    private fun applyRail(p: Float) {
+        val q = RailMotion.settle(p)
+        railP = q
+        val closed = Cinema.pxf(activity, RAIL_WIDTH); val open = Cinema.pxf(activity, RAIL_WIDTH_OPEN)
+        val push = RailMotion.push(q, closed, open)
+        val shown = q > 0f
+        // Only a move: no blur, no scale. The ground behind stays still.
+        if (::scene.isInitialized) scene.translationX = push
+        railEdge?.let { e -> e.alpha = q; e.translationX = push; e.visibility = if (shown) View.VISIBLE else View.INVISIBLE }
+        // The rail and its glass: laid out open, shown to the width the progress gives. The stripe bar draws a little left of the pill.
+        val width = Math.round(closed + push)
+        val bleed = Cinema.px(activity, 40)
+        top.clipBounds = android.graphics.Rect(-bleed, -bleed, width, (if (top.height > 0) top.height else 100_000) + bleed)
+        frost?.let { f ->
+            f.visibleWidth = width
+            // Open, the pill lies over the page's text, so the frost is tinted a little deeper to keep the labels clear.
+            f.tint = railTint.evaluate(q, Cinema.RAIL_FILL, 0xB8120D0A.toInt()) as Int
+        }
+        navigationLabels.values.forEach { (_, name) -> name.alpha = q }
+        if (::wordmark.isInitialized) wordmark.alpha = q
+        if (::storageView.isInitialized) {
+            storageView.visibility = if (storageView.text.isNotBlank()) View.VISIBLE else View.GONE
+            storageView.alpha = q
+        }
     }
 
     /**
@@ -782,7 +998,9 @@ class MoviesPanel(
         val gen = ++generation
         searchPending?.let { ui.removeCallbacks(it) }
         ui.removeCallbacks(heroTick)
-        content.removeAllViews(); page.scrollTo(0, 0); heroSet = false; pending.clear(); lastContentFocus = null
+        content.removeAllViews(); pageJumpTo(0); heroSet = false; pending.clear(); lastContentFocus = null; lastContentAt = null
+        // A page replaced while the rail is not in use starts unmoved; one chosen from the open rail stays pushed until focus leaves it.
+        if (topBuilt && !top.hasFocus()) resetRail()
         // The rail floats over the page, so nothing is reserved for a top bar. A page that opens on a featured title
         // starts at the very top, so its picture runs up to the screen edge; the others start a little way down.
         val opensOnHero = current === Dest.Home || current === Dest.Films || current === Dest.Series || current === Dest.Docs || current === Dest.Library ||
@@ -792,24 +1010,28 @@ class MoviesPanel(
         if (current !== Dest.Search) { if (voiceActive) voice?.cancel(); searchUi = null }
         frost?.post { frost?.refresh(500); updateEdgeFade() }
         builtAt = Perf.now(); builtConnected = jellyfin.isConnected; awaitingLibrary.clear()
+        starred.clear(); favShelfCards.clear(); favRow = null; recentViews.clear(); recentRow = null; refreshFavSnapshot()
+        continueViews.clear(); continueRow = null; continueBusy = false; continueAgain = false; continueEpoch++
         ambientView?.palette = paletteFor(current)
         // Rows never wait for the library: they draw from the catalogue at once, and this one fetch badges them when it lands.
-        jellyfin.takeIf { it.isConnected }?.let { j -> worker.execute { j.library(); ui.post { rebadge(gen) } } }
+        jellyfin.takeIf { it.isConnected }?.let { j -> worker.execute { j.library(); ui.post { rebadge(gen); refreshPersonal(gen) } } }
+        // Every page with personal shelves puts them where Home does: right under the spotlight, ahead of the other rows.
+        val personal = mapOf(1 to { personalRows(gen) })
         when (val d = current) {
             // Home threads its own rows between the catalogue's: the spotlight right under the featured title, then what
             // is part-watched, then Top 10, with picks, services, the library and genres spread through the rest.
             Dest.Home -> { buildHero(); shelves(Catalog.homePage(), gen, mapOf(
-                1 to { continueRow(gen) }, 2 to { picksRow(gen) }, 3 to { serviceTiles(gen) },
+                1 to { personalRows(gen) }, 2 to { picksRow(gen) }, 3 to { serviceTiles(gen) },
                 5 to { libraryRow(gen, "My library", 18) }, 7 to { genreTiles() })) }
-            Dest.Films -> { buildHero(); shelves(Catalog.filmsPage(), gen) }
-            Dest.Series -> { buildHero(); shelves(Catalog.seriesPage(), gen) }
-            Dest.Docs -> { buildHero(); shelves(Catalog.documentariesPage(), gen) }
+            Dest.Films -> { buildHero(); shelves(Catalog.filmsPage(), gen, personal) }
+            Dest.Series -> { buildHero(); shelves(Catalog.seriesPage(), gen, personal) }
+            Dest.Docs -> { buildHero(); shelves(Catalog.documentariesPage(), gen, personal) }
             Dest.Library -> buildLibrary(gen)
             Dest.Watchlist -> buildWatchlist(gen)
             Dest.Downloads -> buildDownloads(gen)
             Dest.Search -> buildSearch()
-            is Dest.OnService -> { buildHero(); heroTag("Streaming on", d.service.label, Catalog.logoUrl(d.service)); shelves(Catalog.servicePage(d.service), gen) }
-            is Dest.InGenre -> { buildHero(); heroTag("Genre", d.genre.label); shelves(Catalog.genrePage(d.genre), gen) }
+            is Dest.OnService -> { buildHero(); heroTag("Streaming on", d.service.label, Catalog.logoUrl(d.service)); shelves(Catalog.servicePage(d.service), gen, personal) }
+            is Dest.InGenre -> { buildHero(); heroTag("Genre", d.genre.label); shelves(Catalog.genrePage(d.genre), gen, personal) }
             Dest.Letterboxd -> buildLetterboxd(gen)
             is Dest.LbPerson -> buildLbPerson(d.user, gen)
             is Dest.LbListPage -> buildLbList(d.path, gen)
@@ -937,7 +1159,9 @@ class MoviesPanel(
             val libraryAt = Perf.now()
             // A Top 10 row is exactly that: ten numbered posters, nothing after them.
             val fetched = catalog.shelf(spec).titles.take(if (spec.ranked) 10 else SHELF_LIMIT).map { entry(it) }
-            val look = com.danielportelabyrne.cinema.data.movies.ShelfLooks.resolve(planned, fetched.map { it.title })
+            // Each title's own genres and services, kept so the personal shelves can tell which pages it belongs on.
+            learnFacts(fetched.map { TitleFacts.of(it.title, System.currentTimeMillis()) })
+            val look =com.danielportelabyrne.cinema.data.movies.ShelfLooks.resolve(planned, fetched.map { it.title })
             val lead = if (look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT)
                 com.danielportelabyrne.cinema.data.movies.ShelfLooks.spotlightIndex(fetched.map { it.title }) ?: 0 else 0
             val entries = if (lead > 0) listOf(fetched[lead]) + fetched.filterIndexed { i, _ -> i != lead } else fetched
@@ -1255,8 +1479,10 @@ class MoviesPanel(
     /** Fetches the film's full details, finds its copy in Jellyfin if there is one, and opens its page. */
     private fun openWatchlistFilm(f: com.danielportelabyrne.cinema.data.movies.WatchlistFilm) {
         slowPool.execute {
-            val title = stremio.filmPage(com.danielportelabyrne.cinema.data.stremio.StremioFilm(f.imdbId, f.name, f.poster, f.year, false, ""))
-            val copy = jellyfin.takeIf { it.isConnected }?.find(title.imdbId, title.tmdbId, false)
+            val saved = com.danielportelabyrne.cinema.data.stremio.StremioFilm(f.imdbId, f.name, f.poster, f.year, false, "")
+            // The watchlist holds series too: asked as a series first, so a series' page lists its seasons and episodes.
+            val title = stremio.seriesPage(saved) ?: stremio.filmPage(saved)
+            val copy = jellyfin.takeIf { it.isConnected }?.find(title.imdbId, title.tmdbId, title.kind == Kind.SHOW)
             ui.post { openDetail(Entry(title, copy, if (copy != null) jellyfin.playbackHeaders() else emptyMap()), listOf(title)) }
         }
     }
@@ -2600,16 +2826,440 @@ class MoviesPanel(
      * why. The last picks show at once; fresh ones replace them when they are due. The top three also become the
      * featured titles, in place of what is trending (which stays until there are picks).
      */
+    // --- Personal shelves on every page ---------------------------------------------------------------
+
+    /** Genres and services learned for titles, so a page can tell which of the viewer's own titles belong on it. */
+    private val titleFacts by lazy { TitleFactsStore(AndroidPlatform(activity)) }
+    /** When each title's details were last asked for, so a page never asks for the same title again for a while. */
+    private val factsTried = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** One lookup at a time, at low priority: a page's unknown titles never crowd out its own rows. */
+    private val factsPool = Executors.newSingleThreadExecutor { r -> Thread(r, "title-facts").apply { priority = Thread.MIN_PRIORITY; isDaemon = true } }
+    private val flushFacts = Runnable { onFactsPool { titleFacts.flush() } }
+
+    /** Runs [work] on the details thread; nothing once the panel has closed it. */
+    private fun onFactsPool(work: () -> Unit) {
+        try { factsPool.execute(work) } catch (_: java.util.concurrent.RejectedExecutionException) { }
+    }
+
+    /** Continue watching, Favourites and Recently watched, in that order. Each hides itself when this page has none. */
+    private fun personalRows(gen: Int) { continueRow(gen); favouritesRow(gen); recentRow(gen) }
+
+    /** Which of the viewer's titles a page shows; null for a page without the personal shelves. */
+    private fun personalPage(d: Dest = current): PersonalPage? = when (d) {
+        Dest.Home -> PersonalPage.Home
+        Dest.Films -> PersonalPage.Films
+        Dest.Series -> PersonalPage.Series
+        Dest.Docs -> PersonalPage.Documentaries
+        is Dest.InGenre -> PersonalPage.InGenre(d.genre.code)
+        is Dest.OnService -> PersonalPage.OnService(d.service.label)
+        Dest.Library -> PersonalPage.Library
+        else -> null
+    }
+
+    /** The filter for this page from what is known now. Never fetches; safe on any thread. */
+    private fun personalFilter(page: PersonalPage? = personalPage()): PersonalFilter {
+        if (page == null || page == PersonalPage.Home) return PersonalFilter.HOME
+        // The library counts only once this user's library is actually held: until then, nothing is known to be in it.
+        val library = if (jellyfin.isConnected && (jellyfin.libraryLoadedAt != 0L || jellyfin.loadedLibrary.isNotEmpty())) jellyfin.loadedLibrary else null
+        return PersonalFilter(page, titleFacts.all(), library)
+    }
+
+    /** Keeps what a catalogue row said about its titles; written to disk a few seconds later, once for many rows. */
+    private fun learnFacts(learned: List<TitleFacts>) {
+        if (!titleFacts.learn(learned)) return
+        ui.removeCallbacks(flushFacts); ui.postDelayed(flushFacts, FACTS_FLUSH_MS)
+    }
+
+    /**
+     * Asks, in the background, about titles a page could not place (their genres or services are not known yet): Seerr
+     * for a title with a TMDB id, Cinemeta for a film known by IMDb id. Each title at most once every [FACTS_RETRY_MS].
+     * When anything was learned, the page's personal shelves are brought up to date in place.
+     */
+    private fun warmFacts(filter: PersonalFilter, gen: Int) {
+        if (filter.page == PersonalPage.Home || filter.page == PersonalPage.Library) return   // the library page waits for the library instead
+        val now = System.currentTimeMillis()
+        val due = filter.unknown.filter { (kind, ref) ->
+            (ref.tmdbId != null && seerr.isSignedIn) || (ref.imdbId != null && kind == Kind.MOVIE)
+        }.filter { (kind, ref) -> factsTried.put("$kind|${ref.tmdbId}|${ref.imdbId}", now)?.let { now - it < FACTS_RETRY_MS } != true }
+            .take(FACTS_PER_PAGE)
+        if (due.isEmpty()) return
+        onFactsPool {
+            var learned = false
+            for ((kind, ref) in due) {
+                if (gen != generation) return@onFactsPool
+                val f = try {
+                    val tmdb = ref.tmdbId?.toLongOrNull()
+                    if (tmdb != null && seerr.isSignedIn) seerr.titleFacts(kind, tmdb)
+                    else ref.imdbId?.let { imdb ->
+                        // Cinemeta knows a film's genres, not where it streams: services stay unknown.
+                        val t = stremio.filmPage(com.danielportelabyrne.cinema.data.stremio.StremioFilm(imdb, "", null, null, false, ""))
+                        TitleFacts(kind, ref.tmdbId ?: t.tmdbId, imdb, null, t.genres.ifEmpty { null }, null, System.currentTimeMillis())
+                    }
+                } catch (e: Exception) { Log.w("MoviesPanel", "title details failed: ${e.javaClass.simpleName}"); null }
+                if (f != null && (f.genres != null || f.services != null) && titleFacts.learn(listOf(f))) learned = true
+            }
+            if (!learned) return@onFactsPool
+            titleFacts.flush()
+            ui.post { refreshPersonal(gen) }
+        }
+    }
+
+    /**
+     * The page's personal shelves again, from what is known now (details arrived, the library loaded): each shelf is redone
+     * in place only when its cards changed, keeping focus, and the page around them is left alone.
+     */
+    private fun refreshPersonal(gen: Int) {
+        if (gen != generation || !isVisible || personalPage() == null) return
+        refreshFavourites()
+        refreshRecent()
+        continueRow?.let { fillContinue(it, gen) }
+    }
+
+    // --- Favourites ---------------------------------------------------------------------------------
+
+    private var favScope = ""
+    /** The owner's favourites, read once per page and after each change, so cards never parse the store themselves. */
+    private var favSnapshot: List<Favourite> = emptyList()
+    private var favRow: Row? = null
+    private class FavCard(val card: PosterCard, val fav: Favourite)
+    /** The Home shelf's cards, newest first. */
+    private val favShelfCards = ArrayList<FavCard>()
+    /** Poster cards on this page that can carry the star. */
+    private val starred = ArrayList<Pair<PosterCard, Entry>>()
+    /** A favourite whose card was removed while its title page was open: if it comes back, focus returns to it. */
+    private var favFocusPending: Favourite? = null
+
+    private fun refreshFavSnapshot() { favScope = jellyfin.ownerScope; favSnapshot = favourites.list(favScope) }
+
+    private fun favOf(e: Entry): Favourite {
+        val t = e.title
+        return Favourite(t.kind, t.tmdbId, t.imdbId ?: e.library?.imdbId, e.library?.id, t.name, t.year, t.posterUrl, t.backdropUrl, System.currentTimeMillis())
+    }
+
+    private fun trackFavourite(card: PosterCard, e: Entry) {
+        val f = favOf(e)
+        if (!f.hasId) return
+        starred += card to e
+        card.favourite(Favourites.contains(favSnapshot, f))
+    }
+
+    /** A card from what was saved, so the shelf draws with no network. The library copy, if already loaded, only adds the Jellyfin picture headers. */
+    private fun favEntry(f: Favourite): Entry {
+        val t = Title(key = "fav:" + (f.tmdbId ?: f.imdbId ?: f.jellyfinId), kind = f.kind, name = f.name, year = f.year, overview = null, runtimeMin = null,
+            genres = emptyList(), age = null, imdbScore = null, posterUrl = f.poster, backdropUrl = f.backdrop, imdbId = f.imdbId, tmdbId = f.tmdbId)
+        val library = entry(t).library
+        return Entry(t, library, if (library != null) jellyfin.playbackHeaders() else emptyMap())
+    }
+
+    private fun favCardView(row: Row, f: Favourite, index: Int, related: List<Title>): PosterCard =
+        card(favEntry(f), related, defer = if (index >= EAGER_POSTERS) row else null, star = false) as PosterCard
+
+    private fun restyleFavCards(row: Row) {
+        for (i in 0 until row.inner.childCount) row.inner.getChildAt(i).layoutParams = cardParams(i)
+    }
+
+    /** Favourites, straight under Continue watching. Hidden whole (heading and spacing) while there are none. */
+    private fun favouritesRow(gen: Int) {
+        val row = row("Favourites", null)
+        favRow = row
+        row.hide()   // shown by refreshFavourites once its cards are ready
+        refreshFavourites()
+    }
+
+    private fun fillFavourites(row: Row, items: List<Favourite>) {
+        favShelfCards.clear(); row.deferred.clear(); row.inner.removeAllViews()
+        row.inner.minimumHeight = Cinema.px(activity, 488)
+        val related = items.map { favEntry(it).title }
+        items.forEachIndexed { i, f ->
+            val v = favCardView(row, f, i, related)
+            row.inner.addView(v, cardParams(i)); favShelfCards += FavCard(v, f)
+        }
+        row.setCount(items.size)
+        row.scroller.post { row.loadNear() }
+    }
+
+    /**
+     * The Favourites shelf again for this page, from what is known now (a title's details arrived). Redone in place only
+     * when its cards changed; the focused card stays focused wherever it went, else the nearest one left, else a
+     * neighbouring shelf.
+     */
+    private fun refreshFavourites() {
+        val row = favRow ?: return
+        val page = personalPage() ?: return
+        if (!row.scroller.isAttachedToWindow) return
+        refreshFavSnapshot()
+        val gen = generation; val seq = ++favSeq
+        val snapshot = favSnapshot
+        worker.execute {
+            val filter = personalFilter(page)
+            val now = filter.favourites(snapshot)
+            activity.runOnUiThread {
+                if (gen != generation || seq != favSeq || row !== favRow) return@runOnUiThread
+                warmFacts(filter, gen)
+                applyFavourites(row, now)
+            }
+        }
+    }
+
+    private var favSeq = 0
+
+    private fun applyFavourites(row: Row, now: List<Favourite>) {
+        val old = favShelfCards.map { it.fav }
+        if (now.size == old.size && now.indices.all { now[it] == old[it] }) return
+        val focusedAt = favShelfCards.indexOfFirst { it.card.hasFocus() }
+        val returnAt = favShelfCards.indexOfFirst { it.card === returnFocus }
+        val lastAt = favShelfCards.indexOfFirst { it.card === lastContentFocus }
+        val scrollX = row.scroller.scrollX
+        val wasEmpty = old.isEmpty()
+        favShelfCards.forEach { c -> c.card.onFocus = null; c.card.setOnClickListener(null); starred.removeAll { it.first === c.card } }
+        restPrefetch?.let { ui.removeCallbacks(it) }
+        if (now.isEmpty()) {
+            favShelfCards.clear(); row.inner.removeAllViews(); row.deferred.clear()
+            row.hide(); row.inner.minimumHeight = 0
+            val next = neighbouringFocus(row)
+            if (focusedAt >= 0) { if (next != null) next.requestFocus() else focusContent() }
+            if (returnAt >= 0) returnFocus = next
+            if (lastAt >= 0) lastContentFocus = next
+            return
+        }
+        fillFavourites(row, now)
+        if (wasEmpty) { row.heading?.visibility = View.VISIBLE; row.scroller.visibility = View.VISIBLE }
+        fun carried(at: Int): View? = if (at < 0) null else Favourites.focusAfter(old, at, now).let { favShelfCards.getOrNull(it)?.card } ?: neighbouringFocus(row)
+        if (focusedAt >= 0) carried(focusedAt)?.requestFocus()
+        if (returnAt >= 0) returnFocus = carried(returnAt)
+        if (lastAt >= 0) lastContentFocus = carried(lastAt)
+        if (!wasEmpty && scrollX > 0) row.scroller.post { row.scroller.scrollTo(scrollX, 0) }
+    }
+
+    /** A favourite was added or removed on a title page: the page underneath follows at once, without being rebuilt. */
+    private fun favouritesChanged(changed: Favourite, on: Boolean) {
+        refreshFavSnapshot()
+        starred.forEach { (c, e) -> c.favourite(Favourites.contains(favSnapshot, favOf(e))) }
+        val row = favRow ?: return
+        val at = favShelfCards.indexOfFirst { it.fav.sameAs(changed) }
+        if (!on) { if (at >= 0) removeFavCard(row, at, changed); return }
+        if (at >= 0) return
+        val f = favSnapshot.firstOrNull { it.sameAs(changed) } ?: return
+        // Only a title that belongs on this page joins its shelf; one not known yet is asked about, and joins when it turns out to.
+        val filter = personalFilter()
+        if (!filter.keeps(f)) { warmFacts(filter, generation); return }
+        val wasEmpty = favShelfCards.isEmpty()
+        val v = favCardView(row, f, 0, emptyList())
+        row.inner.addView(v, 0); favShelfCards.add(0, FavCard(v, f)); restyleFavCards(row)
+        if (wasEmpty) { row.heading?.visibility = View.VISIBLE; row.scroller.visibility = View.VISIBLE; row.inner.minimumHeight = Cinema.px(activity, 488) }
+        else row.scroller.post { if (row.scroller.scrollX > 0) row.scroller.scrollBy(v.width + Cinema.px(activity, 28), 0) }  // keep what the row shows where it was
+        row.setCount(favShelfCards.size)
+        if (favFocusPending?.sameAs(f) == true) { favFocusPending = null; returnFocus = v }
+    }
+
+    private fun firstFocusable(v: View): View? {
+        val l = ArrayList<View>(); v.addFocusables(l, View.FOCUS_FORWARD)
+        return l.firstOrNull { it.isShown && it.isEnabled }
+    }
+
+    private fun removeFavCard(row: Row, at: Int, changed: Favourite) {
+        val gone = favShelfCards.removeAt(at).card
+        val focusedNow = gone.hasFocus()
+        val held = focusedNow || returnFocus === gone || lastContentFocus === gone
+        // Quiet the card first, so nothing it scheduled can act on a view that is no longer on the page.
+        gone.onFocus = null; gone.setOnClickListener(null)
+        starred.removeAll { it.first === gone }; row.deferred.removeAll { it.first === gone }
+        restPrefetch?.let { ui.removeCallbacks(it) }
+        var target: View? = Favourites.focusAfterRemoval(at, favShelfCards.size).takeIf { it >= 0 }?.let { favShelfCards[it].card }
+        if (focusedNow) target?.requestFocus()
+        row.inner.removeView(gone)
+        restyleFavCards(row)
+        if (favShelfCards.isEmpty()) {
+            row.hide(); row.inner.minimumHeight = 0
+            if (held) {
+                val kids = (0 until content.childCount).map { content.getChildAt(it) }
+                val k = Favourites.nearestVisible(kids.map { it.visibility == View.VISIBLE && firstFocusable(it) != null }, kids.indexOf(row.scroller))
+                target = if (k >= 0) firstFocusable(kids[k]) else null
+                if (focusedNow) { if (target != null) target.requestFocus() else focusContent() }
+            }
+        } else row.setCount(favShelfCards.size)
+        if (!held) return
+        if (returnFocus === gone) { returnFocus = target; favFocusPending = changed }
+        if (lastContentFocus === gone) lastContentFocus = target
+    }
+
+    // --- Recently watched -------------------------------------------------------------------------
+
+    private val playHistory by lazy { PlayHistoryStore(AndroidPlatform(activity)) }
+    private var recentRow: Row? = null
+    private class RecentView(val view: ResumeCard, val card: RecentCard)
+    /** The Home shelf's cards, newest first. */
+    private val recentViews = ArrayList<RecentView>()
+    /** An episode chosen on the shelf: the series page it opens selects it. Taken by [seasonSection]. */
+    private var pendingEpisodePick: Pair<Int, Int>? = null
+    /** The page [pendingEpisodePick] was made for (its title's key): any other series page opened ignores it. */
+    private var pendingPickFor: String? = null
+
+    /** What is already known about titles (favourites, the loaded library), so a record with no name can still be named. Never fetches. */
+    private fun knownTitles(): List<KnownTitle> {
+        val out = ArrayList<KnownTitle>()
+        favSnapshot.forEach { out += KnownTitle(it.kind, it.name, it.tmdbId, it.imdbId, it.jellyfinId, it.poster, it.backdrop) }
+        if (jellyfin.isConnected) {
+            val base = JellyfinApi.cleanBase(jellyfin.server)
+            jellyfin.loadedLibrary.forEach { i ->
+                if (i.isEpisode || i.name.isBlank()) return@forEach
+                out += KnownTitle(if (i.isSeries) Kind.SHOW else Kind.MOVIE, i.name, i.tmdbId, i.imdbId, i.id,
+                    JellyfinApi.posterUrl(base, i.id), if (i.hasBackdrop) JellyfinApi.backdropUrl(base, i.id) else null)
+            }
+        }
+        return out
+    }
+
+    /** The shelf for this page; titles [filter] could not place are left for it to report. */
+    private fun recentCards(filter: PersonalFilter = personalFilter()): List<RecentCard> =
+        RecentlyWatched.shelf(watchedRecords(), knownTitles(), keep = filter::keeps)
+
+    /**
+     * What was watched: the saved history, plus what streams and the library already say was played (read, never written),
+     * so the shelf is useful from the first open and not only after the next viewing.
+     */
+    private fun watchedRecords(): List<com.danielportelabyrne.cinema.data.movies.PlayedEntry> {
+        var all = playHistory.list(jellyfin.ownerScope)
+        for (e in com.danielportelabyrne.cinema.data.movies.PlayHistory.fromStreamProgress(streamProgress())) if (all.none { it.sameAs(e) }) all = all + e
+        if (jellyfin.isConnected) {
+            val base = JellyfinApi.cleanBase(jellyfin.server)
+            for (i in jellyfin.loadedLibrary) {
+                val at = i.playedMs ?: continue
+                if (!i.isMovie || at <= 0) continue
+                val e = com.danielportelabyrne.cinema.data.movies.PlayedEntry(Kind.MOVIE, tmdbId = i.tmdbId, imdbId = i.imdbId, jellyfinId = i.id, title = i.name,
+                    poster = JellyfinApi.posterUrl(base, i.id), backdrop = if (i.hasBackdrop) JellyfinApi.backdropUrl(base, i.id) else null, playedAt = at,
+                    positionMs = i.resumeMs, durationMs = (i.runtimeMin ?: 0) * 60_000L, completed = i.played, source = com.danielportelabyrne.cinema.data.movies.PlayedEntry.SOURCE_JELLYFIN)
+                if (all.none { it.sameAs(e) }) all = all + e
+            }
+        }
+        return all
+    }
+
+    /** Recently watched, after Favourites. Drawn from the saved history at once; hidden whole while there is nothing to show. */
+    private fun recentRow(gen: Int) {
+        val row = row("Recently watched", null)
+        recentRow = row
+        row.hide()   // shown by refreshRecent once its cards are ready
+        refreshRecent()
+    }
+
+    private fun fillRecent(row: Row, cards: List<RecentCard>, gen: Int) {
+        recentViews.clear(); row.deferred.clear(); row.inner.removeAllViews()
+        cards.forEachIndexed { i, c ->
+            val v = recentCardView(row, c, i, gen)
+            row.inner.addView(v, cardParams(i)); recentViews += RecentView(v, c)
+        }
+        row.setCount(cards.size)
+        row.scroller.post { row.loadNear() }
+    }
+
+    private fun recentCardView(row: Row, c: RecentCard, index: Int, gen: Int): ResumeCard {
+        val card = ResumeCard(activity, featured = false)
+        card.contentDescription = listOf(c.title, c.meta).filter { it.isNotBlank() }.joinToString(", ")
+        card.title.text = c.title
+        card.meta.text = c.meta
+        card.showBar(c.progress != null)
+        card.setProgress(c.progress ?: 0f)
+        c.artUrl?.let { url ->
+            val headers = if (c.entry.source == com.danielportelabyrne.cinema.data.movies.PlayedEntry.SOURCE_JELLYFIN && jellyfin.isConnected) jellyfin.playbackHeaders() else emptyMap()
+            val load = { images.load(url, headers, maxWidth = Cinema.px(activity, 480), tag = pageTag) { b -> if (gen == generation) card.setStill(b) } }
+            if (index >= EAGER_POSTERS) row.deferred += card to { load() } else load()
+        }
+        card.onFocus = { lit -> if (lit) reveal(card) }
+        card.setOnClickListener { openRecent(c) }
+        return card
+    }
+
+    /** OK opens the film's or series' page (never the player). An episode's page opens on its season, with that episode picked. */
+    private fun openRecent(c: RecentCard) {
+        val e = c.entry
+        val target = RecentlyWatched.target(e) ?: return
+        val isShow = e.isEpisode
+        val imdb = if (isShow) e.seriesImdbId else e.imdbId
+        val tmdb = if (isShow) e.seriesTmdbId else e.tmdbId
+        val t = Title(key = "hist:" + (tmdb ?: imdb ?: e.seriesJellyfinId ?: e.jellyfinId), kind = e.kind, name = c.title, year = null, overview = null, runtimeMin = null,
+            genres = emptyList(), age = null, imdbScore = null, posterUrl = e.poster, backdropUrl = e.backdrop, imdbId = imdb, tmdbId = tmdb)
+        val own = if (isShow) e.seriesJellyfinId else e.jellyfinId
+        val library = if (!jellyfin.isConnected) null
+            else jellyfin.findLoaded(imdb, tmdb, isShow) ?: own?.let { id -> jellyfin.loadedLibrary.firstOrNull { it.id == id } }
+        val entry = Entry(t, library, if (library != null) jellyfin.playbackHeaders() else emptyMap())
+        pendingEpisodePick = (target as? RecentTarget.Episode)?.let { it.season to it.episode }; pendingPickFor = t.key
+        openDetail(entry, emptyList())
+    }
+
+    /**
+     * Brings the shelf up to date after playback, or on returning to the app. Rebuilds only this shelf, and only when the
+     * history actually changed; the card that was focused stays focused wherever it moved to (else the nearest one left,
+     * else a neighbouring shelf), and the shelf keeps its horizontal position.
+     */
+    private fun refreshRecent() {
+        val row = recentRow ?: return
+        val page = personalPage() ?: return
+        if (!row.scroller.isAttachedToWindow) return
+        refreshFavSnapshot()
+        // Reading the saved history and sorting it is not main-thread work: the cards are made here and drawn there.
+        val gen = generation; val seq = ++recentSeq
+        worker.execute {
+            val filter = personalFilter(page)
+            val now = recentCards(filter)
+            activity.runOnUiThread {
+                if (gen != generation || seq != recentSeq || row !== recentRow) return@runOnUiThread
+                warmFacts(filter, gen)
+                applyRecent(row, now)
+            }
+        }
+    }
+
+    private var recentSeq = 0
+
+    private fun applyRecent(row: Row, now: List<RecentCard>) {
+        if (now == recentViews.map { it.card }) return
+        val old = recentViews.map { it.card.entry }
+        val focusedAt = recentViews.indexOfFirst { it.view.hasFocus() }
+        val returnAt = recentViews.indexOfFirst { it.view === returnFocus }
+        val lastAt = recentViews.indexOfFirst { it.view === lastContentFocus }
+        val scrollX = row.scroller.scrollX
+        val wasEmpty = recentViews.isEmpty()
+        recentViews.forEach { it.view.onFocus = null; it.view.setOnClickListener(null) }
+        restPrefetch?.let { ui.removeCallbacks(it) }
+        fillRecent(row, now, generation)
+        fun carried(at: Int): View? = if (at < 0) null else RecentlyWatched.focusAfter(old, at, now.map { it.entry }).let { recentViews.getOrNull(it)?.view }
+        if (now.isEmpty()) {
+            row.hide(); row.inner.minimumHeight = 0
+            val kids = (0 until content.childCount).map { content.getChildAt(it) }
+            val k = Favourites.nearestVisible(kids.map { it.visibility == View.VISIBLE && firstFocusable(it) != null }, kids.indexOf(row.scroller))
+            val next = if (k >= 0) firstFocusable(kids[k]) else null
+            if (focusedAt >= 0) { if (next != null) next.requestFocus() else focusContent() }
+            if (returnAt >= 0) returnFocus = next
+            if (lastAt >= 0) lastContentFocus = next
+            return
+        }
+        if (wasEmpty) { row.heading?.visibility = View.VISIBLE; row.scroller.visibility = View.VISIBLE; row.inner.minimumHeight = Cinema.px(activity, ResumeCard.heightOf(false) + 24) }
+        if (focusedAt >= 0) carried(focusedAt)?.requestFocus()
+        if (returnAt >= 0) returnFocus = carried(returnAt)
+        if (lastAt >= 0) lastContentFocus = carried(lastAt)
+        if (scrollX > 0) row.scroller.post { row.scroller.scrollTo(scrollX, 0) }
+    }
+
     // --- Continue watching ------------------------------------------------------------------------
 
     private val continueStore by lazy { ContinueWatching(activity) }
     private var continueRow: Row? = null
 
-    /** A part-watched title for the Continue row: a stream this app saved, or one of the owner's Jellyfin films or episodes. */
-    private class Resumable(
-        val title: String, val subtitle: String?, val positionMs: Long, val durationMs: Long, val lastMs: Long,
-        val open: () -> Unit, val still: Bitmap?, val stillUrl: String?
-    )
+    /** One Continue watching card on the shelf: the engine's choice and the view drawn for it. */
+    private class ContinueView(val view: ResumeCard, val entry: ContinueEntry)
+    /** What the worker settled for the shelf: the cards, their saved-stream pictures, and the Jellyfin items they may play. */
+    private class ContinueResult(val entries: List<ContinueEntry>, val stills: Map<String, Bitmap>, val items: List<JellyfinItem>)
+
+    private val continueViews = ArrayList<ContinueView>()
+    private var continueItems: List<JellyfinItem> = emptyList()
+    /** One refresh at a time; a request made meanwhile is answered by one more run after it, never queued twice. */
+    private var continueBusy = false
+    private var continueAgain = false
+    /** Bumped when the page is rebuilt, so a refresh begun for the old page finds out and does nothing. */
+    private var continueEpoch = 0
+    /** Series whose episode listing was fetched lately (by TMDB id), so each is asked for once in a while. */
+    private val catalogueTried = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * Continue watching, right under the spotlight: a section of its own on a warm band, with a kicker over a large
@@ -2617,7 +3267,7 @@ class MoviesPanel(
      */
     private fun continueRow(gen: Int) {
         val section = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false; visibility = View.GONE }
-        section.addView(View(activity).apply { background = StatementBand(Cinema.pxf(activity, 380)) }, FrameLayout.LayoutParams(-1, -1))
+        section.addView(View(activity).apply { background = StatementBand(Cinema.pxf(activity, 380)) }, FrameLayout.LayoutParams(-1, -1).apply { leftMargin = -Cinema.px(activity, RAIL_WIDTH_OPEN - RAIL_WIDTH) })   // reaches behind the rail, so moving the page aside never shows its edge
         // The Downloads ribbon, looping in from the right edge, quieter here: the section's signature.
         section.addView(RibbonView.downloads(activity, opacity = 0.47f),
             FrameLayout.LayoutParams(-1, Cinema.px(activity, 300)))
@@ -2637,58 +3287,244 @@ class MoviesPanel(
         fillContinue(row, gen)
     }
 
+    /** Starts a refresh of the shelf from what is saved now. Quiet while one is running; asks for one more after it. */
     private fun fillContinue(row: Row, gen: Int) {
+        if (continueBusy) { continueAgain = true; return }
+        continueBusy = true
+        val epoch = continueEpoch
+        val page = personalPage()   // read here: the worker must not read the page as it changes
         worker.execute {
-            // Only streams with a saved payload can be reopened.
-            val streams = continueStore.load(12).mapNotNull { s ->
-                val payload = s.payload ?: return@mapNotNull null
-                Resumable(s.title, s.subtitle, s.positionMs, s.durationMs, s.lastEngagedMs,
-                    open = { playbackStarted = true; if (!PlayerActivity.resume(activity, payload)) CinemaToast.show(activity, "Couldn't reopen ${s.title}", Toast.LENGTH_LONG) },
-                    still = s.imageUri?.let { continueStore.image(it) }, stillUrl = null)
-            }
-            val library = if (jellyfin.isConnected) jellyfin.continueWatching() else emptyList()
-            val films = library.map { item ->
-                Resumable(item.displayTitle, item.displaySubtitle, item.resumeMs, (item.runtimeMin ?: 0) * 60_000L, item.playedMs ?: 0L,
-                    open = { playbackStarted = true; JellyfinPlayback.play(activity, jellyfin, item, listOfNotNull(item.displayTitle, item.episodeLabel()).joinToString(" · "), item.resumeKey) },
-                    still = null, stillUrl = if (item.hasBackdrop) jellyfin.backdropUrl(item.id) else JellyfinApi.episodeImageUrl(JellyfinApi.cleanBase(jellyfin.server), item.id, 640))
-            }
-            // One card a title: a series shows only the episode watched most recently.
-            val all = com.danielportelabyrne.cinema.data.latestPerTitle(streams + films, { it.title }, { it.lastMs }).take(13)
+            val result = try { continueResult(row, gen, epoch, page) } catch (e: Exception) { Log.w("MoviesPanel", "continue watching failed: ${e.javaClass.simpleName}"); null }
             activity.runOnUiThread {
-                if (gen != generation) return@runOnUiThread
-                row.inner.removeAllViews()
-                if (all.isEmpty()) { row.hide(); return@runOnUiThread }
-                row.heading?.visibility = View.VISIBLE; row.scroller.visibility = View.VISIBLE
-                row.inner.addView(resumeCard(all[0], gen, featured = true))
-                // The rest two to a column, beside the lead card and exactly as tall as it.
-                val gap = Cinema.px(activity, ResumeCard.heightOf(true) - 2 * ResumeCard.heightOf(false))
-                all.drop(1).chunked(2).forEachIndexed { c, pair ->
-                    val col = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
-                    pair.forEachIndexed { i, r -> col.addView(resumeCard(r, gen, featured = false), LinearLayout.LayoutParams(-2, -2).apply { if (i > 0) topMargin = gap }) }
-                    row.inner.addView(col, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, if (c == 0) 40 else 32) })
-                }
-                row.setCount(all.size)
-                row.scroller.post { row.loadNear() }
+                // Replaced meanwhile (page rebuilt): the new page has its own refresh state.
+                if (epoch != continueEpoch) return@runOnUiThread
+                continueBusy = false
+                if (gen == generation && continueRow === row && result != null) applyContinue(row, result, gen)
+                if (continueAgain) { continueAgain = false; if (gen == generation && continueRow === row) fillContinue(row, gen) }
             }
         }
     }
 
-    private fun resumeCard(r: Resumable, gen: Int, featured: Boolean): View {
+    /** Off the main thread. Everything here is read from this TV's own saved state and caches; episode listings are only peeked at. */
+    private fun continueResult(row: Row, gen: Int, epoch: Int, page: PersonalPage?): ContinueResult {
+        val scope = jellyfin.ownerScope
+        val savedItems = continueStore.load(50).filter { it.payload != null }
+        val saved = savedItems.map { SavedStream(it.payload!!, it.positionMs, it.durationMs, it.lastEngagedMs) }
+        val resumable = if (jellyfin.isConnected) jellyfin.continueWatching() else emptyList()
+        val loaded = if (jellyfin.isConnected) jellyfin.loadedLibrary else emptyList()
+        // The server's say: what it lists as part-watched now, and what it holds as played (which lets a finished episode move on).
+        // Part-watched library entries missing from the fresh list were cleared since, so only their played state is kept.
+        val resumeIds = resumable.map { it.id }.toSet()
+        val server = resumable + loaded.filter { it.played && it.id !in resumeIds }
+        val inputs = ContinueInputs(scope, EpisodeCards.today(), playHistory.list(scope), streamProgress(), saved, server, knownTitles())
+        val gone = continueDismissals.all(scope)
+        val wanted = LinkedHashMap<String, Long>()
+        // Only what belongs on this page, chosen before the shelf's limit; titles not placed yet are asked about.
+        val filter = personalFilter(page)
+        val entries = ContinueEngine.select(inputs, keep = { filter.keeps(it) && !ContinueDismissals.hidden(gone, it) }, limit = CONTINUE_LIMIT, catalogue = { ids ->
+            val tmdb = ids.tmdbId?.toLongOrNull()
+                ?: ContinueEngine.jellyfinKey(ids.jellyfinId)?.let { jf -> loaded.firstOrNull { it.isSeries && ContinueEngine.jellyfinKey(it.id) == jf } }?.tmdbId?.toLongOrNull()
+            val cat = ContinueCards.catalogue(ids, tmdb?.let { seerr.cachedCatalogue(it) }, loaded)
+            if (tmdb != null && cat?.complete != true) wanted[tmdb.toString()] = tmdb
+            cat
+        })
+        activity.runOnUiThread { if (epoch == continueEpoch) warmFacts(filter, gen) }
+        val stills = HashMap<String, Bitmap>()
+        entries.forEach { e ->
+            val payload = (e.source as? ContinueSource.Stream)?.payload ?: return@forEach
+            savedItems.firstOrNull { it.payload == payload }?.imageUri?.let { u -> continueStore.image(u)?.let { stills[e.key] = it } }
+        }
+        warmCatalogues(row, gen, epoch, wanted.values.toList())
+        return ContinueResult(entries, stills, server)
+    }
+
+    /** Fetches the listings of series the shelf could not place, once each in a while, then recomputes the shelf. Never on the main thread. */
+    private fun warmCatalogues(row: Row, gen: Int, epoch: Int, series: List<Long>) {
+        if (!seerr.isSignedIn) return
+        val now = System.currentTimeMillis()
+        val due = series.filter { tmdb -> catalogueTried.put(tmdb.toString(), now)?.let { now - it < CATALOGUE_RETRY_MS } != true }
+        if (due.isEmpty()) return
+        slowPool.execute {
+            due.forEach { tmdb -> try { seerr.warmCatalogue(tmdb) } catch (_: Exception) { } }
+            activity.runOnUiThread { if (epoch == continueEpoch && gen == generation && continueRow === row) fillContinue(row, gen) }
+        }
+    }
+
+    /**
+     * Brings the shelf up to date in place: only this shelf is rebuilt, and only when the cards changed. The focused card
+     * stays focused wherever it moved to (a Resume that became a Next episode is still the same series); if it went, the
+     * nearest card left, else a neighbouring shelf. The shelf keeps its horizontal position.
+     */
+    private fun applyContinue(row: Row, result: ContinueResult, gen: Int) {
+        continueItems = result.items
+        val entries = result.entries
+        if (entries == continueViews.map { it.entry } && entries.isNotEmpty() == (row.scroller.visibility == View.VISIBLE)) return
+        val oldKeys = continueViews.map { it.entry.key }
+        val focusedAt = continueViews.indexOfFirst { it.view.hasFocus() }
+        val returnAt = continueViews.indexOfFirst { it.view === returnFocus }
+        val lastAt = continueViews.indexOfFirst { it.view === lastContentFocus }
+        val scrollX = row.scroller.scrollX
+        val wasEmpty = continueViews.isEmpty()
+        continueViews.forEach { it.view.onFocus = null; it.view.setOnClickListener(null) }
+        restPrefetch?.let { ui.removeCallbacks(it) }
+        continueViews.clear(); row.inner.removeAllViews()
+        if (entries.isEmpty()) {
+            // Heading, band and spacing all go with the row.
+            row.hide(); row.inner.minimumHeight = 0
+            val next = neighbouringFocus(row)
+            if (focusedAt >= 0) { if (next != null) next.requestFocus() else focusContent() }
+            if (returnAt >= 0) returnFocus = next
+            if (lastAt >= 0) lastContentFocus = next
+            return
+        }
+        row.heading?.visibility = View.VISIBLE; row.scroller.visibility = View.VISIBLE
+        row.inner.minimumHeight = Cinema.px(activity, ResumeCard.heightOf(featured = true))
+        row.inner.addView(continueCard(entries[0], result, gen, featured = true))
+        // The rest two to a column, beside the lead card and exactly as tall as it.
+        val gap = Cinema.px(activity, ResumeCard.heightOf(true) - 2 * ResumeCard.heightOf(false))
+        entries.drop(1).chunked(2).forEachIndexed { c, pair ->
+            val col = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+            pair.forEachIndexed { i, e -> col.addView(continueCard(e, result, gen, featured = false), LinearLayout.LayoutParams(-2, -2).apply { if (i > 0) topMargin = gap }) }
+            row.inner.addView(col, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, if (c == 0) 40 else 32) })
+        }
+        row.setCount(entries.size)
+        row.scroller.post { row.loadNear() }
+        val newKeys = continueViews.map { it.entry.key }
+        fun carried(at: Int): View? {
+            if (at < 0) return null
+            val k = ContinueCards.focusAfter(oldKeys, at, newKeys)
+            return if (k >= 0) continueViews[k].view else neighbouringFocus(row)
+        }
+        if (focusedAt >= 0) carried(focusedAt)?.requestFocus()
+        if (returnAt >= 0) returnFocus = carried(returnAt)
+        if (lastAt >= 0) lastContentFocus = carried(lastAt)
+        if (!wasEmpty && scrollX > 0) row.scroller.post { row.scroller.scrollTo(scrollX, 0) }
+    }
+
+    /** The first focusable thing on the next shelf showing (else the one before); null on a page with nothing else. */
+    private fun neighbouringFocus(row: Row): View? {
+        val kids = (0 until content.childCount).map { content.getChildAt(it) }
+        val self = kids.indexOf(row.heading ?: row.scroller)
+        val k = Favourites.nearestVisible(kids.mapIndexed { i, v -> i != self && v.visibility == View.VISIBLE && firstFocusable(v) != null }, self)
+        return if (k >= 0) firstFocusable(kids[k]) else null
+    }
+
+    /** The picture a card wears (after a saved stream's own frame): the library's artwork for what it plays, else a still, backdrop or poster the engine knows. */
+    private fun continueArt(e: ContinueEntry, result: ContinueResult): String? {
+        ContinueCards.libraryItem(e, result.items + jellyfin.loadedLibrary)?.let { item ->
+            if (e.kind == Kind.MOVIE && item.hasBackdrop) return jellyfin.backdropUrl(item.id)
+            if (e.still == null) return JellyfinApi.episodeImageUrl(JellyfinApi.cleanBase(jellyfin.server), item.id, 640)
+        }
+        return e.still ?: e.backdrop ?: e.poster
+    }
+
+    private fun continueCard(e: ContinueEntry, result: ContinueResult, gen: Int, featured: Boolean): View {
+        val m = ContinueCards.model(e)
         val card = ResumeCard(activity, featured)
-        card.contentDescription = r.title
-        card.title.text = r.title
-        val left = if (r.durationMs > 0 && r.positionMs > 0) ((r.durationMs - r.positionMs) / 60_000).toInt().coerceAtLeast(1) else null
-        val remaining = left?.let { if (it >= 60) "${it / 60}h ${it % 60}m left" else "$it min left" }
-        if (featured) {
-            card.kicker.text = listOfNotNull("Resume", r.subtitle).joinToString(" · ")
-            card.meta.text = remaining.orEmpty()
-        } else card.meta.text = listOfNotNull(r.subtitle, remaining).joinToString(" · ")
-        card.setProgress(if (r.durationMs > 0) r.positionMs.toFloat() / r.durationMs else 0f)
-        r.still?.let { card.setStill(it) }
-        r.stillUrl?.let { url -> images.load(url, jellyfin.playbackHeaders(), maxWidth = Cinema.px(activity, if (featured) 960 else 480), tag = pageTag) { b -> if (gen == generation) card.setStill(b) } }
+        card.contentDescription = listOfNotNull(m.title, m.label, m.detail, m.remaining).joinToString(", ")
+        card.title.text = m.title
+        if (featured) { card.kicker.text = m.featuredKicker; card.meta.text = m.featuredMeta } else card.meta.text = m.smallMeta
+        // A next episode has no progress to show: its bar's room stays, so cards keep one height.
+        card.showBar(m.progress != null)
+        card.setProgress(m.progress ?: 0f)
+        val frame = result.stills[e.key]
+        if (frame != null) card.setStill(frame) else continueArt(e, result)?.let { url ->
+            // Jellyfin's sign-in goes only to Jellyfin.
+            val headers = if (jellyfin.isConnected && url.startsWith(JellyfinApi.cleanBase(jellyfin.server))) jellyfin.playbackHeaders() else emptyMap()
+            images.load(url, headers, maxWidth = Cinema.px(activity, if (featured) 960 else 480), tag = pageTag) { b -> if (gen == generation) card.setStill(b) }
+        }
         card.onFocus = { lit -> if (lit) reveal(card) }
-        card.setOnClickListener { r.open() }
+        card.setOnClickListener { openContinue(e) }
+        // Holding OK on a card opens its menu: resume, from the start, next episode, details, remove.
+        card.setOnLongClickListener { continueMenu(e); true }
+        continueViews += ContinueView(card, e)
         return card
+    }
+
+    private val continueDismissals by lazy { ContinueDismissals(AndroidPlatform(activity)) }
+
+    /**
+     * The menu on a Continue watching card (hold OK): carry on, play from the start, the next episode, the series page at the
+     * viewer's place, and taking the card away (it returns when it is played again).
+     */
+    private fun continueMenu(e: ContinueEntry) {
+        val m = ContinueCards.model(e)
+        val actions = ArrayList<SheetAction>()
+        val lead = when (e.action) { ContinueAction.RESUME -> "Resume"; ContinueAction.NEXT_EPISODE -> "Play next episode"; ContinueAction.START_OVER -> "Start over" }
+        if (m.open != ContinueOpen.PAGE) actions += SheetAction(lead, m.detail, primary = true, icon = R.drawable.ic_cin_play) { openContinue(e) }
+        // From the start: a library item, or a stream the player saved.
+        val fromStartItem = ContinueCards.libraryItem(e, continueItems + jellyfin.loadedLibrary)
+        val payload = (e.source as? ContinueSource.Stream)?.payload
+        if (e.action == ContinueAction.RESUME && (fromStartItem != null || payload != null)) actions += SheetAction("Play from start", "From the very beginning", icon = R.drawable.ic_cin_prev) {
+            playbackStarted = true
+            if (fromStartItem != null) {
+                val name = listOfNotNull(m.title, e.episode?.code?.takeIf { e.kind == Kind.SHOW }).joinToString(" · ")
+                JellyfinPlayback.play(activity, jellyfin, fromStartItem, name, fromStartItem.resumeKey, fromStart = true, series = if (e.kind == Kind.SHOW) e.ids.imdbId to e.ids.tmdbId else null)
+            } else if (!PlayerActivity.resume(activity, payload!!, fromStart = true)) { playbackStarted = false; CinemaToast.show(activity, "Couldn't reopen ${m.title}", Toast.LENGTH_LONG) }
+        }
+        // The next episode, once the listing says which it is.
+        val atSeason = e.episode?.season; val atEpisode = e.episode?.episode
+        if (e.kind == Kind.SHOW && e.action != ContinueAction.NEXT_EPISODE && atSeason != null && atEpisode != null) {
+            val tmdb = e.ids.tmdbId?.toLongOrNull()
+            fun open(next: com.danielportelabyrne.cinema.data.movies.CatalogueEpisode) =
+                openContinuePage(e, pick = ContinueEpisode(next.season, next.episode, next.title, next.still, ContinueEngine.jellyfinKey(next.jellyfinId)))
+            val next = ContinueCards.nextEpisode(ContinueCards.catalogue(e.ids, tmdb?.let { seerr.cachedCatalogue(it) }, jellyfin.loadedLibrary), atSeason, atEpisode)
+            if (next != null) actions += SheetAction("Next episode", "S${next.season} E${next.episode}" + (next.title?.let { " · $it" } ?: ""), icon = R.drawable.ic_cin_next) { open(next) }
+            // Its listing is not held yet: ask for it when chosen, then open the page on that episode.
+            else if (tmdb != null && seerr.isSignedIn) actions += SheetAction("Next episode", "Find it in the series' listing", icon = R.drawable.ic_cin_next) {
+                worker.execute {
+                    runCatching { seerr.warmCatalogue(tmdb) }
+                    val found = ContinueCards.nextEpisode(ContinueCards.catalogue(e.ids, seerr.cachedCatalogue(tmdb), jellyfin.loadedLibrary), atSeason, atEpisode)
+                    activity.runOnUiThread { if (found != null) open(found) else CinemaToast.show(activity, "No next episode found for ${m.title}", Toast.LENGTH_LONG) }
+                }
+            }
+        }
+        actions += SheetAction("Show details", if (e.kind == Kind.SHOW) "The series, at your place in its seasons" else "About this film", icon = R.drawable.ic_cin_info) { openContinuePage(e, pick = e.episode) }
+        actions += SheetAction("Remove from Continue watching", "It comes back when you watch it again", icon = R.drawable.ic_cin_trash) {
+            continueDismissals.dismiss(jellyfin.ownerScope, e.key, e.lastPlayedAt)
+            continueRow?.let { fillContinue(it, generation) }
+        }
+        // The card's own picture heads the menu, flying in from the card.
+        val card = continueViews.firstOrNull { it.entry.key == e.key }?.view
+        val still = (card?.image?.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+        infoSheet.show("CONTINUE WATCHING", m.title, m.detail, listOfNotNull(m.remaining), still, actions, imageSizeDp = 300 to 169, from = card?.image.takeIf { still != null })
+    }
+
+    /** OK on a card: play what the engine picked, or open its page when it has no source yet. Never guesses an episode. */
+    private fun openContinue(e: ContinueEntry) {
+        val m = ContinueCards.model(e)
+        when (m.open) {
+            ContinueOpen.PLAY_STREAM -> {
+                val payload = (e.source as? ContinueSource.Stream)?.payload
+                playbackStarted = true
+                if (payload == null || !PlayerActivity.resume(activity, payload)) { playbackStarted = false; CinemaToast.show(activity, "Couldn't reopen ${m.title}", Toast.LENGTH_LONG) }
+            }
+            ContinueOpen.PLAY_LIBRARY -> {
+                val item = ContinueCards.libraryItem(e, continueItems + jellyfin.loadedLibrary)
+                if (item == null) { openContinuePage(e, pick = e.episode); return }
+                playbackStarted = true
+                val name = listOfNotNull(m.title, e.episode?.code?.takeIf { e.kind == Kind.SHOW }).joinToString(" · ")
+                val series = if (e.kind == Kind.SHOW) e.ids.imdbId to e.ids.tmdbId else null
+                JellyfinPlayback.play(activity, jellyfin, item, name, item.resumeKey, fromStart = m.fromStart, series = series, startMs = m.resumeMs,
+                    settledAtMs = if (m.resumeMs != null) e.lastPlayedAt else 0L)
+            }
+            ContinueOpen.EPISODE_PAGE -> openContinuePage(e, pick = e.episode)
+            ContinueOpen.PAGE -> openContinuePage(e, pick = null)
+        }
+    }
+
+    /** The film's or series' page, with the episode picked when it is known, so a source is found the usual way. */
+    private fun openContinuePage(e: ContinueEntry, pick: ContinueEpisode?) {
+        val isShow = e.kind == Kind.SHOW
+        val t = Title(key = "hist:" + (e.ids.tmdbId ?: e.ids.imdbId ?: e.ids.jellyfinId), kind = e.kind, name = e.title, year = null, overview = null, runtimeMin = null,
+            genres = emptyList(), age = null, imdbScore = null, posterUrl = e.poster, backdropUrl = e.backdrop, imdbId = e.ids.imdbId, tmdbId = e.ids.tmdbId)
+        val own = ContinueEngine.jellyfinKey(e.ids.jellyfinId)
+        val library = if (!jellyfin.isConnected) null
+            else jellyfin.findLoaded(e.ids.imdbId, e.ids.tmdbId, isShow) ?: own?.let { id -> jellyfin.loadedLibrary.firstOrNull { ContinueEngine.jellyfinKey(it.id) == id && it.isSeries == isShow } }
+        val entry = Entry(t, library, if (library != null) jellyfin.playbackHeaders() else emptyMap())
+        val season = pick?.season; val episode = pick?.episode
+        pendingEpisodePick = if (isShow && season != null && episode != null) season to episode else null; pendingPickFor = t.key
+        openDetail(entry, emptyList())
     }
 
     private fun picksRow(gen: Int) {
@@ -2753,6 +3589,8 @@ class MoviesPanel(
         }
         buildHero()
         val holder = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        // The viewer's own titles that the library holds, ahead of the watchlist and the library's rows.
+        personalRows(gen)
         watchlistRow()
         content.addView(holder, LinearLayout.LayoutParams(-1, -2))
         holder.addView(loading("Loading your library…").apply { setPadding(margin, dp(10), 0, dp(10)) })
@@ -3287,7 +4125,9 @@ class MoviesPanel(
 
     private fun showStorage(text: String) {
         storageView.text = text
-        storageView.visibility = if (navigationExpanded && text.isNotEmpty()) View.VISIBLE else View.GONE
+        // Laid out whether the rail is open or not, so opening it never moves the items; the rail's progress fades it.
+        storageView.visibility = if (text.isNotEmpty()) View.VISIBLE else View.GONE
+        storageView.alpha = railP
     }
 
     private fun loadStorage(force: Boolean = false) {
@@ -3612,6 +4452,9 @@ class MoviesPanel(
         heroBackdrop = HeroBackdrop(activity, focusX = 0.5f, fadeTo = 0.38f)
         hero.addView(heroBackdrop, FrameLayout.LayoutParams(Cinema.px(activity, 1230), Cinema.px(activity, 1080), Gravity.END or Gravity.TOP))
         hero.addView(View(activity).apply { background = Scrim.hero() }, FrameLayout.LayoutParams(-1, Cinema.px(activity, 1080)))
+        // The fades' left edge carried on behind the rail, so pushing the page aside never shows a different ground there.
+        hero.addView(View(activity).apply { background = Scrim(listOf(0f to 0.98f, 1f to 0.98f), listOf(0f to 0.55f, 0.22f to 0f, 0.5f to 0f, 1f to 0.96f)) },
+            FrameLayout.LayoutParams(Cinema.px(activity, RAIL_WIDTH_OPEN - RAIL_WIDTH) + 2, Cinema.px(activity, 1080)).apply { leftMargin = -Cinema.px(activity, RAIL_WIDTH_OPEN - RAIL_WIDTH) })
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
             setPadding(pageStart, Cinema.px(activity, 140), pageEnd, 0)
@@ -3694,7 +4537,7 @@ class MoviesPanel(
         fun add(b: CinemaButton) {
             // Coming back up to the featured title shows all of it: the page returns to the very top, not just far
             // enough to reveal the button.
-            b.setOnFocusChangeListener { _, f -> if (f && !detailOpen) page.post { page.smoothScrollTo(0, 0) } }
+            b.setOnFocusChangeListener { _, f -> if (f && !detailOpen) page.post { pageGlideTo(0) } }
             heroButtons.addView(b, LinearLayout.LayoutParams(-2, Cinema.px(activity, 76)).apply { if (heroButtons.childCount > 0) marginStart = gap })
         }
         e.library?.let { lib ->
@@ -3815,6 +4658,26 @@ class MoviesPanel(
             // Placed before "Clear stale request", wherever it is in the row by now.
             val at = buttons.indexOfChild(clearStale)
             if (at >= 0) buttons.addView(watch, at, params) else buttons.addView(watch, params)
+        }
+        // Favourites: a film or whole series, kept per Jellyfin server and user, matched by any id it is known by.
+        run {
+            val fav = Favourite(t.kind, t.tmdbId, t.imdbId ?: e.library?.imdbId, e.library?.id, t.name, t.year, t.posterUrl, t.backdropUrl, System.currentTimeMillis())
+            if (!fav.hasId) return@run
+            val scope = jellyfin.ownerScope
+            val favButton = CinemaButton(activity, CinemaButton.Kind.GLASS, "", R.drawable.ic_cin_star_outline).apply { setPadding(0, 0, 0, 0); makeIconOnly() }
+            fun paintFav() {
+                val on = favourites.isFavourite(scope, fav)
+                favButton.setIcon(if (on) R.drawable.ic_cin_star else R.drawable.ic_cin_star_outline)
+                favButton.contentDescription = if (on) "Remove from favourites" else "Add to favourites"
+            }
+            paintFav()
+            favButton.setOnClickListener {
+                val on = favourites.toggle(scope, fav)
+                paintFav()
+                favouritesChanged(fav, on)
+                CinemaToast.show(activity, if (on) "Added ${t.name} to your favourites" else "Removed ${t.name} from your favourites")
+            }
+            buttons.addView(favButton, LinearLayout.LayoutParams(h, h).apply { marginStart = gap })
         }
         val knownImdb = t.imdbId
         val tmdb = t.tmdbId?.toLongOrNull()
@@ -3943,8 +4806,9 @@ class MoviesPanel(
     private fun setupPrimary(button: CinemaButton, e: Entry, clearStale: CinemaButton, restart: CinemaButton? = null, refresh: () -> Unit) {
         fun set(label: String, enabled: Boolean, action: (() -> Unit)?) {
             button.setText(label); button.isEnabled = enabled
-            // Disabled while checking, so focus arrives late.
-            if (enabled && detailOpen && overlay.findFocus() == null) button.requestFocus()
+            // Disabled while checking, so focus arrives late. Focus parked on the overlay itself (the page beneath was hidden
+            // while this button could not take it yet) counts as none.
+            if (enabled && detailOpen && overlay.findFocus().let { it == null || it === overlay }) button.requestFocus()
             // Terracotta only while there is something to queue; a request already on its way rests as glass.
             if (e.library == null) button.kind = if (enabled) CinemaButton.Kind.TERRA else CinemaButton.Kind.GLASS
             button.setOnClickListener { action?.invoke() }
@@ -4046,7 +4910,8 @@ class MoviesPanel(
     /** The library's next-up episode for a library series (see NextEpisode.of), or null when it has none. */
     private fun libraryNextUp(e: Entry, owned: List<JellyfinItem>): NextUp? {
         val episodes = owned.filter { (it.season ?: 0) > 0 && it.episode != null }
-        val streamed = streamedEpisodes(e).filter { it.played }.map { EpisodeWatch(it.season, it.episode, true, 0L, it.atMs) }
+        // Only a stream whose latest viewing finished moves the series on (a rewatch stopped partway does not).
+        val streamed = streamedEpisodes(e).filter { it.finishedLast }.map { EpisodeWatch(it.season, it.episode, true, 0L, it.atMs) }
         return NextEpisode.of(episodes.map { EpisodeWatch(it.season!!, it.episode!!, it.played, it.resumeMs, it.playedMs) }, streamed)
     }
 
@@ -4101,7 +4966,8 @@ class MoviesPanel(
                     remember(e.title, streamed = true)
                     PlayerActivity.launch(activity, ranked, label, found.imdb,
                         artUrl = e.title.backdropUrl ?: e.title.posterUrl,
-                        meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode)
+                        meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode,
+                        history = streamHistory(e, found.imdb, episode))
                     // The player opens over this same screen; take it down once it is covered.
                     ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
                 }
@@ -4169,6 +5035,16 @@ class MoviesPanel(
     private var dwellKey: String? = null
 
     private fun streamKey(e: Entry, episode: Pair<Int, Int>?) = e.title.key + (episode?.let { ":${it.first}:${it.second}" } ?: "")
+
+    /** Who a streamed play is, for the play history: the film, or the episode of its series. Ids and art come from the title shown. */
+    private fun streamHistory(e: Entry, imdb: String?, episode: Pair<Int, Int>?): com.danielportelabyrne.cinema.data.movies.HistoryTarget? {
+        val t = e.title
+        val entry = if (t.kind == Kind.SHOW) {
+            if (episode == null) return null
+            com.danielportelabyrne.cinema.data.movies.PlayedEntry(Kind.SHOW, seriesTmdbId = t.tmdbId, seriesImdbId = imdb ?: t.imdbId, title = t.name, season = episode.first, episode = episode.second, poster = t.posterUrl, backdrop = t.backdropUrl)
+        } else com.danielportelabyrne.cinema.data.movies.PlayedEntry(Kind.MOVIE, tmdbId = t.tmdbId, imdbId = imdb ?: t.imdbId, title = t.name, poster = t.posterUrl, backdrop = t.backdropUrl)
+        return entry.takeIf { it.hasId }?.let { com.danielportelabyrne.cinema.data.movies.HistoryTarget(jellyfin.ownerScope, it) }
+    }
 
     /**
      * Finds the stream for [e] (and [episode]) now, without playing it, and keeps it for Play. Does nothing without a
@@ -4253,13 +5129,14 @@ class MoviesPanel(
     private fun streamWithoutEpisode(e: Entry, button: View, shownTitle: String?) {
         val imdb = e.title.imdbId?.takeIf { it.startsWith("tt") }
         if (imdb == null) { streamNow(e, button, null, shownTitle); return }
-        val watched = streamedEpisodes(e).filter { it.played }
+        val watched = streamedEpisodes(e).filter { it.finishedLast }
             .map { com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season, it.episode, true, 0L, it.atMs) }
         worker.execute {
             val listing = com.danielportelabyrne.cinema.data.stremio.StremioClient().series(imdb)
             val up = listing?.takeIf { it.episodes.isNotEmpty() }?.let { l ->
                 com.danielportelabyrne.cinema.data.movies.NextEpisode.of(
-                    l.episodes.map { com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season, it.episode, false, 0L, null) }, watched)?.let { next -> next to l }
+                    l.episodes.map { com.danielportelabyrne.cinema.data.movies.EpisodeWatch(it.season, it.episode, false, 0L, null) }, watched,
+                    wrapAtEnd = true)?.let { next -> next to l }   // Stream now on a finished series starts it again, as before
             }
             activity.runOnUiThread {
                 if (up == null) { streamNow(e, button, null, shownTitle); return@runOnUiThread }
@@ -4296,7 +5173,7 @@ class MoviesPanel(
             val ep = jellyfin.episodeToPlay(item.id)
             activity.runOnUiThread {
                 if (ep == null) CinemaToast.show(activity, "No episodes found for ${title.name}", Toast.LENGTH_LONG)
-                else JellyfinPlayback.play(activity, jellyfin, ep, listOfNotNull(title.name, ep.episodeLabel()).joinToString(" · "), "jf:${ep.id}")
+                else JellyfinPlayback.play(activity, jellyfin, ep, listOfNotNull(title.name, ep.episodeLabel()).joinToString(" · "), "jf:${ep.id}", series = title.imdbId to title.tmdbId)
             }
         }
     }
@@ -4319,6 +5196,8 @@ class MoviesPanel(
      */
     private fun seasonSection(parent: LinearLayout, e: Entry, primary: CinemaButton?, nextStream: CinemaButton? = null) {
         val tmdb = e.title.tmdbId?.toLongOrNull()
+        // An episode picked on Home's Recently watched: its season opens and the rail rests on it. Taken once.
+        val pick = pendingEpisodePick?.takeIf { pendingPickFor == e.title.key }; pendingEpisodePick = null; pendingPickFor = null
         val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         parent.addView(box, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 60) })
         box.addView(loading("Loading seasons…"))
@@ -4340,7 +5219,8 @@ class MoviesPanel(
                 else NextEpisode.forStream(seasons.filter { it.number > 0 }.flatMap { s -> (1..s.episodeCount).map { s.number to it } }, streamedHere)
             activity.runOnUiThread {
                 if (!detailOpen || !box.isAttachedToWindow) return@runOnUiThread
-                refresh = drawSeasons(box, e, tmdb, seasons, owned, states, downloads, nextUp)
+                val picked = pick?.takeIf { p -> seasons.any { it.number == p.first } }?.let { NextUp(it.first, it.second, continuing = false) }
+                refresh = drawSeasons(box, e, tmdb, seasons, owned, states, downloads, picked ?: nextUp, focusPicked = picked != null)
                 resumeOnHero(primary, e, owned)
                 Perf.end("seasons.draw", "${owned.size} episodes, ${seasons.size} seasons")
             }
@@ -4395,12 +5275,12 @@ class MoviesPanel(
         val ep = episodes.firstOrNull { it.season == up.season && it.episode == up.episode } ?: return
         val code = "S${ep.season}E${ep.episode.toString().padStart(2, '0')}"
         primary.setText(if (up.continuing) "Continue watching $code" else "Watch $code")
-        primary.setOnClickListener { playbackStarted = true; remember(e.title, streamed = false); JellyfinPlayback.play(activity, jellyfin, ep, "${e.title.name} · S${ep.season} E${ep.episode}", "jf:${ep.id}") }
+        primary.setOnClickListener { playbackStarted = true; remember(e.title, streamed = false); JellyfinPlayback.play(activity, jellyfin, ep, "${e.title.name} · S${ep.season} E${ep.episode}", "jf:${ep.id}", series = e.title.imdbId to e.title.tmdbId) }
     }
 
     /** Returns a restate of the shown season, for when Sonarr's episode states or downloads arrive later. */
     private fun drawSeasons(box: LinearLayout, e: Entry, tmdb: Long?, seasons: List<SeasonState>, owned: List<JellyfinItem>,
-                            states: MutableMap<Pair<Int, Int>, EpisodeState>, downloads: List<QueueItem>, nextUp: NextUp? = null): () -> Unit {
+                            states: MutableMap<Pair<Int, Int>, EpisodeState>, downloads: List<QueueItem>, nextUp: NextUp? = null, focusPicked: Boolean = false): () -> Unit {
         box.removeAllViews()
         if (seasons.isEmpty()) {
             box.addView(note(if (!seerr.isSignedIn && e.library == null) "Press Queue download to sign in, then the seasons and episodes will be listed here." else "No season information available."))
@@ -4437,6 +5317,7 @@ class MoviesPanel(
         var shown = opening
         var loading = 0
         var railTarget: View? = null
+        var pickFocus = focusPicked
         var restateShown: () -> Unit = {}
         fun selectedTab(): View? = tabs.entries.firstOrNull { it.value === shown }?.key
 
@@ -4530,7 +5411,7 @@ class MoviesPanel(
             else images.load(url, headers, maxWidth = Cinema.px(activity, 400)) { b -> if (token == loading) card.setStill(b) }
 
             card.play.setOnClickListener { v ->
-                if (mine != null) { playbackStarted = true; remember(e.title, streamed = false); JellyfinPlayback.play(activity, jellyfin, mine, label, "jf:${mine.id}") }
+                if (mine != null) { playbackStarted = true; remember(e.title, streamed = false); JellyfinPlayback.play(activity, jellyfin, mine, label, "jf:${mine.id}", series = e.title.imdbId to e.title.tmdbId) }
                 else streamNow(e, v, s.number to ep.number, label)
             }
             // The whole blurb, with the still and the episode's facts. Play (when there is one to press) reuses the card's own Play disc.
@@ -4664,6 +5545,11 @@ class MoviesPanel(
                             ?: cards.first().card.firstStop
                     }
                     settle()
+                    // An episode picked from Home gets focus once, unless the viewer has already moved into the seasons.
+                    // Only that exact episode: when its card is not listed, focus is left alone rather than moved to another episode.
+                    if (pickFocus && nextUp != null && s.number == nextUp.season) { pickFocus = false
+                        cards.firstOrNull { it.card.number == nextUp.episode }?.card?.firstStop?.let { t ->
+                            t.post { if (t.isAttachedToWindow && overlay.findFocus()?.let { f -> isWithin(f, box) } != true) t.requestFocus() } } }
                     // Scrolls the rail to the next-up episode so it is in view, without moving focus.
                     if (nextUp != null && s.number == nextUp.season) cards.firstOrNull { it.card.number == nextUp.episode }?.card?.let { c ->
                         rail.scroller.post { (rail.scroller as android.widget.HorizontalScrollView).scrollTo((c.left - Cinema.px(activity, 24)).coerceAtLeast(0), 0) }
@@ -4830,8 +5716,10 @@ class MoviesPanel(
             setPadding(margin, 0, end, 0)
             isHorizontalFadingEdgeEnabled = false
             // Posters slide beneath the frosted rail; the row's far posters load as it nears them.
-            setOnScrollChangeListener { _, _, _, _, _ -> frost?.refresh(); rowOf[this]?.loadNear() }
+            setOnScrollChangeListener { _, _, _, _, _ -> refreshGlass(); rowOf[this]?.loadNear() }
             leftLeavesToRail = inset   // a page row hands Left at its start to the rail (title pages have no rail)
+            // Only its cards take focus: a row still loading (or empty) is passed over, never focused as a blank strip.
+            isFocusable = false
             addView(inner)
         }
         into.addView(scroller, LinearLayout.LayoutParams(-1, -2))
@@ -4885,13 +5773,14 @@ class MoviesPanel(
     }
 
     /** A poster with its name beneath; grows and glows on focus; a badge says when it is already in the library. */
-    private fun card(e: Entry, related: List<Title>, small: Boolean = false, nested: Boolean = true, badge: Boolean = true, defer: Row? = null, note: String? = null, chip: String? = null, onSelect: (() -> Unit)? = null): View {
+    private fun card(e: Entry, related: List<Title>, small: Boolean = false, nested: Boolean = true, badge: Boolean = true, defer: Row? = null, note: String? = null, chip: String? = null, star: Boolean = true, onSelect: (() -> Unit)? = null): View {
         val card = PosterCard(activity, if (small) 200 else 260, if (small) 300 else 390)
         card.contentDescription = e.title.name
         card.title?.text = e.title.name
         card.subline?.text = note ?: subline(e.title)
         dress(card, e, badge, defer)
         chip?.let { card.chip(it) }
+        if (star) trackFavourite(card, e)
         card.onFocus = { lit -> if (lit) { reveal(card); if (onSelect == null) prefetchOnRest(card, e) } }
         card.setOnClickListener { if (onSelect != null) onSelect() else if (nested) openDetail(e, related) else { closeDetail(restoreFocus = false); openDetail(e, related) } }
         return card
@@ -5050,6 +5939,7 @@ class MoviesPanel(
         const val HERO_TURN_MS = 9_000L  // the featured title turns this often
         const val RAIL_WIDTH = 92        // mockup px, collapsed
         const val RAIL_WIDTH_OPEN = 420  // mockup px, with labels while the rail has focus
+        const val RAIL_EDGE = 24         // mockup px: the open rail's shadow on the page
         const val PREWARM_SHELVES = 4
         const val CARDS_PER_FRAME = 4
         const val TRACK_HEIGHT = 84
@@ -5061,6 +5951,16 @@ class MoviesPanel(
         const val REST_PREFETCH_MS = 350L   // how long focus rests on a poster before its backdrop is fetched
         const val DWELL_START_MS = 4_000L   // how long a film page, or an episode, is rested on before its stream is found ahead of time
         const val RETURN_REFRESH_DELAY_MS = 1_500L
+        /** Cards on the Continue watching shelf, and how long before a series' episode listing is fetched again. */
+        const val CONTINUE_LIMIT = 13
+        const val CATALOGUE_RETRY_MS = 10 * 60_000L
+        /** Title details for the personal shelves: written this long after the last row taught some; each title asked about at most this often, and this many per page. */
+        const val FACTS_FLUSH_MS = 4_000L
+        const val FACTS_RETRY_MS = 30 * 60_000L
+        const val FACTS_PER_PAGE = 24
+        /** A page chosen in the rail takes focus once it has something to focus: looked for this often, this many times. */
+        const val ENTER_PAGE_RETRY_MS = 100L
+        const val ENTER_PAGE_TRIES = 40
         const val EAGER_SHELVES = 2
         const val PREWARM_DELAY_MS = 4_000L
         const val REUSE_MS = 5 * 60_000L // reopening Movies within this keeps the Home page as it was

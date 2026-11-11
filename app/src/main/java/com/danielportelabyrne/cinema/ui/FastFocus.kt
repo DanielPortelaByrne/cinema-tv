@@ -58,7 +58,9 @@ object FastFocus {
                 p = p.parent
             }
             horizontal?.let { glideSideways(view, it, sideMargin) }
-            vertical?.let { glideDown(view, it, if (it === page) topInset else 0, bottomInset, headingOf(horizontal)) }
+            // The Cinema page moves itself, on one glide; only other scroll views (a title's details) are moved from here.
+            if (vertical is CinemaContentScrollView) vertical.reveal(view)
+            else vertical?.let { glideDown(view, it, if (it === page) topInset else 0, bottomInset, headingOf(horizontal)) }
         }
     }
 
