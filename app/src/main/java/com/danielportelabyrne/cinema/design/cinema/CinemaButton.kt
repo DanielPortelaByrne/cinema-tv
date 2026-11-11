@@ -54,9 +54,9 @@ class CinemaButton(context: Context, kind: Kind, label: CharSequence, iconRes: I
     fun setIcon(res: Int) { icon?.setImageResource(res) }
 
     /** A square button of its icon alone: the label is hidden and the icon has no gap after it, so it sits in the middle. */
-    fun makeIconOnly() {
-        label.visibility = GONE
-        (icon?.layoutParams as? LayoutParams)?.marginEnd = 0
+    fun makeIconOnly(iconOnly: Boolean = true) {
+        label.visibility = if (iconOnly) GONE else VISIBLE
+        (icon?.layoutParams as? LayoutParams)?.marginEnd = if (iconOnly) 0 else Cinema.px(context, if (small) 10 else 14)
         icon?.requestLayout()
     }
 

@@ -131,7 +131,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     private val pausedTitle = Cinema.title(context, "", 104)
     private val pausedMeta = FrameLayout(context)
     private val pausedSynopsis = Cinema.synopsis(context, "", 24, maxLines = 3)
-    private val resumeButton = CinemaButton(context, CinemaButton.Kind.PRIMARY, "Resume", R.drawable.ic_cin_play)
+    private val pausedPlayButton = PauseDisc(context).apply { playing = false }
     private val startOverButton = CinemaButton(context, CinemaButton.Kind.GLASS, "Start over", R.drawable.ic_cin_back)
     private val endsAt = Cinema.text(context, "", 20, Cinema.MUTED)
     private val streamCard = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
@@ -169,7 +169,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     private val chaptersHeading = Cinema.rowHeading(context, "Chapters")
     private val chapterRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
     private val chapterScroller = CalmHorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(chapterRow) }
-    private val pausedScrubber = WaveScrubberView(context, amplitudePx = 11f, thicknessPx = 26f)
+    private val pausedScrubber = WaveScrubberView(context)
     // More episodes: a drawer below the scrubber that peeks up from the foot of the paused screen. Down slides the whole
     // paused screen up to show it; Up or Back slides it away again.
     private val pausedSlide = FrameLayout(context).apply { clipChildren = false; clipToPadding = false }
@@ -237,6 +237,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         if (!drawerOpen) {
             controls.translationY = if (episodesShown && inControls) -p(CONTROLS_RAISE).toFloat() else 0f
             pinnedTop.forEach { it.translationY = -controls.translationY }
+            pausedPlayButton.translationY = if (episodesShown) -p(CONTROLS_RAISE).toFloat() else 0f
             pausedSlide.translationY = 0f; episodesLayer.translationY = 0f
         }
     }
@@ -269,7 +270,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         nextButton = roundButton(R.drawable.ic_cin_next, 72, 44) { onNext?.invoke(); nudge() }
         transport.addView(nextButton, LinearLayout.LayoutParams(p(72), p(72)).apply { marginStart = gap - p(28) })
         // Centred on y = 696 as in the mockup; the row is as tall as the pause disc's ringed box.
-        controls.addView(transport, LayoutParams(-2, -2, Gravity.CENTER_HORIZONTAL).apply { topMargin = p(696 - PauseDisc.BOX / 2) })
+        controls.addView(transport, transportPosition(-2, -2))
 
         place(controls, scrubber, 50, 854, p(1820), p(92))
         controls.addView(chapterLabel, LayoutParams(-1, -2).apply { topMargin = p(952) })
@@ -294,6 +295,9 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         controls.addView(preview, LayoutParams(-1, -1))
     }
 
+    private fun transportPosition(width: Int, height: Int) =
+        LayoutParams(width, height, Gravity.CENTER_HORIZONTAL).apply { topMargin = p(696 - PauseDisc.BOX / 2) }
+
     private fun buildPaused() {
         // The paused picture itself shows through, sharp, with only a light dim: deeper behind the words on the left
         // and the chapters at the foot, barely there on the right.
@@ -312,10 +316,9 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         left.addView(pausedMeta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(22) })
         left.addView(pausedSynopsis, LinearLayout.LayoutParams(p(800), -2).apply { topMargin = p(20) })
         val buttons = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
-        resumeButton.setOnClickListener { onPlay(); setState(PlayerUi.Hidden) }
+        pausedPlayButton.setOnClickListener { onPlay(); setState(PlayerUi.Hidden) }
         startOverButton.setOnClickListener { onSeek(0); onPlay(); setState(PlayerUi.Hidden) }
-        buttons.addView(resumeButton, LinearLayout.LayoutParams(-2, p(76)))
-        buttons.addView(startOverButton, LinearLayout.LayoutParams(-2, p(76)).apply { marginStart = p(18) })
+        buttons.addView(startOverButton, LinearLayout.LayoutParams(-2, p(76)))
         buttons.addView(endsAt, LinearLayout.LayoutParams(-2, -2).apply { marginStart = p(32) })
         left.addView(buttons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(28) })
         place(paused, left, 96, 70)
@@ -363,7 +366,11 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
 
         // The chapters sit above the progress bar, which is at the same height as in the controls, so the bar does not move on pause.
         place(paused, chaptersHeading, 96, 580)
-        place(paused, chapterScroller, 96, 626, p(1000), p(214))
+        // The chapter strip ends before the centered Play disc and its focus rings.
+        val chapterWidth = 960 - PauseDisc.BOX / 2 - 96 - 16
+        val chapterViewport = FrameLayout(context).apply { addView(chapterScroller, LayoutParams(-1, -1)) }
+        place(paused, chapterViewport, 96, 626, p(chapterWidth), p(214))
+        paused.addView(pausedPlayButton, transportPosition(p(PauseDisc.BOX), p(PauseDisc.BOX)))
         place(paused, pausedScrubber, 50, 854, p(1820), p(92))
         place(paused, pausedNow, 96, 946)
         paused.addView(pausedLeft, LayoutParams(-2, -2, Gravity.END or Gravity.TOP).apply { rightMargin = p(96); topMargin = p(946) })
@@ -417,7 +424,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         if (open) {
             if (focusCurrent) currentTile()?.requestFocus() ?: episodeRow.getChildAt(0)?.requestFocus()
             scrollToCurrentEpisode()
-        } else if (paused) resumeButton.requestFocus()
+        } else if (paused) pausedPlayButton.requestFocus()
         else (0 until chips.childCount).map { chips.getChildAt(it) }.firstOrNull { it.visibility == VISIBLE }?.requestFocus() ?: scrubber.requestFocus()
         nudge()
     }
@@ -553,7 +560,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     }
 
     private fun enterPaused() {
-        resumeButton.requestFocus()
+        pausedPlayButton.requestFocus()
         if (episodesShown) scrollToCurrentEpisode()
         onPaused?.invoke()
         refreshStream()
@@ -622,6 +629,17 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
             target?.requestFocus()
             downConsumed = true; nudge()
             return true
+        }
+        // Enter the Letterboxd card on its selected tab, even when the scroll body is closer to the current focus.
+        if (state == PlayerUi.Paused && event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && lbCard.isShown) {
+            val focus = findFocus()
+            if (focus != null && !isInside(focus, lbCard) && isInside(focus.focusSearch(View.FOCUS_RIGHT), lbCard)) {
+                if (lbTabLabels[lbTab].requestFocus()) {
+                    downConsumed = true
+                    nudge()
+                    return true
+                }
+            }
         }
         val step = state.onKey(key, event.repeatCount, positionMs(), durationMs(), isPlaying(), scrubber.isFocused)
         when (val a = step.action) {
@@ -935,13 +953,27 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         if (reviews == null) { lbPanel.addView(Cinema.text(context, "Loading the reviews…", 22, Cinema.MUTED)); return }
         if (reviews.isEmpty()) { lbPanel.addView(Cinema.text(context, "No reviews yet.", 22, Cinema.MUTED)); return }
         reviews.take(12).forEachIndexed { i, r ->
-            val card = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL; isFocusable = true; isClickable = true; setPadding(p(14), p(12), p(14), p(14))
-                setOnFocusChangeListener { v, focused -> v.background = if (focused) Cinema.glass(context, 18f, Cinema.CREAM) else null }
+            val bodyColor = 0xFFE6D9C6.toInt()
+            val author = Cinema.text(context, r.authorName, 22, Cinema.CREAM, weight = 600)
+            val rating = r.rating?.let {
+                Cinema.text(context, com.danielportelabyrne.cinema.data.letterboxd.Lb.stars(it), 19, Cinema.SAFFRON)
             }
-            card.addView(Cinema.text(context, r.authorName, 22, Cinema.CREAM, weight = 600))
-            r.rating?.let { card.addView(Cinema.text(context, com.danielportelabyrne.cinema.data.letterboxd.Lb.stars(it), 19, Cinema.SAFFRON), LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(2) }) }
-            card.addView(Cinema.text(context, r.text, 21, 0xFFE6D9C6.toInt()).apply { setLineSpacing(0f, 1.18f) }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = p(8) })
+            val body = Cinema.text(context, r.text, 21, bodyColor).apply { setLineSpacing(0f, 1.18f) }
+            val card = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                isFocusable = true
+                isClickable = true
+                setPadding(p(14), p(12), p(14), p(14))
+                addView(author)
+                rating?.let { addView(it, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(2) }) }
+                addView(body, LinearLayout.LayoutParams(-1, -2).apply { topMargin = p(8) })
+                setOnFocusChangeListener { v, focused ->
+                    v.background = if (focused) Cinema.glass(context, 18f, Cinema.CREAM) else null
+                    author.setTextColor(if (focused) Cinema.INK else Cinema.CREAM)
+                    rating?.setTextColor(if (focused) Cinema.INK else Cinema.SAFFRON)
+                    body.setTextColor(if (focused) Cinema.INK else bodyColor)
+                }
+            }
             lbPanel.addView(card, LinearLayout.LayoutParams(-1, -2).apply { topMargin = p(if (i == 0) 0 else 10) })
         }
     }
@@ -1027,7 +1059,12 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     /** The big pause/play disc, ringed in the stripe set (`box-shadow` rings in the mockup), glowing when focused. */
     private class PauseDisc(context: Context) : View(context) {
         var playing = true
-            set(value) { if (field != value) { field = value; invalidate() } }
+            set(value) {
+                if (field == value) return
+                field = value
+                contentDescription = if (value) "Pause" else "Play"
+                invalidate()
+            }
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Cinema.alpha(Cinema.CREAM, 0.3f)
@@ -1035,7 +1072,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         }
         private val pause = context.getDrawable(R.drawable.ic_cin_pause)!!.mutate().apply { setTint(0xFF1B120C.toInt()) }
         private val play = context.getDrawable(R.drawable.ic_cin_play)!!.mutate().apply { setTint(0xFF1B120C.toInt()) }
-        init { isFocusable = true; isClickable = true; contentDescription = "Play or pause" }
+        init { isFocusable = true; isClickable = true; contentDescription = "Pause" }
         companion object {
             /** Mockup px the view needs: the 112 px disc, 5 rings of 9 px each side, and room for the soft focus glow. */
             const val BOX = 112 + 2 * 45 + 2 * 50

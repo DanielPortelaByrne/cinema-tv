@@ -2,6 +2,7 @@ package com.danielportelabyrne.cinema.data.letterboxd
 
 import com.danielportelabyrne.cinema.data.FilmPage
 import com.danielportelabyrne.cinema.data.LetterboxdParser
+import org.json.JSONObject
 
 /** A film as a Letterboxd page lists it. [rating] is in half stars (1..10), as Letterboxd stores it. */
 data class LbFilm(val slug: String, val name: String, val year: Int?, val rating: Int? = null, val liked: Boolean = false) : java.io.Serializable {
@@ -206,15 +207,38 @@ object Lb {
 
     /** A film's cast and crew, each with the path of their page, so their picture can be found. */
     fun credits(html: String): LbCredits {
-        val cast = regex("""<a title="([^"]*)" href="(/[^"]+/)" class="text-slug[^"]*">([^<]+)</a>""").findAll(panel(html, "cast")).map {
-            LbPerson(it.groupValues[2], text(it.groupValues[3]), text(it.groupValues[1]).ifBlank { null })
-        }.toList()
+        val actorPath = regex("""/actor/[a-z0-9-]+/""")
+        val cast = regex("""<a\b([^>]*)>(.*?)</a>""", dot).findAll(panel(html, "cast")).mapNotNull { link ->
+            val attributes = link.groupValues[1]
+            val path = attr(attributes, "href")?.takeIf(actorPath::matches) ?: return@mapNotNull null
+            val name = text(link.groupValues[2]).ifBlank { return@mapNotNull null }
+            val role = attr(attributes, "title")?.ifBlank { null }
+            LbPerson(path, name, role)
+        }.toList().ifEmpty { castFromFilmData(html, actorPath) }
         val crew = regex("""<span class="crewrole -full">([^<]+)</span>.*?<div class="text-sluglist">(.*?)</div>""", dot).findAll(panel(html, "crew")).map { role ->
             LbCrew(text(role.groupValues[1]), regex("""<a href="(/[^"]+/)" class="text-slug">([^<]+)</a>""").findAll(role.groupValues[2]).map {
                 LbPerson(it.groupValues[1], text(it.groupValues[2]), null)
             }.toList())
         }.filter { it.people.isNotEmpty() }.toList()
         return LbCredits(cast, crew)
+    }
+
+    /** The film's embedded cast has names and profile links even when the Cast panel is missing. */
+    private fun castFromFilmData(html: String, actorPath: Regex): List<LbPerson> {
+        val scripts = regex("""<script\b[^>]*\stype="application/ld\+json"[^>]*>(.*?)</script>""", dot)
+        for (script in scripts.findAll(html)) {
+            val json = script.groupValues[1].trim().removePrefix("/* <![CDATA[ */").removeSuffix("/* ]]> */").trim()
+            val actors = runCatching { JSONObject(json).optJSONArray("actor") }.getOrNull() ?: continue
+            return (0 until actors.length()).mapNotNull { index ->
+                val actor = actors.optJSONObject(index) ?: return@mapNotNull null
+                val name = actor.optString("name").trim().ifBlank { return@mapNotNull null }
+                val url = actor.optString("sameAs")
+                val path = url.removePrefix("https://letterboxd.com").takeIf { url.startsWith("https://letterboxd.com/") && actorPath.matches(it) }
+                    ?: return@mapNotNull null
+                LbPerson(path, name, null)
+            }
+        }
+        return emptyList()
     }
 
     /** A person's picture, from their Letterboxd page: TMDb's headshot of them. Null when the page has none. */

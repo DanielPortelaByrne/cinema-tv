@@ -22,6 +22,7 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -41,6 +42,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import android.view.KeyEvent
 import android.view.Gravity
 import android.widget.TextView
+import com.danielportelabyrne.cinema.data.player.PlayerUi
 import com.danielportelabyrne.cinema.data.settings.CinemaSettings
 import com.danielportelabyrne.cinema.data.settings.Integration
 import com.danielportelabyrne.cinema.data.movies.StreamProgress
@@ -416,7 +418,24 @@ class PlayerActivity : AppCompatActivity() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
         // Each player screen has its own session id: Media3 refuses a second session with the same id in one process,
         // and a new player can open before the last one is destroyed (or while music plays in the background).
-        mediaSession = androidx.media3.session.MediaSession.Builder(this, player).setId("video-${System.identityHashCode(this)}").build()
+        // Only commands routed through the session drive the chrome here. Local controls own their own transitions.
+        val sessionPlayer = object : ForwardingPlayer(player) {
+            override fun pause() {
+                super.pause()
+                syncSessionPlaybackChrome()
+            }
+
+            override fun play() {
+                super.play()
+                syncSessionPlaybackChrome()
+            }
+
+            override fun setPlayWhenReady(playWhenReady: Boolean) {
+                super.setPlayWhenReady(playWhenReady)
+                syncSessionPlaybackChrome()
+            }
+        }
+        mediaSession = androidx.media3.session.MediaSession.Builder(this, sessionPlayer).setId("video-${System.identityHashCode(this)}").build()
         view = PlayerView(this).apply {
             player = this@PlayerActivity.player
             // Waiting for the picture shows Cinema's wavy loader (below), not the stock spinner.
@@ -1143,6 +1162,16 @@ class PlayerActivity : AppCompatActivity() {
         Perf.mark("trickplay sheet $sheet for $ms ms (${t.width}px ${t.tileWidth}x${t.tileHeight})")
         val url = com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.trickplayUrl(r.base, itemId, t.width, sheet, r.sourceId)
         chromeImages.load(url, jellyfin.playbackHeaders(), maxWidth = t.width * t.tileWidth) { b -> trickplaySheets.put(sheet, b); crop(b) }
+    }
+
+    private fun syncSessionPlaybackChrome() {
+        val c = chrome ?: return
+        if (!started || ended || isFinishing || isDestroyed || nextCard.visibility == View.VISIBLE) return
+        if (player.playWhenReady) {
+            if (c.state == PlayerUi.Paused) c.setState(PlayerUi.Hidden)
+        } else if (c.state != PlayerUi.Paused) {
+            c.setState(PlayerUi.Paused)
+        }
     }
 
     private fun wireChrome(c: PlayerChrome) {

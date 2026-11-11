@@ -4621,7 +4621,7 @@ class MoviesPanel(
         // A part-watched library film: Continue (the primary) and Restart from the beginning.
         val restart = CinemaButton(activity, CinemaButton.Kind.GLASS, "Restart", R.drawable.ic_cin_play).apply { visibility = View.GONE }
         // Not in the library: play a seeded copy now, instead of waiting for a download to finish.
-        val stream = CinemaButton(activity, CinemaButton.Kind.GLASS, "Stream now", R.drawable.ic_cin_play).apply {
+        val stream = CinemaButton(activity, CinemaButton.Kind.PRIMARY, "Stream now", R.drawable.ic_cin_play).apply {
             visibility = if (!inLibrary && t.kind == Kind.MOVIE && seerr.hasStreamService) View.VISIBLE else View.GONE
             setOnClickListener { streamNow(e, this) }
         }
@@ -4630,12 +4630,12 @@ class MoviesPanel(
         val nextStream = if (t.kind == Kind.SHOW && !inLibrary && seerr.hasStreamService)
             CinemaButton(activity, CinemaButton.Kind.PRIMARY, "", R.drawable.ic_cin_play).apply { visibility = View.GONE } else null
         nextStream?.let { buttons.addView(it, LinearLayout.LayoutParams(-2, h).apply { marginEnd = gap }) }
+        buttons.addView(stream, LinearLayout.LayoutParams(-2, h).apply { marginEnd = gap })
         buttons.addView(primary, LinearLayout.LayoutParams(-2, h))
         // A series' season download, beside Request all seasons: drawSeasons sets it to the season in view.
         heroSeasonButton = if (t.kind == Kind.SHOW) CinemaButton(activity, CinemaButton.Kind.GLASS, "Download", R.drawable.ic_cin_dl).apply { visibility = View.GONE } else null
         heroSeasonButton?.let { buttons.addView(it, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap }) }
         buttons.addView(restart, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
-        buttons.addView(stream, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
         // Add to the owner's watchlist (its row in My library), or take it off again. The watchlist is keyed by IMDb id, so a title
         // known only by its TMDB id (a suggestion, say) asks Seerr for it, and the button appears once it has come back.
         fun addWatchButton(id: String) {
@@ -4740,7 +4740,7 @@ class MoviesPanel(
         // The title page covers the screen, so the page beneath it is not drawn at all while it is open (it keeps its
         // place and its scroll position, so Back returns to exactly where it was).
         body.visibility = View.INVISIBLE
-        requestFocusRobust(detail, primary)
+        requestFocusRobust(detail, if (stream.visibility == View.VISIBLE) stream else primary)
     }
 
     private var detailFocusListener: android.view.ViewTreeObserver.OnGlobalFocusChangeListener? = null
@@ -4806,6 +4806,12 @@ class MoviesPanel(
     private fun setupPrimary(button: CinemaButton, e: Entry, clearStale: CinemaButton, restart: CinemaButton? = null, refresh: () -> Unit) {
         fun set(label: String, enabled: Boolean, action: (() -> Unit)?) {
             button.setText(label); button.isEnabled = enabled
+            if (e.library == null && e.title.kind == Kind.MOVIE) {
+                val iconOnly = label == "Queue download"
+                button.makeIconOnly(iconOnly)
+                button.setPaddingRelative(Cinema.px(activity, if (iconOnly) 23 else 30), 0,
+                    Cinema.px(activity, if (iconOnly) 23 else 38), 0)
+            }
             // Disabled while checking, so focus arrives late. Focus parked on the overlay itself (the page beneath was hidden
             // while this button could not take it yet) counts as none.
             if (enabled && detailOpen && overlay.findFocus().let { it == null || it === overlay }) button.requestFocus()

@@ -136,6 +136,28 @@ class LbParseTest {
         assertEquals(LbCredits(emptyList(), emptyList()), Lb.credits("<p>nothing</p>"))
     }
 
+    @Test fun cast_links_survive_attribute_changes_and_missing_roles() {
+        val html = """<div id="tab-panel-cast"><div class="cast-list">
+            <a href="/actor/john-cazale/" class="text-slug" title="Stan &amp; friend"><span>John Cazale</span></a>
+            <a class="text-slug" href="/actor/al-pacino/">Al Pacino</a>
+            <a href="/film/dog-day-afternoon/cast/">Show All</a>
+            </div></div><div id="tab-panel-crew"><a href="/actor/other/">Other</a></div>"""
+        assertEquals(listOf(
+            LbPerson("/actor/john-cazale/", "John Cazale", "Stan & friend"),
+            LbPerson("/actor/al-pacino/", "Al Pacino", null)
+        ), Lb.credits(html).cast)
+    }
+
+    @Test fun cast_falls_back_to_embedded_film_data_when_the_panel_is_absent() {
+        val html = """<script type="application/ld+json">/* <![CDATA[ */
+            {"@type":"Movie","actor":[
+              {"name":"Al Pacino","sameAs":"https://letterboxd.com/actor/al-pacino/"},
+              {"name":"Other","sameAs":"https://example.com/actor/other/"}
+            ]}
+            /* ]]> */</script>"""
+        assertEquals(listOf(LbPerson("/actor/al-pacino/", "Al Pacino", null)), Lb.credits(html).cast)
+    }
+
     @Test fun a_persons_picture_is_their_tmdb_headshot() {
         val html = """<img src="https://s.ltrbxd.com/static/img/empty.png" class="js-tmdb-person" data-image="https://image.tmdb.org/t/p/w500/m8HAAjq1T75.jpg" data-tmdb-id="1158" />"""
         assertEquals("https://image.tmdb.org/t/p/w500/m8HAAjq1T75.jpg", Lb.headshot(html))
