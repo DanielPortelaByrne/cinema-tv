@@ -14,8 +14,10 @@ enum class LayoutPage(val key: String, val label: String) {
  */
 enum class SectionType(val catalogue: Boolean) {
     TOP10(true), TRENDING(true), GENRE(true), DOCS(true), POPULAR_ON(true), DOCS_ON_FOLLOWED(true),
+    /** A row built from parts (see [Mix]): order, kind, category, subcategory, service, where it was made. */
+    MIX(true),
     CONTINUE(false), FAVOURITES(false), RECENT(false), PICKS(false), SERVICES(false), CHANNELS(false), GENRE_TILES(false),
-    MY_LIBRARY(false), WATCHLIST(false), LIBRARY_LATEST(false), LIBRARY_FILMS(false), LIBRARY_SERIES(false), LIBRARY_GENRES(false)
+    MY_LIBRARY(false), WATCHLIST(false), LIBRARY_LATEST(false), LIBRARY_FILMS(false), LIBRARY_SERIES(false), LIBRARY_DOCS(false), LIBRARY_GENRES(false)
 }
 
 /** One row on a page. Two sections are the same row when their type and argument match. */
@@ -55,10 +57,10 @@ object PageLayouts {
             Catalog.GENRES.drop(1).map { Section(SectionType.GENRE, "${it.code}:films") }
         LayoutPage.SERIES -> listOf(Section(SectionType.GENRE, "act:series")) + PERSONAL + listOf(Section(SectionType.TOP10, "series")) +
             Catalog.GENRES.drop(1).map { Section(SectionType.GENRE, "${it.code}:series") }
-        LayoutPage.DOCS -> listOf(Section(SectionType.DOCS, "films")) + PERSONAL + listOf(
+        LayoutPage.DOCS -> listOf(Section(SectionType.DOCS, "films")) + PERSONAL + listOf(Section(SectionType.LIBRARY_DOCS),
             Section(SectionType.TOP10, "docs"), Section(SectionType.DOCS, "series"), Section(SectionType.DOCS_ON_FOLLOWED))
         LayoutPage.LIBRARY -> PERSONAL + listOf(Section(SectionType.WATCHLIST), Section(SectionType.LIBRARY_LATEST),
-            Section(SectionType.LIBRARY_FILMS), Section(SectionType.LIBRARY_SERIES), Section(SectionType.LIBRARY_GENRES))
+            Section(SectionType.LIBRARY_FILMS), Section(SectionType.LIBRARY_SERIES), Section(SectionType.LIBRARY_DOCS), Section(SectionType.LIBRARY_GENRES))
     }
 
     /** The catalogue rows a section asks for: none for the app's own rows, or for a service or genre no longer known. */
@@ -80,6 +82,7 @@ object PageLayouts {
         SectionType.DOCS -> listOf(ShelfSpec(when (s.arg) { "films" -> "Documentary films"; "series" -> "Documentary series"; else -> "Documentaries" },
             Catalog.MAJOR, kinds(s.arg), genre = "doc", sort = if (s.arg == "all") "TRENDING" else "POPULAR"))
         SectionType.POPULAR_ON -> if (s.arg == "followed") Catalog.followed.take(8).map { popularOn(it) } else listOfNotNull(service(s.arg)?.let { popularOn(it) })
+        SectionType.MIX -> listOfNotNull(Mixes.spec(Mix.decode(s.arg)))
         SectionType.DOCS_ON_FOLLOWED -> Catalog.MIXED.take(4).map { ShelfSpec("Documentaries on ${it.label}", listOf(it.code), BOTH, genre = "doc", sort = "POPULAR") }
         else -> emptyList()
     }
@@ -96,39 +99,74 @@ object PageLayouts {
         SectionType.CHANNELS -> "Browse by channel"
         SectionType.GENRE_TILES -> "Browse by genre"
         SectionType.MY_LIBRARY -> "My library"
-        SectionType.WATCHLIST -> "Watchlist"
-        SectionType.LIBRARY_LATEST -> "Library: latest added"
-        SectionType.LIBRARY_FILMS -> "Library: films"
-        SectionType.LIBRARY_SERIES -> "Library: series"
-        SectionType.LIBRARY_GENRES -> "Library: by genre"
+        SectionType.WATCHLIST -> when (s.arg) { "films" -> "Watchlist: films"; "series" -> "Watchlist: series"; else -> "Watchlist" }
+        SectionType.LIBRARY_LATEST -> "Your library: latest added"
+        SectionType.LIBRARY_FILMS -> "Your Films (downloaded)"
+        SectionType.LIBRARY_SERIES -> "Your Series (downloaded)"
+        SectionType.LIBRARY_DOCS -> "Your Documentaries (downloaded)"
+        SectionType.LIBRARY_GENRES -> "Your genres (downloaded)"
         SectionType.POPULAR_ON -> if (s.arg == "followed") "Popular on each service you follow" else specs(s).firstOrNull()?.heading ?: "Popular on a service"
         SectionType.DOCS_ON_FOLLOWED -> "Documentaries on each service you follow"
+        SectionType.MIX -> Mixes.label(Mix.decode(s.arg))
         else -> specs(s).firstOrNull()?.heading ?: s.id
     }
 
     private fun detail(s: Section): String = when {
         s.type.name.startsWith("LIBRARY") || s.type == SectionType.MY_LIBRARY || s.type == SectionType.WATCHLIST -> "Your library"
         !s.type.catalogue -> "Your rows"
-        s.type == SectionType.TOP10 -> "Top 10"
+        s.type == SectionType.TOP10 || (s.type == SectionType.MIX && Mix.decode(s.arg).order == "top10") -> "Top 10"
+        s.type == SectionType.MIX -> "Mix"
         else -> "Catalogue"
     }
 
-    /** Every row that can be added, Top 10s first. */
+    /** Every row that can be added, Top 10s first. Built once per set of followed services. */
     fun options(): List<SectionOption> {
+        val key = Catalog.followed.joinToString { it.code }
+        cached?.takeIf { it.first == key }?.let { return it.second }
+        return build().also { cached = key to it }
+    }
+
+    @Volatile private var cached: Pair<String, List<SectionOption>>? = null
+
+    /**
+     * [s] as a [Mix], so a row already on the page can be changed part by part (a documentary row given a subcategory);
+     * null for rows that are not one list of titles.
+     */
+    fun asMix(s: Section): Mix? = when (s.type) {
+        SectionType.MIX -> Mix.decode(s.arg)
+        SectionType.TOP10 -> when {
+            s.arg == "docs" -> Mix("top10", "all", "doc")
+            s.arg.startsWith("svc:") -> Mix("top10", "all", service = s.arg.removePrefix("svc:"))
+            s.arg.startsWith("genre:") -> Mix("top10", "all", s.arg.removePrefix("genre:"))
+            else -> Mix("top10", s.arg)
+        }
+        SectionType.TRENDING -> Mix("trending", s.arg)
+        SectionType.GENRE -> Mix("popular", s.arg.substringAfter(':', "all"), s.arg.substringBefore(':'))
+        SectionType.DOCS -> Mix(if (s.arg == "all") "trending" else "popular", s.arg, "doc")
+        SectionType.POPULAR_ON -> if (s.arg == "followed") null else Mix("popular", "all", service = s.arg)
+        else -> null
+    }
+
+    private fun build(): List<SectionOption> {
         val list = ArrayList<Section>()
         listOf("all", "films", "series", "docs").forEach { list += Section(SectionType.TOP10, it) }
         (Catalog.followed + Catalog.KNOWN).distinctBy { it.code }.forEach { list += Section(SectionType.TOP10, "svc:${it.code}") }
         Catalog.GENRES.forEach { list += Section(SectionType.TOP10, "genre:${it.code}") }
         listOf("all", "films", "series").forEach { list += Section(SectionType.TRENDING, it) }
         listOf(SectionType.CONTINUE, SectionType.FAVOURITES, SectionType.RECENT, SectionType.PICKS, SectionType.MY_LIBRARY, SectionType.WATCHLIST,
-            SectionType.LIBRARY_LATEST, SectionType.LIBRARY_FILMS, SectionType.LIBRARY_SERIES, SectionType.LIBRARY_GENRES,
+            SectionType.LIBRARY_LATEST, SectionType.LIBRARY_FILMS, SectionType.LIBRARY_SERIES, SectionType.LIBRARY_DOCS, SectionType.LIBRARY_GENRES,
             SectionType.SERVICES, SectionType.CHANNELS, SectionType.GENRE_TILES).forEach { list += Section(it) }
+        list += Section(SectionType.WATCHLIST, "films"); list += Section(SectionType.WATCHLIST, "series")
         list += Section(SectionType.POPULAR_ON, "followed")
         (Catalog.followed + Catalog.KNOWN).distinctBy { it.code }.forEach { list += Section(SectionType.POPULAR_ON, it.code) }
         listOf("all", "films", "series").forEach { list += Section(SectionType.DOCS, it) }
         list += Section(SectionType.DOCS_ON_FOLLOWED)
         Catalog.GENRES.forEach { g -> listOf("all", "films", "series").forEach { list += Section(SectionType.GENRE, "${g.code}:$it") } }
-        return list.map { SectionOption(it, label(it), detail(it)) }
+        val fixed = list.map { SectionOption(it, label(it), detail(it)) }
+        // Every combination of order, kind, category and subcategory, leaving out ones a fixed row already names.
+        val names = fixed.map { it.label.lowercase() }.toHashSet()
+        return fixed + Mixes.searchable().map { Section(SectionType.MIX, it.encode()) }.map { SectionOption(it, label(it), detail(it)) }
+            .filter { names.add(it.label.lowercase()) }
     }
 
     /** The options whose name has every word of [query] (any order), leaving out rows the page already has. */
@@ -136,10 +174,14 @@ object PageLayouts {
         val words = query.lowercase().split(' ').filter { it.isNotBlank() }
         val taken = have.map { it.id }.toSet()
         return options().filter { it.section.id !in taken }.filter { o ->
-            val text = (o.label + " " + o.detail).lowercase().replace("top 10", "top 10 top10 ten")
-            words.all { it in text }
+            val text = (o.label + " " + o.detail).lowercase().replace("top 10", "top 10 top10 ten").replace("&", "and")
+            words.all { w -> forms(w).any { it in text } }
         }
     }
+
+    /** A typed word and its singular, so "sports documentaries" finds "sport documentaries". */
+    private fun forms(w: String): List<String> = listOfNotNull(w, w.takeIf { it.length > 3 && it.endsWith("ies") }?.let { it.dropLast(3) + "y" },
+        w.takeIf { it.length > 3 && it.endsWith("s") && !it.endsWith("ss") && it != "series" }?.dropLast(1))
 
     // --- Kept as one JSON object: page key to its list of section ids ---------------------------------------------
 

@@ -30,6 +30,8 @@ class CinemaContentScrollView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : ScrollView(context, attrs, defStyleAttr) {
     var navigationTarget: (() -> View?)? = null
+    /** Where Up from the page's topmost item goes (the profile in the top right corner), or null to stay put. */
+    var topTarget: (() -> View?)? = null
 
     /** Motion.GLIDE: the curve PageScroll.CURVE names. */
     private val curve = Motion.GLIDE
@@ -169,6 +171,7 @@ class CinemaContentScrollView @JvmOverloads constructor(
             // Up from the topmost item: nothing above can take focus (a page header, the Downloads counts), so show the
             // top of the page instead of leaving it scrolled out of reach.
             if (next == null && direction == View.FOCUS_UP && scrollY > 0) glideTo(0)
+            if (next == null && direction == View.FOCUS_UP) topTarget?.invoke()?.takeIf { it.isShown && it.isFocusable }?.let { return it }
             if (next == null) return focused
             // Entering another row starts at its first card, not at whichever card sits nearest the one we left.
             val row = next.ancestorRow()

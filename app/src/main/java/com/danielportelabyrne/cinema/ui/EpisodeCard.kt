@@ -34,23 +34,22 @@ import com.danielportelabyrne.cinema.design.cinema.StripeDrawable
  */
 class EpisodeCard(context: Context, val number: Int, name: String, overview: String?) : FrameLayout(context) {
     val play = ActionDisc(context, 78, R.drawable.ic_cin_play, 34, nudge = 2f)
-    val download = ActionDisc(context, 62, R.drawable.ic_cin_dl, 28)
+    val download = ActionDisc(context, 46, R.drawable.ic_cin_dl, 24, bare = true)
     /** Opens the whole blurb in a sheet: the overview above is cut to two lines. Shown only when there is a blurb. */
-    val info = ActionDisc(context, 62, R.drawable.ic_cin_info, 28)
+    val info = ActionDisc(context, 46, R.drawable.ic_cin_info, 24, bare = true)
     private val fullOverview = overview?.trim().orEmpty()
     /** Opens the episode's details sheet. An unaired card with no discs is pressed as a whole, so it opens this too. */
     var onInfo: (() -> Unit)? = null
     /** Deletes this episode's file. Shown only while the card has focus and the episode is downloaded. */
-    val delete = ActionDisc(context, 56, R.drawable.ic_cin_trash, 26)
+    val delete = ActionDisc(context, 46, R.drawable.ic_cin_trash, 24, bare = true)
     /** Whether the episode is on disk, so it can be deleted. */
     var deletable = false
         set(v) { field = v; updateDelete() }
     var onDelete: (() -> Unit)? = null
-    /**
-     * Up from anywhere on the card (a disc, the delete disc, the card itself) goes where this says, normally the shown
-     * season's tab. Without it the focus search picks whichever tab happens to sit above the disc, which is another season.
-     */
-    var onUp: (() -> Boolean)? = null
+    /** Up from the card's top stop: normally the shown season's tab. */
+    var upTarget: (() -> View?)? = null
+    /** Left or Right: the neighbouring card's main stop, or null at the rail's end (focus stays). */
+    var neighbour: ((Int) -> View?)? = null
     /** Called once the card lights up or goes out, so the page can scroll it into view. */
     var onLit: ((Boolean) -> Unit)? = null
     /** Shown above the Download disc while it has focus ("Download S2 E4"); null for none. */
@@ -66,6 +65,8 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
     private val badgeCheck = Cinema.icon(context, R.drawable.ic_cin_check, Cinema.SAFFRON)
     private val badgeText = Cinema.text(context, "", 13, Cinema.SAFFRON, weight = 700, tracking = 0.14f).apply { maxLines = 1 }
     private val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; clipChildren = false; clipToPadding = false }
+    /** Download, details and delete: small outlined icons stacked down the still's right edge. */
+    private val side = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; clipChildren = false; clipToPadding = false }
     private val airs = Cinema.text(context, "", 18, Cinema.CREAM, weight = 600, tracking = 0.12f, caps = true).apply { visibility = GONE }
     // Watch progress along the still's foot: the signature wavy bar, as on the Continue row, over a soft shade.
     private val track = View(context).apply {
@@ -122,10 +123,13 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         badge.addView(badgeText)
         still.addView(badge, LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { rightMargin = p(12); topMargin = p(12) })
         // Discs are larger than they look (room for the focus rings), so the 22 px gap is taken back off their margins.
+        // Play alone in the middle of the still; the smaller actions in a column on its right.
         actions.addView(play, LinearLayout.LayoutParams(play.box, play.box))
-        actions.addView(download, LinearLayout.LayoutParams(download.box, download.box).apply { marginStart = p(22) - play.pad - download.pad })
-        actions.addView(info, LinearLayout.LayoutParams(info.box, info.box).apply { marginStart = p(22) - download.pad - info.pad })
         still.addView(actions, LayoutParams(-1, -1))
+        side.addView(download, LinearLayout.LayoutParams(download.box, download.box))
+        side.addView(info, LinearLayout.LayoutParams(info.box, info.box))
+        side.addView(delete, LinearLayout.LayoutParams(delete.box, delete.box))
+        still.addView(side, LayoutParams(-2, -1, Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = p(8) })
         airs.setPadding(p(18), p(10), p(18), p(10)); airs.background = Cinema.glass(context, 22f, 0xA80C0806.toInt())
         still.addView(airs, LayoutParams(-2, -2, Gravity.CENTER))
         still.addView(track, LayoutParams(-1, p(48), Gravity.BOTTOM))
@@ -149,7 +153,6 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         info.setOnClickListener { onInfo?.invoke() }
         // Pressing the card itself (only an unaired card with no discs is a single stop) opens the details.
         setOnClickListener { if (cardStop) onInfo?.invoke() }
-        still.addView(delete, LayoutParams(delete.box, delete.box, Gravity.BOTTOM or Gravity.END).apply { rightMargin = p(12); bottomMargin = p(16) })
         buildPlaceholder()
     }
 
@@ -162,12 +165,58 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         play.contentDescription = if (watched) "Watched. Play episode $number again" else "Play episode $number"
     }
 
-    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP && hasFocus()) {
-            if (event.action == android.view.KeyEvent.ACTION_DOWN && onUp?.invoke() == true) return true
-            if (onUp != null) return true   // never let a stray Up fall to a neighbouring season
+    /** The small actions that can take focus, top to bottom. */
+    private val sideStops: List<View> get() = if (cardStop) emptyList() else listOfNotNull(
+        download.takeIf { it.visibility == VISIBLE && it.isFocusable }, info.takeIf { it.visibility == VISIBLE && it.isFocusable },
+        delete.takeIf { it.visibility == VISIBLE && it.isFocusable })
+
+    /** Where Left and Right land on this card: Play, so the rail moves one episode per press. */
+    val mainStop: View get() = when {
+        cardStop -> this
+        play.visibility == VISIBLE && play.isFocusable -> play
+        else -> sideStops.firstOrNull() ?: this
+    }
+
+    /**
+     * Cinema moves focus by asking the focused view's parents (see CinemaActivity), so the card answers for its own stops:
+     * Left and Right go card to card, Down from Play walks down the small actions, Up climbs back to Play and then to
+     * the season's tab, never to whichever tab happens to sit above.
+     */
+    override fun focusSearch(focused: View?, direction: Int): View? {
+        if (focused == null || !isAncestorOf(focused)) return super.focusSearch(focused, direction)
+        val sides = sideStops
+        val at = sides.indexOf(focused)
+        return when (direction) {
+            View.FOCUS_LEFT, View.FOCUS_RIGHT -> neighbour?.let { it(direction) ?: focused } ?: super.focusSearch(focused, direction)
+            View.FOCUS_DOWN -> when {
+                at >= 0 && at + 1 < sides.size -> sides[at + 1]
+                at < 0 && sides.isNotEmpty() -> sides.first()
+                else -> super.focusSearch(focused, direction)
+            }
+            // Up from any small action goes straight back to Play; Up from Play leaves the card (the season picker).
+            View.FOCUS_UP -> when {
+                at >= 0 && mainStop !== focused && mainStop !in sides -> mainStop
+                else -> upTarget?.invoke() ?: super.focusSearch(focused, direction)
+            }
+            else -> super.focusSearch(focused, direction)
         }
-        return super.dispatchKeyEvent(event)
+    }
+
+    /**
+     * From outside the card (a row above or below, the season picker) only Play can be landed on: the small actions are
+     * reached by Down from Play, never by passing over or climbing into them.
+     */
+    override fun addFocusables(views: java.util.ArrayList<View>, direction: Int, focusableMode: Int) {
+        if (hasFocus()) { super.addFocusables(views, direction, focusableMode); return }
+        val main = mainStop
+        if (main === this) { if (isFocusable && visibility == VISIBLE) views.add(this) }
+        else if (main.isFocusable && main.visibility == VISIBLE) views.add(main)
+    }
+
+    private fun isAncestorOf(v: View): Boolean {
+        var p: Any? = v
+        while (p is View) { if (p === this) return true; p = p.parent }
+        return false
     }
 
     /** Every focus stop on the card, left to right. */
@@ -176,7 +225,7 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         info.takeIf { it.visibility == VISIBLE && it.isFocusable })
 
     /** Where Down from the season bar lands. */
-    val firstStop: View get() = focusStops.firstOrNull() ?: this
+    val firstStop: View get() = mainStop
 
     private fun stopsAtCard(look: CardLook) = look.unaired && !look.downloadFocusable && !look.playShown
 
@@ -205,6 +254,7 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
         }
 
         actions.visibility = if (cardStop) GONE else VISIBLE
+        side.visibility = if (cardStop) GONE else VISIBLE
         play.visibility = if (look.playShown) VISIBLE else GONE
         play.isFocusable = look.playShown
         download.visibility = if (look.downloadShown) VISIBLE else GONE
@@ -325,7 +375,8 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
     /** The delete disc shows while this card has focus, and only for an episode that is on disk. */
     private fun updateDelete() {
         val show = deletable && hasFocus()
-        delete.visibility = if (show) VISIBLE else GONE
+        // Its place in the column is kept while the card is lit elsewhere, so the icons above do not shift.
+        delete.visibility = if (show) VISIBLE else if (deletable) INVISIBLE else GONE
         delete.isFocusable = show; delete.isClickable = show
     }
 
@@ -368,8 +419,10 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
  * ink icon inside four stripe rings and a drop shadow, like the player's pause disc. It can carry a saffron progress
  * ring (a download). The view is larger than the disc by [pad] on every side, to hold the rings and shadow.
  */
-class ActionDisc(context: Context, private val discMock: Int, iconRes: Int, private var iconMock: Int, private val nudge: Float = 0f) : View(context) {
-    val pad = Cinema.px(context, PAD)
+class ActionDisc(context: Context, private val discMock: Int, iconRes: Int, private var iconMock: Int, private val nudge: Float = 0f,
+                 /** Just the icon in cream, no disc behind it; focused, a thin cream ring and the icon a little larger. */
+                 private val bare: Boolean = false) : View(context) {
+    val pad = Cinema.px(context, if (bare) 4 else PAD)
     val box = Cinema.px(context, discMock) + 2 * pad
     var onFocus: ((Boolean) -> Unit)? = null
 
@@ -404,6 +457,7 @@ class ActionDisc(context: Context, private val discMock: Int, iconRes: Int, priv
         val cx = width / 2f; val cy = height / 2f
         val r = Cinema.pxf(context, discMock / 2f)
         val focused = isFocused
+        if (bare) { drawBare(canvas, cx, cy, r, focused); return }
         if (android.os.Build.VERSION.SDK_INT >= 28) {
             // The disc's drop shadow, painted once per size (Glows) instead of blurred live for every disc every frame.
             val sr = r + Cinema.pxf(context, if (focused) 16 else 2)
@@ -435,6 +489,26 @@ class ActionDisc(context: Context, private val discMock: Int, iconRes: Int, priv
         icon.setTint(if (focused) Cinema.INK else iconColor)
         icon.setBounds((cx - s + dx).toInt(), (cy - s).toInt(), (cx + s + dx).toInt(), (cy + s).toInt())
         icon.draw(canvas)
+    }
+
+    private fun drawBare(canvas: Canvas, cx: Float, cy: Float, r: Float, focused: Boolean) {
+        if (focused) {
+            stroke.color = Cinema.CREAM; stroke.strokeWidth = Cinema.pxf(context, 3)
+            canvas.drawCircle(cx, cy, r - stroke.strokeWidth / 2f, stroke)
+        }
+        if (ring) {
+            val rr = r - Cinema.pxf(context, 2)
+            arc.set(cx - rr, cy - rr, cx + rr, cy + rr)
+            stroke.color = Cinema.SAFFRON; stroke.strokeWidth = Cinema.pxf(context, 3)
+            canvas.drawArc(arc, -90f, 360f * (progress ?: 0.25f).coerceIn(0.02f, 1f), false, stroke)
+        }
+        val s = Cinema.pxf(context, iconMock / 2f) * (if (focused) 1.1f else 1f)
+        // A faint dark copy just below the icon keeps it legible over a bright still.
+        icon.setTint(Cinema.alpha(0xFF000000.toInt(), 0.55f))
+        val d = Cinema.pxf(context, 1.5f)
+        icon.setBounds((cx - s).toInt(), (cy - s + d).toInt(), (cx + s).toInt(), (cy + s + d).toInt()); icon.draw(canvas)
+        icon.setTint(if (focused) Cinema.CREAM else iconColor)
+        icon.setBounds((cx - s).toInt(), (cy - s).toInt(), (cx + s).toInt(), (cy + s).toInt()); icon.draw(canvas)
     }
 
     private companion object { const val PAD = 30 }

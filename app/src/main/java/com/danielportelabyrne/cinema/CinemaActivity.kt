@@ -58,6 +58,89 @@ class CinemaActivity : AppCompatActivity() {
         infoSheet = InfoSheet(findViewById(R.id.infoSheet))
         updates = com.danielportelabyrne.cinema.update.UpdatePrompt(this, infoSheet)
         updates.sayIfUpdated()
+        choosePerson(savedInstanceState) { startCinema() }
+    }
+
+    // --- Who is watching ---------------------------------------------------------------------------------------
+
+    private var whoScreen: com.danielportelabyrne.cinema.ui.account.WhoScreen? = null
+    private var syncer: com.danielportelabyrne.cinema.data.account.ProfileSyncer? = null
+
+    /**
+     * Settles who is watching before anything personal is opened, then runs [go]. The TV launcher's chosen account
+     * decides it when Cinema knows who that is; otherwise "Who's watching?" asks. A restored screen, a launch to resume
+     * something, or a TV with one person and no launcher to ask goes straight in as the person last in use.
+     */
+    private fun choosePerson(saved: Bundle?, go: () -> Unit) {
+        val platform = AndroidPlatform(this)
+        val accounts = com.danielportelabyrne.cinema.data.account.AccountStore(platform)
+        val jf = JellyfinClient(platform)
+        if (saved != null || !jf.isConnected) { android.util.Log.w("Accounts", "launch: straight in (restored=${saved != null})"); accounts.applyScope(); go(); return }
+        Thread {
+            // The person signed in before people existed becomes the first one, and keeps everything that was here.
+            if (accounts.all().isEmpty()) jf.savedSession()?.let { s ->
+                accounts.upsert(com.danielportelabyrne.cinema.data.account.CinemaAccount(s.userId, jf.userName(s) ?: "Me"), s.token)
+                accounts.activate(s.userId)
+            }
+            val launcher = com.danielportelabyrne.cinema.data.account.LauncherProfile.current(this)
+            val asked = intent?.getStringExtra(EXTRA_PERSON)?.let { id -> accounts.all().firstOrNull { it.userId == id } }
+            val matched = launcher?.let { accounts.forLauncher(it) }
+            val resuming = intent?.action == ContinueWatchingContract.actionResume(packageName)
+            android.util.Log.w("Accounts", "launch: ${accounts.all().size} people, launcher=${launcher?.name}, matched=${matched?.name}, asked=${asked?.name}, resuming=$resuming")
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val all = accounts.all()
+                val direct = when {
+                    intent?.getBooleanExtra(EXTRA_ASK, false) == true -> null
+                    asked != null -> asked
+                    matched != null -> matched
+                    resuming -> accounts.active()
+                    launcher == null && all.size == 1 -> all.first()
+                    else -> null
+                }
+                if (direct != null) { launcher?.takeIf { asked == null }?.let { accounts.link(direct.userId, it) }; become(accounts, jf, direct, go); return@runOnUiThread }
+                whoScreen = com.danielportelabyrne.cinema.ui.account.WhoScreen(this, findViewById(R.id.cinemaRoot), accounts, jf, infoSheet, launcher) { person ->
+                    // Remembered only when it is plainly the same person; otherwise Cinema asks again next time.
+                    launcher?.takeIf { com.danielportelabyrne.cinema.data.account.AccountStore.sameName(it, person) }?.let { accounts.link(person.userId, it) }
+                    become(accounts, jf, person, go)
+                }.also { it.show() }
+            }
+        }.start()
+    }
+
+    /** Signs Jellyfin in as [person], takes their saved copy from the server, then opens Cinema as them. */
+    private fun become(accounts: com.danielportelabyrne.cinema.data.account.AccountStore, jf: JellyfinClient,
+                       person: com.danielportelabyrne.cinema.data.account.CinemaAccount, go: () -> Unit) {
+        whoScreen?.busy("Hello, ${person.name}")
+        Thread {
+            accounts.activate(person.userId)
+            val token = accounts.token(person.userId)
+            if (token != null && jf.currentUserId != person.userId) jf.restoreSession(com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession(jf.server, token, person.userId))
+            syncer = com.danielportelabyrne.cinema.data.account.ProfileSyncer(this, jf, person.userId).also { s -> runCatching { s.pull() } }
+            // The character picked on another TV comes with the person's saved things.
+            AndroidPlatform.personalPrefs(this, "cinema_personal").getString("avatar", null)?.let { a ->
+                val picked = a.ifBlank { null }
+                if (picked != person.avatar) accounts.setAvatar(person.userId, picked)
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                go()
+                whoScreen?.close(); whoScreen = null
+                syncer?.start()
+            }
+        }.start()
+    }
+
+    /** Opens Cinema again from "Who's watching?", to change who is watching. */
+    fun switchPerson() {
+        syncer?.pushNow()
+        startActivity(android.content.Intent(this, CinemaActivity::class.java).putExtra(EXTRA_ASK, true)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        finish()
+    }
+
+    /** Everything else, once the person is settled (their personal files are the ones opened from here on). */
+    private fun startCinema() {
         val platform = AndroidPlatform(this)
         val settings = CinemaSettings(platform)
         val addonSync = com.danielportelabyrne.cinema.data.stremio.StremioAddonSync(
@@ -109,6 +192,13 @@ class CinemaActivity : AppCompatActivity() {
             saveFollowedChannels = { settings.followedChannels = it },
             featuredHistory = { settings.featuredHistory },
             saveFeaturedHistory = { settings.featuredHistory = it },
+            personName = { com.danielportelabyrne.cinema.data.account.AccountStore(platform).active()?.name },
+            onSwitchPerson = { switchPerson() },
+            personAvatar = { com.danielportelabyrne.cinema.data.account.AccountStore(platform).active()?.avatar },
+            onAvatar = { id -> val store = com.danielportelabyrne.cinema.data.account.AccountStore(platform)
+                store.active()?.let { store.setAvatar(it.userId, id) }
+                // Kept with the person's own things too, so their other TVs show the same character.
+                AndroidPlatform.personalPrefs(this, "cinema_personal").edit().putString("avatar", id ?: "").apply() },
             pageLayouts = { settings.pageLayouts },
             savePageLayouts = { settings.pageLayouts = it }
         )
@@ -181,6 +271,37 @@ class CinemaActivity : AppCompatActivity() {
         super.onStart()
         if (!startedOnce) { startedOnce = true; return }
         openingWaiting = true
+        followLauncher()
+    }
+
+    /**
+     * Back in front (the TV woke, or someone came back from another app): when the launcher now says someone else is
+     * watching, Cinema opens again as them, or asks who they are when Cinema has not met them.
+     */
+    private fun followLauncher() {
+        if (!::moviesPanel.isInitialized) return
+        Thread {
+            val person = com.danielportelabyrne.cinema.data.account.LauncherProfile.current(this) ?: return@Thread
+            val accounts = com.danielportelabyrne.cinema.data.account.AccountStore(AndroidPlatform(this))
+            val active = accounts.active() ?: return@Thread
+            val match = accounts.forLauncher(person)
+            if (match?.userId == active.userId) return@Thread
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                syncer?.pushNow()
+                val again = android.content.Intent(this, CinemaActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                if (match != null) again.putExtra(EXTRA_PERSON, match.userId) else again.putExtra(EXTRA_ASK, true)
+                startActivity(again); finish()
+            }
+        }.start()
+    }
+
+    companion object {
+        /** Open as this person (a Jellyfin user id), without asking. */
+        const val EXTRA_PERSON = "cinema_person"
+        /** Open on "Who's watching?", whatever the launcher says. */
+        const val EXTRA_ASK = "cinema_ask_person"
     }
 
     /**
@@ -221,6 +342,7 @@ class CinemaActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
+        if (!::moviesPanel.isInitialized) return   // still on "Who's watching?"
         handleDebugIntent(intent)
         handleResumeIntent(intent)
     }
@@ -275,7 +397,13 @@ class CinemaActivity : AppCompatActivity() {
         updates.checkInBackground { !isFinishing && moviesPanel.isVisible && !setup.isVisible && !infoSheet.isVisible && splash == null }
     }
 
+    override fun onStop() {
+        super.onStop()
+        syncer?.pushNow()
+    }
+
     override fun onDestroy() {
+        syncer?.stop()
         if (::moviesPanel.isInitialized) moviesPanel.close()
         if (::setup.isInitialized) setup.shutdown()
         PhoneInput.detach(this)

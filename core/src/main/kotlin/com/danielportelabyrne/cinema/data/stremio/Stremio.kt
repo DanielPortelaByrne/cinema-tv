@@ -75,12 +75,17 @@ object StremioApi {
      * Saved films, newest first, left out when removed from the library or only a temporary entry from watching. Series and
      * anything without an IMDb id (anime, channels) are not films Cinema can look up.
      */
-    fun films(json: String): List<StremioFilm> = try {
+    fun films(json: String): List<StremioFilm> = saved(json, "movie")
+
+    /** Saved series, newest first, on the same terms as [films]; "watched" means at least one episode was. */
+    fun savedSeries(json: String): List<StremioFilm> = saved(json, "series")
+
+    private fun saved(json: String, type: String): List<StremioFilm> = try {
         val a = JSONObject(json).optJSONArray("result") ?: JSONArray()
         (0 until a.length()).mapNotNull { i ->
             val o = a.optJSONObject(i) ?: return@mapNotNull null
             val id = o.optString("_id")
-            if (o.optString("type") != "movie" || !Regex("tt\\d+").matches(id) || o.optBoolean("removed") || o.optBoolean("temp")) return@mapNotNull null
+            if (o.optString("type") != type || !Regex("tt\\d+").matches(id) || o.optBoolean("removed") || o.optBoolean("temp")) return@mapNotNull null
             val state = o.optJSONObject("state")
             StremioFilm(
                 id, o.optString("name").ifBlank { id }, o.optString("poster").takeIf { it.startsWith("http") },
@@ -212,6 +217,12 @@ class StremioClient(private val send: (method: String, url: String, body: String
     fun films(authKey: String): List<StremioFilm>? {
         val reply = send("POST", "https://api.strem.io/api/datastoreGet", libraryRequest(authKey)) ?: return null
         return try { if (JSONObject(reply).has("result")) StremioApi.films(reply) else null } catch (_: Exception) { null }
+    }
+
+    /** The series saved in the account's library; null when Stremio can't be reached or the key no longer works. */
+    fun savedSeries(authKey: String): List<StremioFilm>? {
+        val reply = send("POST", "https://api.strem.io/api/datastoreGet", libraryRequest(authKey)) ?: return null
+        return try { if (JSONObject(reply).has("result")) StremioApi.savedSeries(reply) else null } catch (_: Exception) { null }
     }
 
     /** The add-ons installed in the account; null when Stremio can't be reached or the key no longer works. */

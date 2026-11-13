@@ -21,7 +21,9 @@ data class Title(
     val imdbId: String?,
     val tmdbId: String?,
     /** Services it streams on in the UK without renting ("Netflix", "HBO Max"), at most three. */
-    val services: List<String> = emptyList()
+    val services: List<String> = emptyList(),
+    /** JustWatch's genre codes for it ("crm", "doc"), to keep the titles a row's every genre applies to. */
+    val genreCodes: List<String> = emptyList()
 ) {
     /** "2019 · 15 · 1h 41m · Horror, Thriller": only what is known. */
     fun metaLine(): String = listOfNotNull(
@@ -47,7 +49,12 @@ data class ShelfSpec(
     val genre: String? = null, val sort: String = "TRENDING", val ranked: Boolean = false, val query: String? = null,
     val madeIn: List<String> = emptyList(), val country: String? = null,
     /** A channel's shows (from Wikidata and Cinemeta) rather than what JustWatch lists. */
-    val channel: ChannelQuery? = null
+    val channel: ChannelQuery? = null,
+    /**
+     * Genres a title must also have ("crm" on a documentary row makes it crime documentaries). JustWatch reads several
+     * genres as any of them, so these are kept here, from a wider list asked for by [genre].
+     */
+    val alsoGenres: List<String> = emptyList()
 )
 
 /**
@@ -229,12 +236,30 @@ object Catalog {
     fun logoUrl(service: Service): String? = service.icon?.let { IMAGES + it }
 
     private const val QUERY = "query(\$f: TitleFilter!, \$c: Country!, \$l: Language!, \$n: Int!) { popularTitles(country: \$c, filter: \$f, first: \$n, sortBy: %SORT%) { edges { node { id objectType " +
-        "content(country: \$c, language: \$l) { title originalReleaseYear shortDescription runtime genres { translation(language: \$l) } ageCertification posterUrl " +
+        "content(country: \$c, language: \$l) { title originalReleaseYear shortDescription runtime genres { shortName translation(language: \$l) } ageCertification posterUrl " +
         "backdrops(format: JPG, profile: S1440) { backdropUrl } externalIds { imdbId tmdbId } scoring { imdbScore } } " +
         "offers(country: \$c, platform: WEB) { monetizationType package { clearName } } } } } }"
 
+    /** [QUERY] with paging: up to 100 titles a page (JustWatch's most), and the cursor for the next page. */
+    private val PAGE_QUERY = QUERY.replace("\$n: Int!)", "\$n: Int!, \$a: String)").replace("first: \$n,", "first: \$n, after: \$a,")
+        .replace("{ edges {", "{ pageInfo { endCursor hasNextPage } edges {")
+
+    /** One page of [spec] for a whole-category page: 100 titles from after [cursor] (null for the first). */
+    fun pageBody(spec: ShelfSpec, cursor: String?): String {
+        val o = JSONObject(requestBody(spec, 100))
+        o.put("query", PAGE_QUERY.replace("%SORT%", spec.sort))
+        cursor?.let { o.getJSONObject("variables").put("a", it) }
+        return o.toString()
+    }
+
+    /** A page's titles and the cursor for the one after it (null at the end). */
+    fun parsePage(json: String): Pair<List<Title>, String?> = try {
+        val info = JSONObject(json).getJSONObject("data").getJSONObject("popularTitles").optJSONObject("pageInfo")
+        parse(json) to info?.takeIf { it.optBoolean("hasNextPage") }?.optString("endCursor")?.takeIf { it.isNotBlank() }
+    } catch (_: Exception) { emptyList<Title>() to null }
+
     /** The request body for one shelf. */
-    fun requestBody(spec: ShelfSpec, count: Int = 20): String {
+    fun requestBody(spec: ShelfSpec, count: Int = if (spec.alsoGenres.isEmpty()) 20 else 100): String {
         val filter = JSONObject().put("objectTypes", JSONArray(spec.kinds.map { if (it == Kind.MOVIE) "MOVIE" else "SHOW" }))
         if (spec.packages.isNotEmpty()) filter.put("packages", JSONArray(spec.packages))
         spec.genre?.let { filter.put("genres", JSONArray().put(it)) }
@@ -271,6 +296,7 @@ object Catalog {
             val name = c.optString("title").ifBlank { return@mapNotNull null }
             val ids = c.optJSONObject("externalIds")
             val genres = c.optJSONArray("genres")?.let { g -> (0 until g.length()).mapNotNull { g.getJSONObject(it).optString("translation").ifBlank { null } } }.orEmpty()
+            val codes = c.optJSONArray("genres")?.let { g -> (0 until g.length()).mapNotNull { g.getJSONObject(it).optString("shortName").ifBlank { null } } }.orEmpty()
             val offers = node.optJSONArray("offers")
             val services = (0 until (offers?.length() ?: 0)).mapNotNull { k ->
                 val o = offers!!.getJSONObject(k)
@@ -290,7 +316,8 @@ object Catalog {
                 backdropUrl = backdrop(c.optJSONArray("backdrops")?.optJSONObject(0)?.optString("backdropUrl")),
                 imdbId = ids?.optString("imdbId")?.ifBlank { null },
                 tmdbId = ids?.optString("tmdbId")?.ifBlank { null },
-                services = services
+                services = services,
+                genreCodes = codes
             )
         }
     } catch (_: Exception) { emptyList() }

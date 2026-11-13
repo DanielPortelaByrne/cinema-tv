@@ -28,7 +28,23 @@ class CatalogRepository(platform: Platform) {
         spec.channel?.let { return Shelf(spec.heading, channels.titles(it, if (spec.ranked) 10 else 20)) }
         // Keyed by what is asked, not the heading: "Films" means something different on every service's page.
         val body = Catalog.requestBody(spec)
-        return Shelf(spec.heading, cache.titles(body, keep = spec.query == null))   // what someone typed is not worth keeping
+        val titles = cache.titles(body, keep = spec.query == null)   // what someone typed is not worth keeping
+        return Shelf(spec.heading, if (spec.alsoGenres.isEmpty()) titles else titles.filter { t -> spec.alsoGenres.all { it in t.genreCodes } })
+    }
+
+    /**
+     * A whole category, as many titles as [pages] pages of 100 hold (fewer when it runs out), each page handed to [page]
+     * as it comes. Titles a second genre rules out ([ShelfSpec.alsoGenres]) are left out. Blocks; not cached.
+     */
+    fun everything(spec: ShelfSpec, pages: Int, page: (List<Title>) -> Boolean) {
+        var cursor: String? = null
+        repeat(pages) {
+            val raw = fetch(Catalog.pageBody(spec, cursor)) ?: return
+            val (titles, next) = Catalog.parsePage(raw)
+            val kept = Catalog.dedupe(titles).filter { t -> spec.alsoGenres.all { it in t.genreCodes } }
+            if (!page(kept)) return
+            cursor = next ?: return
+        }
     }
 
     companion object {

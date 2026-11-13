@@ -223,6 +223,9 @@ class SeerrClient(platform: Platform) {
 
     private fun title(kind: Kind, tmdbId: Long): String? = SeerrApi.path(kind, tmdbId).let { p -> titles.get(base + p) { get(p) } }
 
+    /** The main characters of a title and who plays them, with a photo (TMDB's cast list). Blocks; empty when unknown. */
+    fun cast(kind: Kind, tmdbId: Long): List<CastMember> = if (!isSignedIn) emptyList() else title(kind, tmdbId)?.let { CastMember.parse(it) }.orEmpty()
+
     /** A title's genres and services (see SeerrApi.facts). Blocks; null when not signed in or not found. */
     fun titleFacts(kind: Kind, tmdbId: Long): TitleFacts? =
         if (!isSignedIn) null else title(kind, tmdbId)?.let { SeerrApi.facts(it, kind, tmdbId, Catalog.country, System.currentTimeMillis()) }

@@ -16,9 +16,50 @@ class AndroidPlatform(context: Context) : Platform {
     override val cacheDir: File get() = app.cacheDir
     override val deviceName: String = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
 
-    override fun preferences(name: String): Preferences = AndroidPreferences(app.getSharedPreferences(name, Context.MODE_PRIVATE))
-    override fun hasPreferences(name: String): Boolean = File(app.applicationInfo.dataDir, "shared_prefs/$name.xml").exists()
-    override fun deletePreferences(name: String): Boolean = app.deleteSharedPreferences(name)
+    override fun preferences(name: String): Preferences = AndroidPreferences(app.getSharedPreferences(scopedName(app, name), Context.MODE_PRIVATE))
+    override fun hasPreferences(name: String): Boolean = File(app.applicationInfo.dataDir, "shared_prefs/${scopedName(app, name)}.xml").exists()
+    override fun deletePreferences(name: String): Boolean = app.deleteSharedPreferences(scopedName(app, name))
+
+    companion object {
+        /**
+         * The file [name] really is for the person in use (see ProfileScope). The first time the person who had the TV
+         * before accounts opens one of their files, it starts as a copy of the TV's old one, so nothing of theirs is lost.
+         */
+        fun scopedName(context: Context, name: String): String {
+            val app = context.applicationContext
+            if (!com.danielportelabyrne.cinema.data.account.ProfileScope.loaded) loadScope(app)
+            val real = com.danielportelabyrne.cinema.data.account.ProfileScope.fileName(name)
+            if (real != name && com.danielportelabyrne.cinema.data.account.ProfileScope.legacyOwner) {
+                val dir = File(app.applicationInfo.dataDir, "shared_prefs")
+                if (!File(dir, "$real.xml").exists() && File(dir, "$name.xml").exists()) copy(app.getSharedPreferences(name, Context.MODE_PRIVATE), app.getSharedPreferences(real, Context.MODE_PRIVATE))
+            }
+            return real
+        }
+
+        /** A personal file opened straight from Android (the stores in the app module), for the person in use. */
+        fun personalPrefs(context: Context, name: String): SharedPreferences = context.getSharedPreferences(scopedName(context, name), Context.MODE_PRIVATE)
+
+        /** Reads who is in use from the TV's account file, without going through [scopedName] (which needs it). */
+        @Synchronized private fun loadScope(app: Context) {
+            if (com.danielportelabyrne.cinema.data.account.ProfileScope.loaded) return
+            val p = app.getSharedPreferences("accounts", Context.MODE_PRIVATE)
+            val ids = com.danielportelabyrne.cinema.data.account.AccountStore.parse(p.getString("list", null)).map { it.userId }
+            val id = p.getString("active", null)?.takeIf { it in ids }
+            com.danielportelabyrne.cinema.data.account.ProfileScope.set(id, id == null || id == p.getString("original", null))
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun copy(from: SharedPreferences, to: SharedPreferences) {
+            val e = to.edit()
+            from.all.forEach { (k, v) ->
+                when (v) {
+                    is String -> e.putString(k, v); is Boolean -> e.putBoolean(k, v); is Long -> e.putLong(k, v)
+                    is Int -> e.putInt(k, v); is Float -> e.putFloat(k, v); is Set<*> -> e.putStringSet(k, v as Set<String>)
+                }
+            }
+            e.commit()
+        }
+    }
     override fun readAsset(name: String): String? = try {
         app.assets.open(name).bufferedReader().use { it.readText() }
     } catch (_: java.io.FileNotFoundException) { null }

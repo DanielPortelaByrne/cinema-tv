@@ -23,6 +23,12 @@
         android:label="Read Cinema's Continue watching"
         android:protectionLevel="normal" />
 
+    <!-- Who is watching, as the TV's launcher (MCM Launcher) was told when the TV was switched on. -->
+    <uses-permission android:name="com.example.tvlauncher.permission.CURRENT_PROFILE" />
+    <queries>
+        <provider android:authorities="com.example.tvlauncher.profile" />
+    </queries>
+
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 

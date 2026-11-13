@@ -167,7 +167,7 @@ class PlayerActivity : AppCompatActivity() {
     private var forcedStart = false
     private lateinit var network: NetworkEstimator
     private lateinit var bandwidth: DefaultBandwidthMeter
-    private val resumePrefs by lazy { getSharedPreferences("resume_positions", MODE_PRIVATE) }
+    private val resumePrefs by lazy { com.danielportelabyrne.cinema.device.AndroidPlatform.personalPrefs(this, "resume_positions") }
 
     private var index = 0
     private var audioFallbackQueued = false

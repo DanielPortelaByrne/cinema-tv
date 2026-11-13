@@ -49,7 +49,7 @@ data class ResumeItem(
  * point. Jellyfin keeps its own resume points; this is only for streams that are not in the library.
  */
 class ContinueWatching(private val context: Context) {
-    private val prefs = context.getSharedPreferences("continue_watching", Context.MODE_PRIVATE)
+    private val prefs = com.danielportelabyrne.cinema.device.AndroidPlatform.personalPrefs(context, "continue_watching")
     private val artDir = File(context.filesDir, "resume_art").apply { mkdirs() }
 
     @Synchronized

@@ -471,6 +471,7 @@ class SetupFlow(
     private val stremio = com.danielportelabyrne.cinema.data.stremio.StremioClient()
 
     private fun filmCount(n: Int) = if (n == 1) "1 film" else "$n films"
+    private fun seriesCount(n: Int) = if (n == 1) "1 series" else "$n series"
 
     private fun stremioStep() {
         val key = settings.stremioKey
@@ -529,7 +530,8 @@ class SetupFlow(
         backTo = ::integrationsStep
         val token = pageToken
         p.status("Loading your Stremio library…")
-        bg({ stremio.films(key).let { it to (it == null && stremio.keyRejected(key)) } }) { (films, rejected) ->
+        var shows: List<com.danielportelabyrne.cinema.data.stremio.StremioFilm> = emptyList()
+        bg({ shows = stremio.savedSeries(key).orEmpty(); stremio.films(key).let { it to (it == null && stremio.keyRejected(key)) } }) { (films, rejected) ->
             if (token != pageToken) return@bg
             if (rejected) { settings.stremioKey = null; changed = true; stremioIntroStep(); return@bg }
             if (films == null) {
@@ -540,11 +542,18 @@ class SetupFlow(
             }
             val toWatch = films.filter { !it.watched }
             p.status("")
-            p.body("${filmCount(films.size)} saved in Stremio, ${toWatch.size} not watched yet. Importing adds the ones you haven't watched to Watchlist, a row in My library.")
+            p.body("${filmCount(films.size)} saved in Stremio, ${toWatch.size} not watched yet, and ${seriesCount(shows.size)}. " +
+                "Importing adds the films you haven't watched, or your series, to your Watchlist.")
             p.primary("Import to my watchlist", R.drawable.ic_cin_check) {
                 val added = settings.addToWatchlist(toWatch.map { com.danielportelabyrne.cinema.data.movies.WatchlistFilm(it.imdbId, it.name, it.year, it.poster) })
                 if (added > 0) changed = true
                 p.done(if (added > 0) "Added ${filmCount(added)} to your Watchlist. Find it in My library." else "Your Watchlist already has all of them.")
+            }
+            // Series are added whether or not an episode has been watched: a series saved in Stremio is one being followed.
+            if (shows.isNotEmpty()) p.secondary("Import my series to my watchlist") {
+                val added = settings.addToWatchlist(shows.map { com.danielportelabyrne.cinema.data.movies.WatchlistFilm(it.imdbId, it.name, it.year, it.poster, com.danielportelabyrne.cinema.data.movies.Kind.SHOW) })
+                if (added > 0) changed = true
+                p.done(if (added > 0) "Added ${seriesCount(added)} to your Watchlist." else "Your Watchlist already has all of them.")
             }
             p.secondary("Add-ons from Stremio") { stremioAddonsStep(key) }
             p.secondary("Refresh") { stremioStep() }

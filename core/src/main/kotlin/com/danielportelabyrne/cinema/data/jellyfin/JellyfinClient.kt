@@ -131,6 +131,72 @@ class JellyfinClient(platform: Platform) {
         } catch (_: Exception) { false }
     }
 
+    // --- People (see AccountStore) ---------------------------------------------------------------
+
+    /** The signed-in user's id, or null. */
+    val currentUserId: String? get() = userId
+
+    /** Signs [username] in without touching this TV's own sign-in: the session for a second person. Null on failure. */
+    fun authenticate(username: String, password: String): JellyfinSession? {
+        if (!hasServer) return null
+        val body = request("POST", JellyfinApi.cleanBase(server) + "/Users/AuthenticateByName", authed = false,
+            json = JSONObject().put("Username", username).put("Pw", password).toString()) ?: return null
+        return try {
+            val o = JSONObject(body)
+            JellyfinSession(JellyfinApi.cleanBase(server), o.getString("AccessToken"), o.getJSONObject("User").getString("Id"))
+        } catch (_: Exception) { null }
+    }
+
+    /** Trades an approved Quick Connect ticket for a session, without touching this TV's own sign-in. */
+    fun quickConnectSession(ticket: QuickConnectTicket): JellyfinSession? {
+        val body = request("POST", "${JellyfinApi.cleanBase(server)}/Users/AuthenticateWithQuickConnect", authed = false,
+            json = JSONObject().put("Secret", ticket.secret).toString()) ?: return null
+        return try {
+            val o = JSONObject(body)
+            JellyfinSession(JellyfinApi.cleanBase(server), o.getString("AccessToken"), o.getJSONObject("User").getString("Id"))
+        } catch (_: Exception) { null }
+    }
+
+    /** The name of the user a [session] belongs to. */
+    fun userName(session: JellyfinSession): String? = try {
+        val c = URL(JellyfinApi.cleanBase(session.server) + "/Users/Me").openConnection() as HttpURLConnection
+        c.connectTimeout = 6000; c.readTimeout = 10000
+        c.setRequestProperty("Authorization", JellyfinApi.authHeader(deviceId, deviceName, session.token))
+        c.setRequestProperty("Accept", "application/json")
+        c.exchange { if (c.responseCode in 200..299) JSONObject(c.inputStream.bufferedReader().use { it.readText() }).optString("Name").ifBlank { null } else null }
+    } catch (_: Exception) { null }
+
+    /**
+     * Makes a new Jellyfin user called [name], with no password, using this TV's sign-in (which must be an administrator).
+     * Returns its session, or a short reason it could not be made.
+     */
+    fun createUser(name: String): Pair<JellyfinSession?, String?> {
+        request("POST", JellyfinApi.cleanBase(server) + "/Users/New", json = JSONObject().put("Name", name).put("Password", "").toString())
+            ?: return null to "Couldn't make a Jellyfin user. Whoever is signed in here needs to be a Jellyfin administrator."
+        return (authenticate(name, "") ?: return null to "The user was made, but signing in as them failed") to null
+    }
+
+    private val profilePrefsUrl: String? get() = userId?.let { "${JellyfinApi.cleanBase(server)}/DisplayPreferences/cinema-profile?userId=${java.net.URLEncoder.encode(it, "UTF-8")}&client=cinema" }
+
+    /** The signed-in person's saved Cinema data on the server (Jellyfin's per-user display preferences), or null. */
+    fun profileData(): Map<String, String>? {
+        val body = request("GET", profilePrefsUrl ?: return null) ?: return null
+        return try {
+            val custom = JSONObject(body).optJSONObject("CustomPrefs") ?: return emptyMap()
+            custom.keys().asSequence().associateWith { custom.optString(it) }
+        } catch (_: Exception) { null }
+    }
+
+    /** Saves [data] as the signed-in person's Cinema data on the server. */
+    fun saveProfileData(data: Map<String, String>): Boolean {
+        val url = profilePrefsUrl ?: return false
+        val dto = JSONObject().put("Id", "cinema-profile").put("Client", "cinema").put("SortBy", "SortName").put("SortOrder", "Ascending")
+            .put("RememberIndexing", false).put("RememberSorting", false).put("ShowBackdrop", false).put("ShowSidebar", false)
+            .put("ScrollDirection", "Horizontal").put("PrimaryImageHeight", 0).put("PrimaryImageWidth", 0)
+            .put("CustomPrefs", JSONObject(data))
+        return request("POST", url, json = dto.toString()) != null
+    }
+
     // --- Library ---------------------------------------------------------------------------------
 
     @Volatile private var library: List<JellyfinItem> = emptyList()

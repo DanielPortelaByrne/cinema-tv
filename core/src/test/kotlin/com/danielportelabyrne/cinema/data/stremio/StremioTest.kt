@@ -86,6 +86,20 @@ class StremioTest {
         assertTrue(films[1].watched)
     }
 
+    @Test fun keepsSavedSeriesForTheWatchlist() {
+        val shows = StremioApi.savedSeries("""{"result":[
+            {"_id":"tt1","type":"movie","name":"Film","_mtime":"2025-01-01T00:00:00Z"},
+            {"_id":"tt3","type":"series","name":"Show","year":"2019-2022","_mtime":"2025-02-01T00:00:00Z","state":{"timesWatched":0}},
+            {"_id":"tt6","type":"series","name":"Dropped","removed":true,"_mtime":"2025-03-01T00:00:00Z"}]}""")
+        assertEquals(listOf("tt3"), shows.map { it.imdbId })
+        assertEquals(2019, shows[0].year)
+        // A series already on the watchlist without a kind becomes a series when imported.
+        val merged = com.danielportelabyrne.cinema.data.movies.Watchlist.merge(
+            listOf(com.danielportelabyrne.cinema.data.movies.WatchlistFilm("tt3", "Show", 2019, null)),
+            listOf(com.danielportelabyrne.cinema.data.movies.WatchlistFilm("tt3", "Show", 2019, null, com.danielportelabyrne.cinema.data.movies.Kind.SHOW)))
+        assertTrue(merged.single().isSeries)
+    }
+
     @Test fun readsASeriesEpisodesInOrderWithoutSpecials() {
         val json = """{"meta":{"name":"Breaking Bad","videos":[
             {"season":1,"episode":2,"name":"Cat's in the Bag...","thumbnail":"https://e/1/2.jpg","overview":"Walt and Jesse"},

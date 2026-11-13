@@ -22,7 +22,7 @@ class LetterboxdRepository(activity: Activity, allowBrowser: Boolean = true) {
     /** Poster lookups have a browser of their own, so the pages are not queued behind a rail of posters. */
     private val posterWeb = LetterboxdWeb(activity, allowBrowser)
     private val dir = File(activity.cacheDir, "letterboxd").apply { mkdirs() }
-    private val prefs = activity.getSharedPreferences(LetterboxdPages.PREFS, Activity.MODE_PRIVATE)
+    private val prefs = com.danielportelabyrne.cinema.device.AndroidPlatform.personalPrefs(activity, LetterboxdPages.PREFS)
     private val main = Handler(Looper.getMainLooper())
     private val pool = Executors.newFixedThreadPool(2)
     /** The last [load] of each path that said when it was no longer wanted: a page no one wants is not fetched. */

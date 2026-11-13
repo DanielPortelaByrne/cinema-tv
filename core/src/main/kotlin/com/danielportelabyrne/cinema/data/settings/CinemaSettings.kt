@@ -29,6 +29,14 @@ data class ClientLogin(val baseUrl: String, val username: String, val password: 
  */
 class CinemaSettings(platform: Platform) {
     private val prefs = platform.preferences("cinema_settings")
+    /**
+     * What belongs to the person in use rather than the TV: their watchlist, layouts, followed services, searches. With
+     * people set up it is a file per person (see ProfileScope); the person who had the TV before keeps what was here.
+     */
+    private val personal = platform.preferences("cinema_personal")
+    private fun personalString(key: String): String? = personal.getString(key, null)
+        ?: if (com.danielportelabyrne.cinema.data.account.ProfileScope.legacyOwner) prefs.getString(key, null) else null
+    private fun putPersonal(key: String, value: String?) { personal.edit().putString(key, value).apply() }
     private val secrets = platform.secretStore()
     /** The Letterboxd page keeps who is followed in its own preferences; they are read and written here for the restore file. */
     private val followPrefs = platform.preferences(com.danielportelabyrne.cinema.data.letterboxd.LetterboxdPages.PREFS)
@@ -46,8 +54,8 @@ class CinemaSettings(platform: Platform) {
         set(v) { prefs.edit().putBoolean("setup_done", v).apply() }
 
     var libraryOrder: LibraryOrder
-        get() = LibraryOrder.of(prefs.getString("library_order", null))
-        set(v) { prefs.edit().putString("library_order", v.name).apply() }
+        get() = LibraryOrder.of(personalString("library_order"))
+        set(v) { putPersonal("library_order", v.name) }
 
     /** Two-letter country for what is streaming where: the TV's own country until the owner picks another. */
     var region: String
@@ -107,8 +115,8 @@ class CinemaSettings(platform: Platform) {
 
     /** How far each episode got in a stream played here (see StreamProgress): streams leave no record in Jellyfin. */
     var streamProgress: String?
-        get() = prefs.getString("stream_progress", null)
-        set(v) { prefs.edit().putString("stream_progress", v).apply() }
+        get() = personalString("stream_progress")
+        set(v) { putPersonal("stream_progress", v) }
 
     /** Where viewers have left each series' episodes, and the credits answers already had (see CreditsStore). Kept on this TV only. */
     var creditsStore: String?
@@ -116,34 +124,34 @@ class CinemaSettings(platform: Platform) {
         set(v) { prefs.edit().putString("credits_store", v).apply() }
 
     /** The searches run lately on [keyboard], most recent first. Kept on this TV only. */
-    fun recentSearches(keyboard: SearchKeyboard): List<String> = RecentSearches.parse(prefs.getString(keyboard.key, null))
+    fun recentSearches(keyboard: SearchKeyboard): List<String> = RecentSearches.parse(personalString(keyboard.key))
 
-    fun setRecentSearches(keyboard: SearchKeyboard, terms: List<String>) { prefs.edit().putString(keyboard.key, RecentSearches.encode(terms)).apply() }
+    fun setRecentSearches(keyboard: SearchKeyboard, terms: List<String>) { putPersonal(keyboard.key, RecentSearches.encode(terms)) }
 
     /** How often Home has featured each title, so the landing page can rotate (see FeaturedRotation). Raw: the panel parses it. */
     var featuredHistory: String?
-        get() = prefs.getString("featured_history", null)
-        set(v) { prefs.edit().putString("featured_history", v).apply() }
+        get() = personalString("featured_history")
+        set(v) { putPersonal("featured_history", v) }
 
     /** How the owner laid out each page, row by row (see PageLayouts). Raw: the panel parses it. */
     var pageLayouts: String?
-        get() = prefs.getString("page_layouts", null)
-        set(v) { prefs.edit().putString("page_layouts", v).apply() }
+        get() = personalString("page_layouts")
+        set(v) { putPersonal("page_layouts", v) }
 
     /** The TV channels followed on Home ("Browse by channel"), in order. None until the owner follows one. */
     var followedChannels: List<Channel>
-        get() = FollowedChannels.parse(prefs.getString("followed_channels", null))
-        set(v) { prefs.edit().putString("followed_channels", FollowedChannels.toJson(v)).apply() }
+        get() = FollowedChannels.parse(personalString("followed_channels"))
+        set(v) { putPersonal("followed_channels", FollowedChannels.toJson(v)) }
 
     /** Films the owner means to watch, shown as the Watchlist row in My library. */
     /** The services followed on Home ("Browse by service"), in order. The original six until the owner changes them. */
     var followedServices: List<Service>
-        get() = FollowedServices.parse(prefs.getString("followed_services", null)) ?: FollowedServices.DEFAULT
-        set(v) { prefs.edit().putString("followed_services", FollowedServices.toJson(v)).apply() }
+        get() = FollowedServices.parse(personalString("followed_services")) ?: FollowedServices.DEFAULT
+        set(v) { putPersonal("followed_services", FollowedServices.toJson(v)) }
 
     var watchlist: List<WatchlistFilm>
-        get() = Watchlist.parse(prefs.getString("watchlist_films", null))
-        set(v) { prefs.edit().putString("watchlist_films", Watchlist.toJson(v)).apply() }
+        get() = Watchlist.parse(personalString("watchlist_films"))
+        set(v) { putPersonal("watchlist_films", Watchlist.toJson(v)) }
 
     /** Puts [films] at the front of the watchlist, skipping any already there. Returns how many were new. */
     fun addToWatchlist(films: List<WatchlistFilm>): Int {
@@ -184,7 +192,7 @@ class CinemaSettings(platform: Platform) {
     }
 
     /** Forgets everything here and in the secret store. Jellyfin and Seerr sign-ins are cleared by their own clients. */
-    fun reset() { prefs.edit().clear().apply(); secrets.clear() }
+    fun reset() { prefs.edit().clear().apply(); personal.edit().clear().apply(); secrets.clear() }
 
     companion object {
         fun defaultRegion(): String = Locale.getDefault().country.takeIf { it.length == 2 }?.uppercase(Locale.ROOT) ?: "US"
