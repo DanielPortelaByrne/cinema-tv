@@ -605,7 +605,8 @@ class MoviesPanel(
         // The active item's stripe bar sits just outside the pill's left edge.
         body.clipChildren = false; body.clipToPadding = false
         (page.layoutParams as? ViewGroup.MarginLayoutParams)?.let { it.marginStart = 0; page.layoutParams = it }
-        page.setOnScrollChangeListener { _, _, _, _, _ -> fillNear(); refreshGlass(); updateEdgeFade() }
+        buildRailHint()
+        page.setOnScrollChangeListener { _, _, _, _, _ -> fillNear(); refreshGlass(); updateEdgeFade(); syncRailAway() }
         (page as? CinemaContentScrollView)?.navigationTarget = { activeNavigationItem() }
         val brand = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -640,7 +641,7 @@ class MoviesPanel(
         top.addView(navigationItem("Settings", R.drawable.ic_gear, Dest.Settings), LinearLayout.LayoutParams(-1, Cinema.px(activity, 64)).apply { topMargin = Cinema.px(activity, 12) })
         navigationFocusListener = android.view.ViewTreeObserver.OnGlobalFocusChangeListener { _, focused ->
             if (focused != null && isWithin(focused, page)) { lastContentFocus = focused; lastContentAt = pageRect(focused) }
-            setNavigationExpanded(isWithin(focused, top))
+            setNavigationExpanded(isWithin(focused, top)); syncRailAway()
             styleTabs()
             refreshGlass(450)   // a card scaling or a row gliding beneath the rail
         }.also { top.viewTreeObserver.addOnGlobalFocusChangeListener(it) }
@@ -903,6 +904,66 @@ class MoviesPanel(
         if (::scene.isInitialized) scene.setLayerType(View.LAYER_TYPE_NONE, null)
     }
 
+    // --- Home's hidden rail ---------------------------------------------------------------------------
+
+    /** How far the rail is slid off to the left, 0 in its place to 1 gone. Only Home, at its top, lets it go. */
+    private var railAway = 0f
+    private var railAwayTarget = 0f
+    private var railAwayAnimator: android.animation.ValueAnimator? = null
+    private var railHint: View? = null
+    private var railHintPulse: android.animation.ObjectAnimator? = null
+
+    /** Whether the rail should be out of sight now: Home at its featured title, with the rail not in use. */
+    private fun railShouldBeAway() = current === Dest.Home && page.scrollY < Cinema.px(activity, RAIL_AWAY_SCROLL) && !top.hasFocus() && !navigationExpanded
+
+    /**
+     * Slides the rail off (or back to the place it holds on every other page) to match [railShouldBeAway]. It comes back
+     * to its collapsed place the moment focus goes to it or the page scrolls on, and Left from the featured title is
+     * what takes focus there. A little arrow at the edge shows it is there.
+     */
+    private fun syncRailAway(immediate: Boolean = false) {
+        if (!topBuilt) return
+        val target = if (railShouldBeAway()) 1f else 0f
+        if (railAwayAnimator == null && railAway == target) return
+        if (railAwayAnimator != null && railAwayTarget == target) return
+        railAwayAnimator?.let { it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }; railAwayAnimator = null
+        railAwayTarget = target
+        if (immediate || !com.danielportelabyrne.cinema.design.Motion.animationsOn(top)) { applyAway(target); return }
+        railAwayAnimator = android.animation.ValueAnimator.ofFloat(railAway, target).apply {
+            duration = 420
+            interpolator = com.danielportelabyrne.cinema.design.Motion.GLIDE
+            addUpdateListener { applyAway(it.animatedValue as Float) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) { if (railAwayAnimator === animation) { railAwayAnimator = null; applyAway(target); frost?.refreshNow() } }
+            })
+            start()
+        }
+    }
+
+    private fun applyAway(a: Float) {
+        railAway = a
+        val dx = -a * Cinema.pxf(activity, 32 + RAIL_WIDTH + 80)
+        top.translationX = dx; frost?.translationX = dx
+        railHint?.let { h ->
+            h.alpha = a; h.visibility = if (a > 0f) View.VISIBLE else View.INVISIBLE
+            if (a >= 1f) { if (railHintPulse?.isRunning != true && com.danielportelabyrne.cinema.design.Motion.animationsOn(h)) railHintPulse?.start() }
+            else { railHintPulse?.cancel(); h.translationX = 0f }
+        }
+    }
+
+    /** The little arrow at the left edge that says the rail is there: a chevron pointing left, nudging toward the edge. */
+    private fun buildRailHint() {
+        val size = Cinema.px(activity, 44)
+        val hint = Cinema.icon(activity, R.drawable.ic_cin_chev, Cinema.alpha(Cinema.CREAM, 0.85f)).apply {
+            rotation = 180f; alpha = 0f; visibility = View.INVISIBLE; isFocusable = false; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        body.addView(hint, body.indexOfChild(top) + 1, FrameLayout.LayoutParams(size, size, Gravity.START or Gravity.CENTER_VERTICAL).apply { marginStart = Cinema.px(activity, 22) })
+        railHintPulse = android.animation.ObjectAnimator.ofFloat(hint, View.TRANSLATION_X, 0f, -Cinema.pxf(activity, 10)).apply {
+            duration = 900; repeatCount = android.animation.ValueAnimator.INFINITE; repeatMode = android.animation.ValueAnimator.REVERSE
+        }
+        railHint = hint
+    }
+
     /** Sets everything the rail's progress decides, from [p] alone. At 0 nothing is left on the page: no push, dim, shadow or blur. */
     private fun applyRail(p: Float) {
         val q = RailMotion.settle(p)
@@ -1038,7 +1099,7 @@ class MoviesPanel(
             // is part-watched, then Top 10, with picks, services, the library and genres spread through the rest.
             Dest.Home -> { buildHero(); shelves(Catalog.homePage(), gen, mapOf(
                 1 to { personalRows(gen) }, 2 to { picksRow(gen) }, 3 to { serviceTiles(gen) },
-                5 to { libraryRow(gen, "My library", 18) }, 7 to { genreTiles() })) }
+                5 to { libraryRow(gen, "My library", 18) }, 7 to { genreTiles() }), rankedFirst = true) }
             Dest.Films -> { buildHero(); shelves(Catalog.filmsPage(), gen, personal) }
             Dest.Series -> { buildHero(); shelves(Catalog.seriesPage(), gen, personal) }
             Dest.Docs -> { buildHero(); shelves(Catalog.documentariesPage(), gen, personal) }
@@ -1062,6 +1123,7 @@ class MoviesPanel(
             is Dest.MusicArtist -> buildMusicArtist(d.id, d.name, gen)
             Dest.Settings -> Unit
         }
+        syncRailAway(immediate = true)
         Perf.took("movies.build (main thread)", Perf.now() - buildStart)
     }
 
@@ -1140,12 +1202,12 @@ class MoviesPanel(
      * ordinary shelf leads as the spotlight (see ShelfLooks.plan). [between] adds the page's own rows: the one at key i
      * goes in just before the i-th shelf shown, or at the end when there are fewer shelves.
      */
-    private fun shelves(specs: List<ShelfSpec>, gen: Int, between: Map<Int, () -> Unit> = emptyMap()) {
+    private fun shelves(specs: List<ShelfSpec>, gen: Int, between: Map<Int, () -> Unit> = emptyMap(), rankedFirst: Boolean = false) {
         // Every row gets its place on the page now, with room reserved so the page does not jump; its titles are fetched
         // and drawn only when it is about to be seen, which is what keeps opening the page quick.
         // Rows take turns between a spotlight, wide stills, posters, a grid and smaller stills, so neighbours never look alike.
         heroFromSpotlight = false
-        val plan = com.danielportelabyrne.cinema.data.movies.ShelfLooks.plan(specs)
+        val plan = com.danielportelabyrne.cinema.data.movies.ShelfLooks.plan(specs, rankedFirst)
         plan.forEachIndexed { i, (spec, look) ->
             between[i]?.invoke()
             val row = row(spec.heading, null)
@@ -4567,28 +4629,31 @@ class MoviesPanel(
      */
     private fun buildHero() {
         ui.removeCallbacks(heroTick)
-        val hero = HeroFrame(activity, Cinema.px(activity, HERO_HEIGHT)).apply { clipChildren = false; clipToPadding = false }
+        val home = heroCompact
+        val hero = HeroFrame(activity, Cinema.px(activity, if (home) HOME_HERO_HEIGHT else HERO_HEIGHT)).apply { clipChildren = false; clipToPadding = false }
         heroBackdrop = HeroBackdrop(activity, focusX = 0.5f, fadeTo = 0.38f)
         hero.addView(heroBackdrop, FrameLayout.LayoutParams(Cinema.px(activity, 1230), Cinema.px(activity, 1080), Gravity.END or Gravity.TOP))
-        hero.addView(View(activity).apply { background = Scrim.hero() }, FrameLayout.LayoutParams(-1, Cinema.px(activity, 1080)))
+        // Home keeps the picture clear: a light fade across, a dark cloud only where the words sit.
+        hero.addView(View(activity).apply { background = if (home) Scrim(listOf(0f to 0.5f, 0.3f to 0.18f, 0.6f to 0.04f, 1f to 0f), listOf(0f to 0.55f, 0.22f to 0f, 0.5f to 0f, 1f to 0.96f)) else Scrim.hero() }, FrameLayout.LayoutParams(-1, Cinema.px(activity, 1080)))
+        if (home) hero.addView(View(activity).apply { background = com.danielportelabyrne.cinema.design.cinema.CloudScrim() }, FrameLayout.LayoutParams(Cinema.px(activity, 1400), Cinema.px(activity, 1080)))
         // The fades' left edge carried on behind the rail, so pushing the page aside never shows a different ground there.
         hero.addView(View(activity).apply { background = Scrim(listOf(0f to 0.98f, 1f to 0.98f), listOf(0f to 0.55f, 0.22f to 0f, 0.5f to 0f, 1f to 0.96f)) },
             FrameLayout.LayoutParams(Cinema.px(activity, RAIL_WIDTH_OPEN - RAIL_WIDTH) + 2, Cinema.px(activity, 1080)).apply { leftMargin = -Cinema.px(activity, RAIL_WIDTH_OPEN - RAIL_WIDTH) })
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
-            setPadding(pageStart, Cinema.px(activity, 140), pageEnd, 0)
+            setPadding(if (home) Cinema.px(activity, HOME_HERO_START) else pageStart, Cinema.px(activity, if (home) 160 else 140), pageEnd, 0)
         }
         heroEyebrow = FrameLayout(activity)
-        heroTitle = Cinema.title(activity, "", 128)
+        heroTitle = Cinema.title(activity, "", if (home) 116 else 128)
         heroMeta = FrameLayout(activity)
-        heroBody = Cinema.synopsis(activity, "", 26, maxLines = 3)
+        heroBody = Cinema.synopsis(activity, "", if (home) 24 else 26, maxLines = 3)
         heroProvider = FrameLayout(activity)
         heroButtons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false; visibility = View.INVISIBLE }
         heroDots = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         column.addView(heroEyebrow)
-        column.addView(heroTitle, LinearLayout.LayoutParams(Cinema.px(activity, 1100), -2).apply { topMargin = Cinema.px(activity, 22) })
+        column.addView(heroTitle, LinearLayout.LayoutParams(Cinema.px(activity, if (home) 960 else 1100), -2).apply { topMargin = Cinema.px(activity, 22) })
         column.addView(heroMeta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
-        column.addView(heroBody, LinearLayout.LayoutParams(Cinema.px(activity, 820), -2).apply { topMargin = Cinema.px(activity, 26) })
+        column.addView(heroBody, LinearLayout.LayoutParams(Cinema.px(activity, if (home) 700 else 820), -2).apply { topMargin = Cinema.px(activity, 26) })
         column.addView(heroProvider, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
         column.addView(heroButtons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 34) })
         column.addView(heroDots, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 82) })
@@ -4644,8 +4709,8 @@ class MoviesPanel(
         heroEyebrow.removeAllViews()
         heroEyebrow.addView(Cinema.eyebrow(activity, listOfNotNull("Featured", heroLabels.getOrNull(index))))
         heroTitle.text = t.name
-        Cinema.style(heroTitle, heroTitleSize(t.name), Cinema.CREAM, serif = true, tracking = -0.02f)
-        heroMeta.removeAllViews(); heroMeta.addView(meta(t))
+        Cinema.style(heroTitle, heroTitleSize(t.name) * (if (heroCompact) 0.9 else 1.0), Cinema.CREAM, serif = true, tracking = -0.02f)
+        heroMeta.removeAllViews(); heroMeta.addView(if (heroCompact) meta(t, 21) else meta(t))
         heroBody.text = t.overview.orEmpty(); heroBody.visibility = if (t.overview.isNullOrBlank()) View.GONE else View.VISIBLE
         heroProvider.removeAllViews(); Cinema.provider(activity, t.services)?.let { heroProvider.addView(it) }
         heroProvider.visibility = if (heroProvider.childCount == 0) View.GONE else View.VISIBLE
@@ -4657,7 +4722,7 @@ class MoviesPanel(
             // Coming back up to the featured title shows all of it: the page returns to the very top, not just far
             // enough to reveal the button.
             b.setOnFocusChangeListener { _, f -> if (f && !detailOpen) page.post { pageGlideTo(0) } }
-            heroButtons.addView(b, LinearLayout.LayoutParams(-2, Cinema.px(activity, 76)).apply { if (heroButtons.childCount > 0) marginStart = gap })
+            heroButtons.addView(b, LinearLayout.LayoutParams(-2, Cinema.px(activity, if (heroCompact) 68 else 76)).apply { if (heroButtons.childCount > 0) marginStart = gap })
         }
         e.library?.let { lib ->
             val state = if (lib.isSeries) WatchState.NotStarted else WatchProgress.of(lib.played, lib.resumeMs, lib.runtimeMin)
@@ -4681,6 +4746,9 @@ class MoviesPanel(
         if (focusedAt >= 0) heroButtons.getChildAt(minOf(focusedAt, heroButtons.childCount - 1))?.requestFocus()
         else if (!detailOpen && overlay.findFocus() == null && current != Dest.Search) requestFocusRobust(overlay as ViewGroup, heroButtons.getChildAt(0))
     }
+
+    /** Home's featured title: a little smaller, pushed left (the rail is away), over a cloud rather than a broad fade. */
+    private val heroCompact get() = current === Dest.Home
 
     /** Long names step down from the mockup's 128px so they still fit on two lines. */
     private fun heroTitleSize(name: String) = when { name.length > 30 -> 76; name.length > 18 -> 96; else -> 128 }
@@ -6214,10 +6282,13 @@ class MoviesPanel(
         /** Title logos (transparent PNGs) by IMDb id, from the artwork service Stremio uses. No key; 404 when there is none. */
         const val LOGO_URL = "https://images.metahub.space/logo/medium/%s/img"
         const val HERO_HEIGHT = 762      // mockup px: the first row's heading sits at 812
+        const val HOME_HERO_HEIGHT = 850 // Home gives its featured title more room: the Top 10 heading sits at 900, just showing
+        const val HOME_HERO_START = 100  // mockup px: with the rail away the words start nearer the edge
         const val HERO_TURN_MS = 9_000L  // the featured title turns this often
         const val RAIL_WIDTH = 92        // mockup px, collapsed
         const val RAIL_WIDTH_OPEN = 420  // mockup px, with labels while the rail has focus
         const val RAIL_EDGE = 24         // mockup px: the open rail's shadow on the page
+        const val RAIL_AWAY_SCROLL = 200 // mockup px: Home brings its rail back once the page has scrolled this far
         const val PREWARM_SHELVES = 4
         const val CARDS_PER_FRAME = 4
         const val TRACK_HEIGHT = 84

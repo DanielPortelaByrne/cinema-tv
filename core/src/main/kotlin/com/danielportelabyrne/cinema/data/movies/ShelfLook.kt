@@ -33,8 +33,9 @@ object ShelfLooks {
      * A page's shelves in the order they are shown, each with its look. The first ordinary shelf moves to the top, so
      * the row right under the featured title is always the spotlight; a Top 10 row that led the page comes next.
      */
-    fun plan(specs: List<ShelfSpec>): List<Pair<ShelfSpec, ShelfLook>> {
-        val lead = specs.indexOfFirst { !it.ranked }
+    fun plan(specs: List<ShelfSpec>, rankedFirst: Boolean = false): List<Pair<ShelfSpec, ShelfLook>> {
+        // [rankedFirst] keeps a leading Top 10 where it is: Home shows it right under the featured title.
+        val lead = if (rankedFirst && specs.firstOrNull()?.ranked == true) -1 else specs.indexOfFirst { !it.ranked }
         val ordered = if (lead > 0) listOf(specs[lead]) + specs.filterIndexed { i, _ -> i != lead } else specs
         return ordered.zip(forShelves(ordered))
     }

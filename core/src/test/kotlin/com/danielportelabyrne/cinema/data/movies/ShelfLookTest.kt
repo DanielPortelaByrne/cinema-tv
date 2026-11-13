@@ -54,4 +54,12 @@ class ShelfLookTest {
         assertEquals(POSTERS, ShelfLooks.resolve(SPOTLIGHT, listOf(title("a", false), title("b", false), title("c", false), title("d", true))))
         assertEquals(SPOTLIGHT, ShelfLooks.resolve(SPOTLIGHT, listOf(title("a", true))))
     }
+
+    @Test fun homeCanKeepItsTop10RightUnderTheFeaturedTitle() {
+        val plan = ShelfLooks.plan(Catalog.homePage(), rankedFirst = true)
+        assertEquals("Top 10 today", plan[0].first.heading)
+        assertEquals(RANKED, plan[0].second)
+        assertEquals(SPOTLIGHT, plan[1].second)
+        assertEquals("Top 10 today", ShelfLooks.plan(Catalog.homePage())[1].first.heading)
+    }
 }
