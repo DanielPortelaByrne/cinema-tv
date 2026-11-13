@@ -216,6 +216,7 @@ class CinemaModel(
     fun start() {
         Catalog.country = settings.region
         Catalog.followed = settings.followedServices
+        Catalog.followedChannels = settings.followedChannels
         stack.clear()
         if (client.isConnected || settings.setupDone) { stack += Route.Browse; refresh(); loadStorage() }
         else { stack += Route.Setup; setup.startFirstRun() }

@@ -65,6 +65,7 @@ class CinemaActivity : AppCompatActivity() {
         val preset = Preset.load(platform)?.also { it.applySettings(platform, settings) }
         Catalog.country = settings.region
         Catalog.followed = settings.followedServices
+        Catalog.followedChannels = settings.followedChannels
         jellyfin = JellyfinClient(AndroidPlatform(this))
         jellyfin.onReachabilityChanged = { reachable -> runOnUiThread {
             if (!isFinishing && !isDestroyed) CinemaToast.show(
@@ -104,7 +105,10 @@ class CinemaActivity : AppCompatActivity() {
             saveRecentSearches = { keyboard, terms -> settings.setRecentSearches(keyboard, terms) },
             watchlist = { settings.watchlist },
             saveWatchlist = { settings.watchlist = it },
-            saveFollowedServices = { settings.followedServices = it }
+            saveFollowedServices = { settings.followedServices = it },
+            saveFollowedChannels = { settings.followedChannels = it },
+            featuredHistory = { settings.featuredHistory },
+            saveFeaturedHistory = { settings.featuredHistory = it }
         )
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

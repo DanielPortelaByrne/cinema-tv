@@ -20,9 +20,12 @@ private const val TAG = "Catalog"
  */
 class CatalogRepository(platform: Platform) {
     private val cache = shared(platform)
+    private val channels = ChannelRepository(platform)
 
     /** One shelf: from cache when there is one (refreshed behind the scenes when old), otherwise the network. */
     fun shelf(spec: ShelfSpec): Shelf {
+        // A channel's shows come from Wikidata and Cinemeta, which keep their own copies.
+        spec.channel?.let { return Shelf(spec.heading, channels.titles(it, if (spec.ranked) 10 else 20)) }
         // Keyed by what is asked, not the heading: "Films" means something different on every service's page.
         val body = Catalog.requestBody(spec)
         return Shelf(spec.heading, cache.titles(body, keep = spec.query == null))   // what someone typed is not worth keeping

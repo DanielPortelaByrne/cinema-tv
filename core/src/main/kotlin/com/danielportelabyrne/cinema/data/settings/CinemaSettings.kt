@@ -1,5 +1,7 @@
 package com.danielportelabyrne.cinema.data.settings
 
+import com.danielportelabyrne.cinema.data.movies.Channel
+import com.danielportelabyrne.cinema.data.movies.FollowedChannels
 import com.danielportelabyrne.cinema.data.movies.FollowedServices
 import com.danielportelabyrne.cinema.data.movies.Service
 import com.danielportelabyrne.cinema.data.movies.Watchlist
@@ -117,6 +119,16 @@ class CinemaSettings(platform: Platform) {
     fun recentSearches(keyboard: SearchKeyboard): List<String> = RecentSearches.parse(prefs.getString(keyboard.key, null))
 
     fun setRecentSearches(keyboard: SearchKeyboard, terms: List<String>) { prefs.edit().putString(keyboard.key, RecentSearches.encode(terms)).apply() }
+
+    /** How often Home has featured each title, so the landing page can rotate (see FeaturedRotation). Raw: the panel parses it. */
+    var featuredHistory: String?
+        get() = prefs.getString("featured_history", null)
+        set(v) { prefs.edit().putString("featured_history", v).apply() }
+
+    /** The TV channels followed on Home ("Browse by channel"), in order. None until the owner follows one. */
+    var followedChannels: List<Channel>
+        get() = FollowedChannels.parse(prefs.getString("followed_channels", null))
+        set(v) { prefs.edit().putString("followed_channels", FollowedChannels.toJson(v)).apply() }
 
     /** Films the owner means to watch, shown as the Watchlist row in My library. */
     /** The services followed on Home ("Browse by service"), in order. The original six until the owner changes them. */

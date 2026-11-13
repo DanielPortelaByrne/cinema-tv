@@ -126,23 +126,33 @@ object ServiceDirectory {
         else -> "Runs in " + Locale("", s.country).getDisplayCountry(Locale.ENGLISH).ifBlank { s.country }
     }
 
+    /**
+     * How well [name] answers [query], 0 for not at all: exact 100, its alias 95, starts with it 85, every word of the query
+     * starts a word of it 70, inside a word 50. Shared by services and channels so one list can be ranked.
+     */
+    fun score(name: String, query: String, aliasHit: Boolean = false): Int {
+        val q = fold(query)
+        if (q.isEmpty()) return 0
+        val n = fold(name)
+        val words = n.split(' ')
+        return when {
+            n == q -> 100
+            aliasHit -> 95
+            n.startsWith(q) -> 85
+            q.split(' ').all { t -> words.any { it.startsWith(t) } } -> 70
+            q.length >= 3 && words.any { it.contains(q.replace(" ", "")) } -> 50   // inside a word, never across two ("tubi tv" is not an "itv")
+            else -> 0
+        }
+    }
+
+    /** [score] of a service for [query], counting what people call it. */
+    fun scoreOf(s: Service, query: String): Int = score(s.label, query, aliasHit = ALIASES[fold(query)] == s.code)
+
     /** The services [query] names, best first: by name, by a word of it, by what people call it. Empty for a blank query. */
     fun search(all: List<Service>, query: String, viewer: String, limit: Int = 30): List<Service> {
-        val q = fold(query)
-        if (q.isEmpty()) return emptyList()
-        val tokens = q.split(' ')
-        val alias = ALIASES[q]
+        if (fold(query).isEmpty()) return emptyList()
         return all.mapNotNull { s ->
-            val name = fold(s.label)
-            val words = name.split(' ')
-            val score = when {
-                name == q -> 100
-                alias != null && alias == s.code -> 95
-                name.startsWith(q) -> 85
-                tokens.all { t -> words.any { it.startsWith(t) } } -> 70
-                q.length >= 3 && words.any { it.contains(q.replace(" ", "")) } -> 50   // inside a word, never across two ("tubi tv" is not an "itv")
-                else -> 0
-            }
+            val score = scoreOf(s, query)
             if (score == 0) null else Triple(s, score, if (runsHere(s, viewer)) 1 else 0)
         }.sortedWith(compareByDescending<Triple<Service, Int, Int>> { it.second }.thenByDescending { it.third }.thenBy { it.first.label.length }.thenBy { it.first.label })
             .take(limit).map { it.first }

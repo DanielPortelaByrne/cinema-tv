@@ -113,6 +113,9 @@ import com.danielportelabyrne.cinema.design.cinema.AmbientBackground
 import com.danielportelabyrne.cinema.design.cinema.CinemaButton
 import com.danielportelabyrne.cinema.design.cinema.CinemaConfirm
 import com.danielportelabyrne.cinema.data.search.RecentSearches
+import com.danielportelabyrne.cinema.data.movies.FeaturedCandidate
+import com.danielportelabyrne.cinema.data.movies.FeaturedRotation
+import com.danielportelabyrne.cinema.data.movies.FeaturedSeen
 import com.danielportelabyrne.cinema.data.movies.FollowedServices
 import com.danielportelabyrne.cinema.data.movies.ServiceDirectory
 import com.danielportelabyrne.cinema.data.movies.ServiceDirectoryRepository
@@ -188,7 +191,12 @@ class MoviesPanel(
     /** Keeps the watchlist after a title is added to it or taken off it. */
     private val saveWatchlist: (List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm>) -> Unit = {},
     /** Keeps the services followed on Home ("Browse by service") after they change. */
-    private val saveFollowedServices: (List<Service>) -> Unit = {}
+    private val saveFollowedServices: (List<Service>) -> Unit = {},
+    /** Keeps the TV channels followed on Home ("Browse by channel") after they change. */
+    private val saveFollowedChannels: (List<com.danielportelabyrne.cinema.data.movies.Channel>) -> Unit = {},
+    /** How often Home has featured each title (see FeaturedRotation), as kept, and the way to keep it. */
+    private val featuredHistory: () -> String? = { null },
+    private val saveFeaturedHistory: (String) -> Unit = {}
 ) {
     /** Where the page is: one of the tabs, or a service or genre opened from Home, or search. */
     private sealed class Dest {
@@ -213,6 +221,8 @@ class MoviesPanel(
         /** The services followed on Home, and the search for more to follow. */
         object ServiceManage : Dest()
         object ServiceSearch : Dest()
+        /** A TV channel followed from there: what it made, best of all time and era by era. */
+        class OnChannel(val channel: com.danielportelabyrne.cinema.data.movies.Channel) : Dest()
         /** Music: the server's album lists, one album, one artist. */
         object Music : Dest()
         class MusicAlbum(val id: String) : Dest()
@@ -223,7 +233,7 @@ class MoviesPanel(
 
     /** The rail item a page belongs to: a service or genre page is part of Home, every Letterboxd page of Letterboxd. */
     private fun railOf(d: Dest): Dest = when (d) {
-        is Dest.OnService, is Dest.InGenre, Dest.ServiceManage, Dest.ServiceSearch -> Dest.Home
+        is Dest.OnService, is Dest.OnChannel, is Dest.InGenre, Dest.ServiceManage, Dest.ServiceSearch -> Dest.Home
         is Dest.LbPerson, is Dest.LbListPage, Dest.LbSearch, Dest.LbFollow -> Dest.Letterboxd
         is Dest.MusicAlbum, is Dest.MusicArtist -> Dest.Music
         Dest.Watchlist -> Dest.Library
@@ -834,6 +844,14 @@ class MoviesPanel(
     private var railEdge: View? = null
     /** The rail's one progress, 0 closed to 1 open; every property is read from it (see RailMotion). */
     private var railP = 0f
+    /**
+     * Extra push the page gets while the rail is open, on Home's landing only: its words start nearer the edge than every
+     * other page's (the rail is away), so the usual push would leave them under the open rail. This brings them to where
+     * every other page's words are. Fixed when the rail starts to open; gone when it is closed.
+     */
+    private var railExtra = 0f
+    private fun heroClearance(): Float =
+        if (current === Dest.Home && heroSet && page.scrollY < Cinema.px(activity, RAIL_AWAY_SCROLL)) Cinema.pxf(activity, 184 - HOME_HERO_START) else 0f
     private var railAnimator: android.animation.ValueAnimator? = null
     private var railTarget = 0f
     private val railTint = android.animation.ArgbEvaluator()
@@ -874,6 +892,7 @@ class MoviesPanel(
      */
     private fun animateRail(target: Float) {
         railTarget = target
+        if (target > 0f && railP <= 0f) railExtra = heroClearance()
         railAnimator?.let { it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }; railAnimator = null
         val from = railP
         val ms = RailMotion.duration(from, target)
@@ -881,7 +900,7 @@ class MoviesPanel(
         // One cached picture of the page slides while the rail moves, rather than every row being drawn again each frame.
         // No layer: on a slow TV caching the page costs more than drawing it.
         // The glass is photographed with the page already where it will be, so it never reflects the old layout while it grows.
-        frost?.let { f -> f.shiftSource = if (::scene.isInitialized) scene else null; f.forcedShift = RailMotion.push(target, Cinema.pxf(activity, RAIL_WIDTH), Cinema.pxf(activity, RAIL_WIDTH_OPEN)); f.refreshNow() }
+        frost?.let { f -> f.shiftSource = if (::scene.isInitialized) scene else null; f.forcedShift = RailMotion.push(target, Cinema.pxf(activity, RAIL_WIDTH), Cinema.pxf(activity, RAIL_WIDTH_OPEN)) + railExtra * target; f.refreshNow() }
         railAnimator = android.animation.ValueAnimator.ofFloat(from, target).apply {
             duration = ms
             interpolator = com.danielportelabyrne.cinema.design.Motion.GLIDE
@@ -898,7 +917,7 @@ class MoviesPanel(
     /** Lands the rail closed at once, with nothing left moving: the panel hiding, or the page replaced while it shut. */
     private fun resetRail() {
         railAnimator?.let { it.removeAllListeners(); it.removeAllUpdateListeners(); it.cancel() }; railAnimator = null
-        navigationExpanded = false; railTarget = 0f
+        navigationExpanded = false; railTarget = 0f; railExtra = 0f
         frost?.forcedShift = null
         applyRail(0f)
         if (::scene.isInitialized) scene.setLayerType(View.LAYER_TYPE_NONE, null)
@@ -971,8 +990,8 @@ class MoviesPanel(
         val closed = Cinema.pxf(activity, RAIL_WIDTH); val open = Cinema.pxf(activity, RAIL_WIDTH_OPEN)
         val push = RailMotion.push(q, closed, open)
         val shown = q > 0f
-        // Only a move: no blur, no scale. The ground behind stays still.
-        if (::scene.isInitialized) scene.translationX = push
+        // Only a move: no blur, no scale. The ground behind stays still. The page goes a little further than the rail grows on Home's landing.
+        if (::scene.isInitialized) scene.translationX = push + railExtra * q
         railEdge?.let { e -> e.alpha = q; e.translationX = push; e.visibility = if (shown) View.VISIBLE else View.INVISIBLE }
         // The rail and its glass: laid out open, shown to the width the progress gives. The stripe bar draws a little left of the pill.
         val width = Math.round(closed + push)
@@ -1081,7 +1100,7 @@ class MoviesPanel(
         // The rail floats over the page, so nothing is reserved for a top bar. A page that opens on a featured title
         // starts at the very top, so its picture runs up to the screen edge; the others start a little way down.
         val opensOnHero = current === Dest.Home || current === Dest.Films || current === Dest.Series || current === Dest.Docs || current === Dest.Library ||
-            current is Dest.OnService || current is Dest.InGenre
+            current is Dest.OnService || current is Dest.OnChannel || current is Dest.InGenre
         // Search lays itself out in screen coordinates, straight from the mockup.
         content.setPadding(0, if (opensOnHero || current === Dest.Search) 0 else Cinema.px(activity, 52), 0, dp(48))
         if (current !== Dest.Search) { if (voiceActive) voice?.cancel(); searchUi = null }
@@ -1097,8 +1116,8 @@ class MoviesPanel(
         when (val d = current) {
             // Home threads its own rows between the catalogue's: the spotlight right under the featured title, then what
             // is part-watched, then Top 10, with picks, services, the library and genres spread through the rest.
-            Dest.Home -> { buildHero(); shelves(Catalog.homePage(), gen, mapOf(
-                1 to { personalRows(gen) }, 2 to { picksRow(gen) }, 3 to { serviceTiles(gen) },
+            Dest.Home -> { buildHero(); featureFromPool(gen); shelves(Catalog.homePage(), gen, mapOf(
+                1 to { personalRows(gen) }, 2 to { picksRow(gen) }, 3 to { serviceTiles(gen); channelTiles(gen) },
                 5 to { libraryRow(gen, "My library", 18) }, 7 to { genreTiles() }), rankedFirst = true) }
             Dest.Films -> { buildHero(); shelves(Catalog.filmsPage(), gen, personal) }
             Dest.Series -> { buildHero(); shelves(Catalog.seriesPage(), gen, personal) }
@@ -1111,6 +1130,7 @@ class MoviesPanel(
             // A service with few titles listed fills its page with its country's own films and series, so it is not all "streaming on" it.
             is Dest.OnService -> { buildHero(); heroTag(if (d.service.sparse) "${d.service.homeName} films & series" else "Streaming on", d.service.label, Catalog.logoUrl(d.service)); shelves(Catalog.servicePage(d.service), gen, personal) }
             is Dest.InGenre -> { buildHero(); heroTag("Genre", d.genre.label); shelves(Catalog.genrePage(d.genre), gen, personal) }
+            is Dest.OnChannel -> { buildHero(); heroTag("TV channel", d.channel.name, d.channel.logo, lightLogo = true); shelves(Catalog.channelPage(d.channel), gen) }
             Dest.Letterboxd -> buildLetterboxd(gen)
             is Dest.LbPerson -> buildLbPerson(d.user, gen)
             is Dest.LbListPage -> buildLbList(d.path, gen)
@@ -1141,6 +1161,7 @@ class MoviesPanel(
         Dest.Music, is Dest.MusicAlbum, is Dest.MusicArtist -> AmbientBackground.MUSIC
         // A service's page takes the service's own colour; a genre's, the colour of its tile.
         is Dest.OnService -> AmbientBackground.from(ServiceCard.coloursFor(d.service.code).first)
+        is Dest.OnChannel -> AmbientBackground.from(ServiceCard.coloursFor("channel-" + d.channel.id).first)
         is Dest.InGenre -> GenreArt.coloursFor(d.genre.code).let { AmbientBackground.from(it.base, it.light) }
     }
 
@@ -1148,17 +1169,27 @@ class MoviesPanel(
      * Names the service or genre a page is about, laid over the top corner of the hero. It used to be a title row above the
      * hero, which pushed the featured picture down the screen and left these pages starting lower than Films and Series.
      */
-    private fun heroTag(kicker: String, name: String, logo: String? = null) {
+    private fun heroTag(kicker: String, name: String, logo: String? = null, lightLogo: Boolean = false) {
         val tag = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         // A service page leads with the service's own app icon, rounded like a launcher tile.
         logo?.let { url ->
             val icon = android.widget.ImageView(activity).apply {
-                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP; clipToOutline = true; contentDescription = name
+                scaleType = if (lightLogo) android.widget.ImageView.ScaleType.FIT_CENTER else android.widget.ImageView.ScaleType.CENTER_CROP; clipToOutline = true; contentDescription = name
                 outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(activity, 18)) } }
-                setBackgroundColor(Cinema.PLACEHOLDER)
+                // A channel's logo is a drawing on nothing: it sits whole on a light tile.
+                if (lightLogo) { setBackgroundColor(Cinema.alpha(Cinema.CREAM, 0.96f)); val pad = Cinema.px(activity, 8); setPadding(pad, pad, pad, pad) } else setBackgroundColor(Cinema.PLACEHOLDER)
             }
             tag.addView(icon, LinearLayout.LayoutParams(Cinema.px(activity, 76), Cinema.px(activity, 76)).apply { marginEnd = Cinema.px(activity, 22) })
             images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 76), tag = pageTag) { b -> icon.setImageBitmap(b) }
+        }
+        // A channel with no logo on record gets its initials.
+        if (logo == null && lightLogo) {
+            val icon = android.widget.ImageView(activity).apply {
+                clipToOutline = true; contentDescription = name; setBackgroundColor(Cinema.alpha(Cinema.CREAM, 0.96f))
+                outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(activity, 18)) } }
+                setImageBitmap(initialsTile(name, Cinema.px(activity, 76)))
+            }
+            tag.addView(icon, LinearLayout.LayoutParams(Cinema.px(activity, 76), Cinema.px(activity, 76)).apply { marginEnd = Cinema.px(activity, 22) })
         }
         val words = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         // Its own width: left to match the column, a kicker wider than a short name ("NOW") wrapped and lost its last word.
@@ -1244,7 +1275,7 @@ class MoviesPanel(
             val fetched = catalog.shelf(spec).titles.take(if (spec.ranked) 10 else SHELF_LIMIT).map { entry(it) }
             // Each title's own genres and services, kept so the personal shelves can tell which pages it belongs on.
             // A broadcaster's shelf asked for abroad lists that country's services: they add to what is known here.
-            learnFacts(fetched.map { TitleFacts.of(it.title, System.currentTimeMillis()) }, addServices = spec.country != null && spec.country != Catalog.country)
+            learnFacts(fetched.map { TitleFacts.of(it.title, System.currentTimeMillis()).let { f -> if (spec.channel != null) f.copy(services = null) else f } }, addServices = spec.country != null && spec.country != Catalog.country)
             val look =com.danielportelabyrne.cinema.data.movies.ShelfLooks.resolve(planned, fetched.map { it.title })
             val lead = if (look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT)
                 com.danielportelabyrne.cinema.data.movies.ShelfLooks.spotlightIndex(fetched.map { it.title }) ?: 0 else 0
@@ -1263,7 +1294,8 @@ class MoviesPanel(
                 // The featured titles come from the first row to load, but never from the spotlight while another row can
                 // give them: the same picture twice, one above the other, would waste the top of the page.
                 val spotlit = look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT
-                if (!heroSet || (heroFromSpotlight && !spotlit)) {
+                // Home's featured titles come from the pool (see featureFromPool) once it is built; until then, from the first row.
+                if ((!heroSet || (heroFromSpotlight && !spotlit)) && !(current === Dest.Home && featuredPool.isNotEmpty())) {
                     val featured = entries.withIndex().filter { it.value.title.backdropUrl != null && !(spotlit && it.index == 0) }.take(3)
                     if (featured.isNotEmpty()) {
                         setHero(featured.map { it.value }, related, featured.map { rankLabel(spec.heading, spec.ranked, it.index) })
@@ -4632,12 +4664,27 @@ class MoviesPanel(
         val home = heroCompact
         val hero = HeroFrame(activity, Cinema.px(activity, if (home) HOME_HERO_HEIGHT else HERO_HEIGHT)).apply { clipChildren = false; clipToPadding = false }
         heroBackdrop = HeroBackdrop(activity, focusX = 0.5f, fadeTo = 0.38f)
-        hero.addView(heroBackdrop, FrameLayout.LayoutParams(Cinema.px(activity, 1230), Cinema.px(activity, 1080), Gravity.END or Gravity.TOP))
+        // Home's picture starts at the screen's edge and runs wider than the screen (so its subjects sit right of centre): it has no left edge to show
+        // as a column, and the arc does the darkening.
+        hero.addView(heroBackdrop, if (home) FrameLayout.LayoutParams(Cinema.px(activity, 2200), Cinema.px(activity, 1080), Gravity.START or Gravity.TOP)
+            else FrameLayout.LayoutParams(Cinema.px(activity, 1230), Cinema.px(activity, 1080), Gravity.END or Gravity.TOP))
         // Home keeps the picture clear: a light fade across, a dark cloud only where the words sit.
-        hero.addView(View(activity).apply { background = if (home) Scrim(listOf(0f to 0.5f, 0.3f to 0.18f, 0.6f to 0.04f, 1f to 0f), listOf(0f to 0.55f, 0.22f to 0f, 0.5f to 0f, 1f to 0.96f)) else Scrim.hero() }, FrameLayout.LayoutParams(-1, Cinema.px(activity, 1080)))
-        if (home) hero.addView(View(activity).apply { background = com.danielportelabyrne.cinema.design.cinema.CloudScrim() }, FrameLayout.LayoutParams(Cinema.px(activity, 1400), Cinema.px(activity, 1080)))
+        // Home's dark is one soft arc swept up from the low left corner, so the picture shows clear above and to the right of the words;
+        // beneath it only the page's own ground rising up from the bottom.
+        hero.addView(View(activity).apply { background = if (home) com.danielportelabyrne.cinema.design.cinema.ArcScrim() else Scrim.hero() }, FrameLayout.LayoutParams(-1, Cinema.px(activity, 1080)))
+        if (home) hero.addView(View(activity).apply { background = Scrim(listOf(0f to 0f, 1f to 0f), HOME_FADE_DOWN) }, FrameLayout.LayoutParams(-1, Cinema.px(activity, 1080)))
         // The fades' left edge carried on behind the rail, so pushing the page aside never shows a different ground there.
-        hero.addView(View(activity).apply { background = Scrim(listOf(0f to 0.98f, 1f to 0.98f), listOf(0f to 0.55f, 0.22f to 0f, 0.5f to 0f, 1f to 0.96f)) },
+        if (home) {
+            // Home's page goes further than the rail grows (see railExtra), so the strip is as wide as the whole push, and it carries the
+            // arc on rather than a flat dark: the same curve, centred on the hero's left edge, so the gradient runs unbroken to the
+            // bottom left corner of the screen however far the page is pushed.
+            val reach = RAIL_WIDTH_OPEN - RAIL_WIDTH + (184 - HOME_HERO_START)
+            val strip = Cinema.px(activity, reach) + 2
+            hero.addView(View(activity).apply { background = com.danielportelabyrne.cinema.design.cinema.ArcScrim(cx = 1f, rx = 0.84f * 1920f / (reach + 2)) },
+                FrameLayout.LayoutParams(strip, Cinema.px(activity, 1080)).apply { leftMargin = -Cinema.px(activity, reach) })
+            hero.addView(View(activity).apply { background = Scrim(listOf(0f to 0f, 1f to 0f), HOME_FADE_DOWN) },
+                FrameLayout.LayoutParams(strip, Cinema.px(activity, 1080)).apply { leftMargin = -Cinema.px(activity, reach) })
+        } else hero.addView(View(activity).apply { background = Scrim(listOf(0f to 0.98f, 1f to 0.98f), listOf(0f to 0.55f, 0.22f to 0f, 0.5f to 0f, 1f to 0.96f)) },
             FrameLayout.LayoutParams(Cinema.px(activity, RAIL_WIDTH_OPEN - RAIL_WIDTH) + 2, Cinema.px(activity, 1080)).apply { leftMargin = -Cinema.px(activity, RAIL_WIDTH_OPEN - RAIL_WIDTH) })
         val column = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
@@ -4650,6 +4697,8 @@ class MoviesPanel(
         heroProvider = FrameLayout(activity)
         heroButtons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false; visibility = View.INVISIBLE }
         heroDots = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        // Over a bright picture the words keep a soft shadow of their own, so the arc can stay thin.
+        if (home) { heroTitle.setShadowLayer(Cinema.pxf(activity, 22), 0f, Cinema.pxf(activity, 3), 0xAA000000.toInt()); heroBody.setShadowLayer(Cinema.pxf(activity, 12), 0f, Cinema.pxf(activity, 2), 0xAA000000.toInt()) }
         column.addView(heroEyebrow)
         column.addView(heroTitle, LinearLayout.LayoutParams(Cinema.px(activity, if (home) 960 else 1100), -2).apply { topMargin = Cinema.px(activity, 22) })
         column.addView(heroMeta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
@@ -4658,6 +4707,9 @@ class MoviesPanel(
         column.addView(heroButtons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 34) })
         column.addView(heroDots, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 82) })
         hero.addView(column, FrameLayout.LayoutParams(-1, -2))
+        // Home's landing is a branded poster: the Cinema mark and name at the top right, over a slow wave of stripe-coloured columns.
+        if (home) hero.addView(com.danielportelabyrne.cinema.design.cinema.LandingBadge(activity),
+            FrameLayout.LayoutParams(Cinema.px(activity, 640), Cinema.px(activity, 330), Gravity.END or Gravity.TOP))
         hero.content = column
         heroFrame = hero
         content.addView(hero, LinearLayout.LayoutParams(-1, -2))
@@ -4700,6 +4752,66 @@ class MoviesPanel(
             column?.animate()?.alpha(0f)?.setDuration(180)?.withEndAction { showHero((heroIndex + 1) % heroEntries.size); column.animate().alpha(1f).setDuration(260).start() }?.start()
         }
         ui.postDelayed(heroTick, HERO_TURN_MS)
+    }
+
+    // --- Featured picks: variety, and rotation --------------------------------------------------------
+
+    /** What Home can feature: today's best, and the number one of each followed service and channel. Built in the background, kept for a while. */
+    private var featuredPool: List<FeaturedCandidate<Pair<Title, String>>> = emptyList()
+    private var featuredPoolAt = 0L
+    private var featuredSeen: Map<String, FeaturedSeen>? = null
+
+    private fun seenFeatured(): Map<String, FeaturedSeen> = featuredSeen ?: FeaturedRotation.parse(featuredHistory()).also { featuredSeen = it }
+
+    private fun keepSeenFeatured(m: Map<String, FeaturedSeen>) { featuredSeen = m; saveFeaturedHistory(FeaturedRotation.toJson(m)) }
+
+    /** Opening a featured title (More info, or from a row) counts as interest: it is kept in the rotation three times as long. */
+    private fun markFeaturedOpened(key: String) {
+        val now = seenFeatured()
+        val next = FeaturedRotation.markOpened(now, key)
+        if (next !== now) keepSeenFeatured(next)
+    }
+
+    /**
+     * Home's featured titles: three from three different places (today's best, a followed service's number one, a followed
+     * channel's best), the least shown first, so the same few do not sit there for days (see FeaturedRotation). Until the
+     * pool is built the usual first row features, and these take over as soon as they are ready.
+     */
+    private fun featureFromPool(gen: Int) {
+        if (featuredPool.isNotEmpty() && System.currentTimeMillis() - featuredPoolAt < FEATURED_POOL_MS) { showFeatured(featuredPool); return }
+        worker.execute {
+            val built = buildFeaturedPool()
+            activity.runOnUiThread {
+                if (gen != generation || built.isEmpty()) return@runOnUiThread
+                featuredPool = built; featuredPoolAt = System.currentTimeMillis()
+                showFeatured(built)
+            }
+        }
+    }
+
+    private fun buildFeaturedPool(): List<FeaturedCandidate<Pair<Title, String>>> {
+        val out = ArrayList<FeaturedCandidate<Pair<Title, String>>>()
+        fun add(t: Title?, group: String, label: String) { if (t != null && t.backdropUrl != null) out += FeaturedCandidate(t.key, group, t to label) }
+        runCatching {
+            catalog.shelf(Catalog.homePage().first()).titles.filter { it.backdropUrl != null }.take(5).forEachIndexed { i, t -> add(t, "today", "#${i + 1} today") }
+        }
+        Catalog.followed.take(8).forEach { svc ->
+            runCatching { add(catalog.shelf(Catalog.servicePage(svc).first { it.ranked }).titles.firstOrNull { it.backdropUrl != null }, "svc:" + svc.code, "#1 on ${svc.label} today") }
+        }
+        Catalog.followedChannels.take(8).forEach { c ->
+            runCatching { add(catalog.shelf(Catalog.channelPage(c).first()).titles.firstOrNull { it.backdropUrl != null }, "ch:" + c.id, "Best of ${c.name}") }
+        }
+        return out.distinctBy { it.key }
+    }
+
+    private fun showFeatured(pool: List<FeaturedCandidate<Pair<Title, String>>>) {
+        if (current !== Dest.Home || !::heroFrame.isInitialized) return
+        val now = System.currentTimeMillis()
+        val picked = FeaturedRotation.pick(pool, seenFeatured(), now)
+        if (picked.isEmpty()) return
+        val titles = picked.map { it.item.first }
+        setHero(titles.map { entry(it) }, titles + pool.map { it.item.first }.filter { t -> titles.none { it.key == t.key } }.take(9), picked.map { it.item.second })
+        keepSeenFeatured(FeaturedRotation.markShown(seenFeatured(), picked.map { it.key }, now))
     }
 
     private fun showHero(index: Int) {
@@ -4773,6 +4885,7 @@ class MoviesPanel(
     // --- Title page --------------------------------------------------------------------------------
 
     private fun openDetail(e: Entry, related: List<Title>) {
+        markFeaturedOpened(e.title.key)
         returnFocus = overlay.findFocus()
         detail.removeAllViews(); detail.visibility = View.VISIBLE
         // The page's container only swallows clicks; it must never hold focus itself, or hiding the page beneath
@@ -5836,6 +5949,39 @@ class MoviesPanel(
         pending += Lazy(r) { fans.forEach { it() } }
     }
 
+    /** One card per followed TV channel: its logo and a fan of its best known shows. Not shown until a channel is followed. */
+    private fun channelTiles(gen: Int) {
+        val channels = Catalog.followedChannels
+        if (channels.isEmpty()) return
+        val r = row("Browse by channel", null)
+        r.inner.minimumHeight = Cinema.px(activity, ServiceCard.H + 8)
+        val fans = ArrayList<() -> Unit>()
+        channels.forEachIndexed { i, c ->
+            val card = ServiceCard(activity, c.name, ServiceCard.coloursFor("channel-" + c.id), caption = "TV shows", lightIcon = true)
+            if (c.logo != null) images.load(c.logo!!, emptyMap(), maxWidth = Cinema.px(activity, 92), tag = pageTag) { b -> card.logo.setImageBitmap(b) }
+            else card.logo.setImageBitmap(initialsTile(c.name, Cinema.px(activity, 92)))
+            card.onFocus = { lit -> if (lit) reveal(card) }
+            card.setOnClickListener { go(Dest.OnChannel(c), remember = true) }
+            r.inner.addView(card, cardParams(i))
+            val spec = Catalog.cardShelf(c)
+            fans += { worker.execute {
+                val posters = catalog.shelf(spec).titles.mapNotNull { it.posterUrl }.take(3)
+                activity.runOnUiThread {
+                    if (gen != generation) return@runOnUiThread
+                    listOf(1, 0, 2).zip(posters).forEach { (slot, url) ->
+                        images.load(url, emptyMap(), maxWidth = Cinema.px(activity, ServiceCard.POSTER_W), tag = pageTag) { b -> if (gen == generation) card.setPoster(slot, b) }
+                    }
+                }
+            } }
+        }
+        val manage = ManageServicesCard(activity).apply {
+            onFocus = { lit -> if (lit) reveal(this) }
+            setOnClickListener { go(Dest.ServiceManage, remember = true) }
+        }
+        r.inner.addView(manage, cardParams(channels.size))
+        pending += Lazy(r) { fans.forEach { it() } }
+    }
+
     // --- Following services ----------------------------------------------------------------------
 
     /** Every service JustWatch lists, for finding one to follow. Fetched once and kept on this TV for a week. */
@@ -5844,12 +5990,25 @@ class MoviesPanel(
     /** Set when the services followed change, so Home is built again rather than reopened as it was left. */
     private var servicesDirty = false
 
+    /** TV channels (Nickelodeon, CITV) are looked up on Wikidata; their shows' pictures come from Cinemeta. */
+    private val channelRepo = com.danielportelabyrne.cinema.data.movies.ChannelRepository(AndroidPlatform(activity))
+
     private fun isFollowing(s: Service) = FollowedServices.isFollowing(Catalog.followed, s.code)
+
+    private fun isFollowing(c: com.danielportelabyrne.cinema.data.movies.Channel) = com.danielportelabyrne.cinema.data.movies.FollowedChannels.isFollowing(Catalog.followedChannels, c.id)
+
+    private fun setFollowing(c: com.danielportelabyrne.cinema.data.movies.Channel, follow: Boolean) {
+        val f = com.danielportelabyrne.cinema.data.movies.FollowedChannels
+        Catalog.followedChannels = if (follow) f.follow(Catalog.followedChannels, c) else f.unfollow(Catalog.followedChannels, c.id)
+        saveFollowedChannels(Catalog.followedChannels)
+        servicesDirty = true; featuredPoolAt = 0L
+        CinemaToast.show(activity, if (follow) "Following ${c.name}" else "Stopped following ${c.name}", Toast.LENGTH_SHORT)
+    }
 
     private fun setFollowing(s: Service, follow: Boolean) {
         Catalog.followed = if (follow) FollowedServices.follow(Catalog.followed, s) else FollowedServices.unfollow(Catalog.followed, s.code)
         saveFollowedServices(Catalog.followed)
-        servicesDirty = true
+        servicesDirty = true; featuredPoolAt = 0L
         CinemaToast.show(activity, if (follow) "Following ${s.label}" else "Stopped following ${s.label}", Toast.LENGTH_SHORT)
     }
 
@@ -5857,39 +6016,67 @@ class MoviesPanel(
      * One service as a card to follow or unfollow: its app icon, its name, where it runs, and whether it is followed.
      * Pressing it flips that. Used by the services page and by the services search, so both look and act alike.
      */
-    private fun serviceRow(s: Service): View {
+    private fun serviceRow(s: Service): View = followRow(s.label, ServiceDirectory.whereLine(s, Catalog.country), Catalog.logoUrl(s), false, { isFollowing(s) }) { setFollowing(s, it) }
+
+    /** A channel with no logo on record gets its initials, dark on the light tile a logo would sit on. */
+    private fun initialsTile(name: String, size: Int): Bitmap {
+        val words = name.split(' ', '-', '.').filter { it.isNotBlank() }
+        // "CITV" is its own letters; "Tiny Pop" and "Cartoon Network" are their initials.
+        val letters = (if (words.size == 1 && name.length <= 4) name.uppercase() else words.take(3).joinToString("") { it.first().uppercase() }).ifEmpty { "TV" }
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF2A1A12.toInt(); typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            textAlign = android.graphics.Paint.Align.CENTER; textSize = size * (if (letters.length > 2) 0.34f else 0.44f)
+        }
+        Canvas(bitmap).drawText(letters, size / 2f, size / 2f - (paint.ascent() + paint.descent()) / 2f, paint)
+        return bitmap
+    }
+
+    /** A TV channel as the same card: its logo on a light tile, what kind of channel it is, and how many shows are known. */
+    private fun channelRow(c: com.danielportelabyrne.cinema.data.movies.Channel): View {
+        val known = if (c.shows == 0) null else if (c.shows <= 5) "${c.shows} show${if (c.shows == 1) "" else "s"} known" else "${c.shows} shows"
+        return followRow(c.name, listOfNotNull(c.about ?: "TV channel", known).joinToString("  ·  "), c.logo, true, { isFollowing(c) }) { setFollowing(c, it) }
+    }
+
+    /** The card behind both: [on] says whether it is followed now, [set] follows or unfollows. */
+    private fun followRow(name: String, line: String, logo: String?, lightLogo: Boolean, on: () -> Boolean, set: (Boolean) -> Unit): View {
         val card = GlowCard(activity, 26f).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(Cinema.px(activity, 22), 0, Cinema.px(activity, 26), 0); contentDescription = s.label
+            setPadding(Cinema.px(activity, 22), 0, Cinema.px(activity, 26), 0); contentDescription = name
         }
         val icon = ImageView(activity).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; setBackgroundColor(Cinema.PLACEHOLDER)
+            scaleType = if (lightLogo) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP; clipToOutline = true
+            if (lightLogo) { setBackgroundColor(Cinema.alpha(Cinema.CREAM, 0.96f)); val pad = Cinema.px(activity, 8); setPadding(pad, pad, pad, pad) } else setBackgroundColor(Cinema.PLACEHOLDER)
             outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(activity, 18)) } }
         }
         card.addView(icon, LinearLayout.LayoutParams(Cinema.px(activity, 88), Cinema.px(activity, 88)))
-        Catalog.logoUrl(s)?.let { url -> images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 88), tag = pageTag) { b -> icon.setImageBitmap(b) } }
+        if (logo != null) images.load(logo, emptyMap(), maxWidth = Cinema.px(activity, 88), tag = pageTag) { b -> icon.setImageBitmap(b) }
+        else if (lightLogo) icon.setImageBitmap(initialsTile(name, Cinema.px(activity, 88)))
         val words = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        words.addView(Cinema.text(activity, s.label, 28, Cinema.CREAM, serif = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
-        words.addView(Cinema.text(activity, ServiceDirectory.whereLine(s, Catalog.country), 18, Cinema.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+        words.addView(Cinema.text(activity, name, 28, Cinema.CREAM, serif = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        words.addView(Cinema.text(activity, line, 18, Cinema.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
             LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 4) })
         card.addView(words, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = Cinema.px(activity, 20) })
         val state = Cinema.text(activity, "", 20, Cinema.CREAM, weight = 600).apply { gravity = Gravity.CENTER; maxLines = 1; setPadding(Cinema.px(activity, 26), 0, Cinema.px(activity, 26), 0) }
         fun paint() {
-            val on = isFollowing(s); val r = Cinema.pxf(activity, 200)
-            state.text = if (on) "✓  Following" else "+  Follow"
-            state.setTextColor(if (on) Cinema.CREAM else 0xFF1D0D05.toInt())
-            state.background = if (on) GradientDrawable().apply { cornerRadius = r; setColor(Cinema.GLASS_STRONG) }
+            val now = on(); val r = Cinema.pxf(activity, 200)
+            state.text = if (now) "✓  Following" else "+  Follow"
+            state.setTextColor(if (now) Cinema.CREAM else 0xFF1D0D05.toInt())
+            state.background = if (now) GradientDrawable().apply { cornerRadius = r; setColor(Cinema.GLASS_STRONG) }
                 else GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFFEB8A56.toInt(), 0xFFD4623A.toInt())).apply { cornerRadius = r }
-            card.contentDescription = (if (on) "Following " else "Follow ") + s.label
+            card.contentDescription = (if (now) "Following " else "Follow ") + name
         }
         paint()
         card.addView(state, LinearLayout.LayoutParams(-2, Cinema.px(activity, 52)).apply { marginStart = Cinema.px(activity, 14) })
-        card.setOnClickListener { setFollowing(s, !isFollowing(s)); paint() }
+        card.setOnClickListener { set(!on()); paint() }
         return card
     }
 
-    private fun addServiceRows(into: LinearLayout, services: List<Service>) =
-        services.forEach { into.addView(serviceRow(it), LinearLayout.LayoutParams(-1, Cinema.px(activity, 120)).apply { topMargin = Cinema.px(activity, 16) }) }
+    /** Rows for services ([Service]) and channels ([com.danielportelabyrne.cinema.data.movies.Channel]), in the order given. */
+    private fun addServiceRows(into: LinearLayout, items: List<Any>) = items.forEach {
+        val row = if (it is com.danielportelabyrne.cinema.data.movies.Channel) channelRow(it) else serviceRow(it as Service)
+        into.addView(row, LinearLayout.LayoutParams(-1, Cinema.px(activity, 120)).apply { topMargin = Cinema.px(activity, 16) })
+    }
 
     private fun smallHeading(text: String) = Cinema.text(activity, text, 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true)
 
@@ -5902,12 +6089,13 @@ class MoviesPanel(
         worker.execute { directory.all(Catalog.country) }
         val followed = Catalog.followed
         val header = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; setPadding(pageStart, Cinema.px(activity, 44), pageEnd, 0) }
-        header.addView(Cinema.eyebrow(activity, listOf("Browse by service", if (followed.isEmpty()) "None followed" else "${followed.size} followed")))
+        val channels = Catalog.followedChannels
+        header.addView(Cinema.eyebrow(activity, listOf("Browse by service", if (followed.isEmpty() && channels.isEmpty()) "None followed" else "${followed.size + channels.size} followed")))
         header.addView(Cinema.title(activity, "Your services", 96, maxLines = 1), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 16) })
-        header.addView(Cinema.text(activity, "Follow the places films and series stream, air or first appear. They show on Home under Browse by service.", 24, Cinema.MUTED).apply { maxLines = 2 },
+        header.addView(Cinema.text(activity, "Follow the places films and series stream, and the TV channels that made your favourites. They show on Home.", 24, Cinema.MUTED).apply { maxLines = 2 },
             LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 14) })
         val buttons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
-        val find = CinemaButton(activity, CinemaButton.Kind.PRIMARY, "Find services", R.drawable.ic_cin_search).apply { setOnClickListener { go(Dest.ServiceSearch, remember = true) } }
+        val find = CinemaButton(activity, CinemaButton.Kind.PRIMARY, "Find services & channels", R.drawable.ic_cin_search).apply { setOnClickListener { go(Dest.ServiceSearch, remember = true) } }
         buttons.addView(find)
         val reset = CinemaButton(activity, CinemaButton.Kind.GLASS, "Back to the original six").apply {
             setOnClickListener {
@@ -5922,7 +6110,11 @@ class MoviesPanel(
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(pageStart, Cinema.px(activity, 36), pageEnd, Cinema.px(activity, 60)) }
         content.addView(list, LinearLayout.LayoutParams(-1, -2))
         if (followed.isEmpty()) list.addView(note("You follow no services. Find one, or go back to the original six."))
-        else { list.addView(smallHeading("Following")); addServiceRows(list, followed) }
+        else { list.addView(smallHeading("Streaming services")); addServiceRows(list, followed) }
+        // Channels sit in the same view: those followed (press one to stop), or how to find some.
+        list.addView(smallHeading("TV channels"), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 44) })
+        if (channels.isEmpty()) list.addView(note("No channels followed yet. Find services & channels also finds TV channels: try nick, citv, boomerang or history."))
+        else addServiceRows(list, channels)
         val others = Catalog.KNOWN.filter { k -> followed.none { it.code == k.code } }
         if (others.isNotEmpty()) {
             list.addView(smallHeading("Suggested"), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 44) })
@@ -5940,25 +6132,34 @@ class MoviesPanel(
         val lead = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         lead.addView(Cinema.icon(activity, R.drawable.ic_cin_search, Cinema.SAFFRON), LinearLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40)))
         lead.addView(Cinema.text(activity, "Services", 20, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 22) })
-        val kb = keyboardSearchPage(lead, "Search streaming services and channels", "service-search", "Search services")
+        val kb = keyboardSearchPage(lead, "Search streaming services and TV channels", "service-search", "Search services")
         val side = kb.side; val below = kb.below
         worker.execute { directory.all(Catalog.country) }
         fun showIdle() {
             kb.clear()
             addRecent(SearchKeyboard.SERVICES, side, search = { term -> kb.search(term) }, refresh = { showIdle() })
             side.addView(smallHeading("Try a channel, an app or a network"))
-            listOf("bbc", "sky", "adult swim", "e4", "itv", "crunchyroll", "hulu").forEachIndexed { i, s ->
+            listOf("nickelodeon", "citv", "boomerang", "history", "bbc", "sky", "adult swim").forEachIndexed { i, s ->
                 side.addView(pill(s, accent = false).apply { setOnClickListener { kb.search(s) } },
                     LinearLayout.LayoutParams(-2, Cinema.px(activity, 54)).apply { topMargin = Cinema.px(activity, if (i == 0) 22 else 12) })
             }
         }
-        /** [found] null while it is being looked up; [offline] when the list of services could not be fetched at all. */
-        fun showResults(q: String, found: List<Service>?, offline: Boolean = false) {
+        /**
+         * Streaming services first as they arrive, then the TV channels once Wikidata answers ([channels] null until then).
+         * One list, best match first, a service before a channel of the same name. [offline] when the services list is out of reach.
+         */
+        fun showResults(q: String, services: List<Service>, channels: List<com.danielportelabyrne.cinema.data.movies.Channel>?, offline: Boolean = false) {
             kb.clear()
-            side.addView(smallHeading(if (found == null) "Looking up “$q”…" else "Services matching “$q”").apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
-            if (found == null) return
-            if (offline) { side.addView(note("Couldn't reach the list of services. Check the network and try again."), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) }); return }
-            if (found.isEmpty()) { side.addView(note("No service called “$q”. Streaming apps and catch-up players are listed here, not every channel."), LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 18) }); return }
+            val found: List<Any> = (services.map { Triple<Any, Int, Int>(it, ServiceDirectory.scoreOf(it, q), 1) } +
+                channels.orEmpty().map { Triple<Any, Int, Int>(it, ServiceDirectory.score(it.name, q), 0) })
+                .filter { it.second > 0 }.sortedWith(compareByDescending<Triple<Any, Int, Int>> { it.second }.thenByDescending { it.third }).map { it.first }
+            side.addView(smallHeading(if (found.isEmpty() && channels == null) "Looking up “$q”…" else "Matching “$q”").apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+            if (found.isEmpty()) {
+                if (channels == null) return
+                side.addView(note(if (offline && channels.isEmpty()) "Couldn't reach the lists. Check the network and try again." else "No service or channel called “$q”."),
+                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 18) })
+                return
+            }
             saveRecentSearches(SearchKeyboard.SERVICES, RecentSearches.add(recentSearches(SearchKeyboard.SERVICES), q))
             addServiceRows(side, found.take(3))
             if (found.size > 3) {
@@ -5967,14 +6168,17 @@ class MoviesPanel(
                 addServiceRows(more, found.drop(3))
                 below.addView(more)
             }
+            if (channels == null) side.addView(smallHeading("Looking for TV channels…"), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 22) })
         }
         fun runQuery(q: String) {
-            showResults(q, null)
+            showResults(q, emptyList(), null)
             val current = { gen == generation && kb.typed.trim() == q }
             worker.execute {
                 val all = directory.all(Catalog.country)
-                val found = ServiceDirectory.search(all, q, Catalog.country)
-                activity.runOnUiThread { if (current()) showResults(q, found, offline = all.isEmpty()) }
+                val services = ServiceDirectory.search(all, q, Catalog.country)
+                activity.runOnUiThread { if (current()) showResults(q, services, null, offline = all.isEmpty()) }
+                val channels = channelRepo.search(q)
+                activity.runOnUiThread { if (current()) showResults(q, services, channels, offline = all.isEmpty()) }
             }
         }
         kb.onIdle = { showIdle() }
@@ -6284,6 +6488,8 @@ class MoviesPanel(
         const val HERO_HEIGHT = 762      // mockup px: the first row's heading sits at 812
         const val HOME_HERO_HEIGHT = 850 // Home gives its featured title more room: the Top 10 heading sits at 900, just showing
         const val HOME_HERO_START = 100  // mockup px: with the rail away the words start nearer the edge
+        /** Home's fade down the picture: only a breath of dark at the very top, so the picture shows, and the page's ground below. */
+        private val HOME_FADE_DOWN = listOf(0f to 0.06f, 0.08f to 0f, 0.55f to 0f, 1f to 0.96f)
         const val HERO_TURN_MS = 9_000L  // the featured title turns this often
         const val RAIL_WIDTH = 92        // mockup px, collapsed
         const val RAIL_WIDTH_OPEN = 420  // mockup px, with labels while the rail has focus
@@ -6315,6 +6521,7 @@ class MoviesPanel(
         const val ENTER_PAGE_TRIES = 40
         const val EAGER_SHELVES = 2
         const val PREWARM_DELAY_MS = 4_000L
+        const val FEATURED_POOL_MS = 20 * 60_000L // Home's featured candidates are looked up again after this
         const val REUSE_MS = 5 * 60_000L // reopening Movies within this keeps the Home page as it was
     }
 

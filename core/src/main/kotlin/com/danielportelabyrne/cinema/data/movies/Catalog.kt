@@ -45,7 +45,9 @@ data class Shelf(val heading: String, val titles: List<Title>)
 data class ShelfSpec(
     val heading: String, val packages: List<String>, val kinds: List<Kind>,
     val genre: String? = null, val sort: String = "TRENDING", val ranked: Boolean = false, val query: String? = null,
-    val madeIn: List<String> = emptyList(), val country: String? = null
+    val madeIn: List<String> = emptyList(), val country: String? = null,
+    /** A channel's shows (from Wikidata and Cinemeta) rather than what JustWatch lists. */
+    val channel: ChannelQuery? = null
 )
 
 /**
@@ -77,6 +79,9 @@ object Catalog {
     val PRIME = Service("amp", "Prime Video", "/icon/322992749/s166/amazonprime.png")
     val DISNEY = Service("dnp", "Disney+", "/icon/313118777/s166/disneyplus.png")
     val APPLE = Service("atp", "Apple TV+", "/icon/338367329/s166/appletvplus.png")
+    /** The channels the owner follows, in the order they were added. None until they follow one. */
+    @Volatile var followedChannels: List<Channel> = emptyList()
+
     /** The services found in most countries. The mixed rows (Top 10, Trending, the genres) draw on these. */
     val STREAMERS = listOf(NETFLIX, HBO_MAX, PARAMOUNT, PRIME, DISNEY, APPLE)
 
@@ -187,6 +192,23 @@ object Catalog {
             ShelfSpec("All films", only, FILMS, sort = "POPULAR", country = at)
         )
     }
+
+    /** The decades a channel's page has a row for, newest first. Rows with no shows hide themselves. */
+    private val DECADES = listOf(2010, 2000, 1990, 1980, 1970, 1960, 1950)
+
+    /**
+     * A channel's page: its all-time best known shows as a Top 10, what began in the last few years, then a row for each
+     * decade, so an era's shows can be picked out. Best known is by how many Wikipedia languages have the show.
+     */
+    fun channelPage(channel: Channel, thisYear: Int = java.time.Year.now().value): List<ShelfSpec> {
+        fun shelf(heading: String, from: Int?, to: Int?, ranked: Boolean = false) =
+            ShelfSpec(heading, emptyList(), SERIES, ranked = ranked, channel = ChannelQuery(channel.id, from, to))
+        return listOf(shelf("Best of ${channel.name}, all time", null, null, ranked = true), shelf("Recent favourites", thisYear - 5, null)) +
+            DECADES.map { shelf("The ${it}s", it, it + 9) }
+    }
+
+    /** The shelf a channel's card fans its posters from: the page's all-time row, which the page asks for anyway. */
+    fun cardShelf(channel: Channel): ShelfSpec = channelPage(channel).first().copy(ranked = false)
 
     /** One genre across all the services, then service by service. */
     fun genrePage(genre: Genre): List<ShelfSpec> = listOf(

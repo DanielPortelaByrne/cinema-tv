@@ -22,8 +22,12 @@ import com.danielportelabyrne.cinema.design.cinema.Glows
  * at the foot, and three of its popular posters fanned out on the right, tilted like cards in a hand. Focused, the
  * card grows, glows in the service's colour and the fan opens a little. Parents must not clip children.
  */
-class ServiceCard(context: Context, label: String, private val colours: Pair<Int, Int>) : FrameLayout(context) {
-    val logo = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP; contentDescription = label }
+class ServiceCard(context: Context, label: String, private val colours: Pair<Int, Int>, caption: String = "Films & series", private val lightIcon: Boolean = false) : FrameLayout(context) {
+    /** A channel's logo is a drawing on nothing, so it sits whole on a light tile; a service's app icon fills its tile. */
+    val logo = ImageView(context).apply {
+        scaleType = if (lightIcon) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP; contentDescription = label
+        if (lightIcon) { val pad = Cinema.px(context, 10); setPadding(pad, pad, pad, pad) }
+    }
     var onFocus: ((Boolean) -> Unit)? = null
 
     private val w = Cinema.px(context, W)
@@ -74,7 +78,7 @@ class ServiceCard(context: Context, label: String, private val colours: Pair<Int
             background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(Cinema.alpha(colours.second, 0.75f), Cinema.alpha(colours.second, 0.3f), 0))
         }, LayoutParams(Cinema.px(context, 300), -1, Gravity.START))
         val icon = FrameLayout(context).apply {
-            background = GradientDrawable().apply { cornerRadius = Cinema.pxf(context, 22); setColor(Cinema.alpha(Cinema.INK, 0.5f)) }
+            background = GradientDrawable().apply { cornerRadius = Cinema.pxf(context, 22); setColor(if (lightIcon) Cinema.alpha(Cinema.CREAM, 0.96f) else Cinema.alpha(Cinema.INK, 0.5f)) }
             clipToOutline = true
             outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(context, 22)) } }
             addView(logo, LayoutParams(-1, -1))
@@ -87,7 +91,7 @@ class ServiceCard(context: Context, label: String, private val colours: Pair<Int
             // Clear of the fan: a long name ("Paramount+") steps down in size rather than running into the posters.
             androidx.core.widget.TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(this, Cinema.px(context, 26), Cinema.px(context, 36), 1, android.util.TypedValue.COMPLEX_UNIT_PX)
         }, LinearLayout.LayoutParams(Cinema.px(context, 186), Cinema.px(context, 50)))
-        words.addView(Cinema.text(context, "Films & series", 15, Cinema.alpha(Cinema.CREAM, 0.7f), weight = 600, tracking = 0.18f, caps = true),
+        words.addView(Cinema.text(context, caption, 15, Cinema.alpha(Cinema.CREAM, 0.7f), weight = 600, tracking = 0.18f, caps = true),
             LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 4) })
         // Added after the fan, so a long name is drawn over the posters, never hidden behind one.
         face.addView(words, LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin = Cinema.px(context, 32); bottomMargin = Cinema.px(context, 28) })
