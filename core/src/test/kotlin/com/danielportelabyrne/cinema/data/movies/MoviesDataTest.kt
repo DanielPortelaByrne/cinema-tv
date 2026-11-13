@@ -67,6 +67,72 @@ class MoviesDataTest {
         assertTrue(Catalog.homePage().first().ranked); assertTrue(Catalog.genrePage(Catalog.GENRES[0]).size >= 9)
     }
 
+    @Test fun british_and_irish_broadcasters_have_cards_but_stay_out_of_the_mixed_rows() {
+        listOf("BBC iPlayer", "ITVX", "Channel 4", "Channel 5", "NOW", "RTÉ Player").forEach { n -> assertTrue(n, Catalog.KNOWN.any { it.label == n }) }
+        assertEquals(Catalog.STREAMERS, Catalog.KNOWN.take(6))
+        assertEquals(Catalog.KNOWN.size, Catalog.KNOWN.map { it.code }.toSet().size)
+        // Home, the genre pages and the Top 10s are as they were: only the six big services.
+        val broadcasters = Catalog.BROADCASTERS.map { it.code }.toSet()
+        val mixed = Catalog.homePage() + Catalog.filmsPage() + Catalog.seriesPage() + Catalog.documentariesPage() + Catalog.genrePage(Catalog.GENRES[0])
+        assertTrue(mixed.none { s -> s.packages.any { it in broadcasters } || s.madeIn.isNotEmpty() || s.country != null })
+        assertEquals(10, Catalog.homePage().size)
+    }
+
+    @Test fun a_broadcasters_page_is_asked_for_in_its_own_country_and_leads_with_what_was_made_at_home() {
+        Catalog.country = "US"
+        val page = Catalog.servicePage(Catalog.BBC)
+        assertEquals("Top 10 on BBC iPlayer", page[0].heading); assertTrue(page[0].ranked)
+        assertEquals(listOf("British & Irish series", "British & Irish films", "British & Irish documentaries", "British & Irish comedy",
+            "British & Irish drama", "British & Irish crime", "British & Irish thrillers", "All series", "All films"), page.drop(1).map { it.heading })
+        page.forEach { spec ->
+            val v = JSONObject(Catalog.requestBody(spec)).getJSONObject("variables")
+            assertEquals(spec.heading, "GB", v.getString("c"))
+            assertEquals(spec.heading, "bbc", v.getJSONObject("f").getJSONArray("packages").getString(0))
+        }
+        val grown = JSONObject(Catalog.requestBody(page[1])).getJSONObject("variables").getJSONObject("f")
+        assertEquals(listOf("GB", "IE"), (0 until 2).map { grown.getJSONArray("productionCountries").getString(it) })
+        assertEquals("SHOW", grown.getJSONArray("objectTypes").getString(0))
+        // Everything on the service, home-grown or not, has no such filter.
+        assertFalse(JSONObject(Catalog.requestBody(page[0])).getJSONObject("variables").getJSONObject("f").has("productionCountries"))
+        assertFalse(JSONObject(Catalog.requestBody(page.last())).getJSONObject("variables").getJSONObject("f").has("productionCountries"))
+        // Its card fans the posters of the row that leads its page.
+        assertEquals(page[1], Catalog.cardShelf(Catalog.BBC))
+        val bodies = Catalog.BROADCASTERS.flatMap { Catalog.servicePage(it) }.map { Catalog.requestBody(it) }
+        assertEquals(bodies.size, bodies.toSet().size)
+    }
+
+    @Test fun a_service_with_few_titles_listed_fills_its_page_from_its_country() {
+        Catalog.country = "GB"
+        val page = Catalog.servicePage(Catalog.RTE)
+        assertEquals(listOf("Top 10 Irish titles", "On RTÉ Player", "Irish series", "Irish films"), page.take(4).map { it.heading })
+        fun vars(i: Int) = JSONObject(Catalog.requestBody(page[i])).getJSONObject("variables")
+        page.indices.forEach { assertEquals("IE", vars(it).getString("c")) }
+        // Only "On RTÉ Player" is tied to the service; the Irish rows are anything made in Ireland.
+        assertEquals("rte", vars(1).getJSONObject("f").getJSONArray("packages").getString(0))
+        assertFalse(vars(1).getJSONObject("f").has("productionCountries"))
+        listOf(0, 2, 3).forEach { i ->
+            assertFalse(vars(i).getJSONObject("f").has("packages"))
+            assertEquals("IE", vars(i).getJSONObject("f").getJSONArray("productionCountries").getString(0))
+        }
+        assertEquals("On RTÉ Player", Catalog.cardShelf(Catalog.RTE).heading)
+    }
+
+    @Test fun the_big_services_are_asked_for_exactly_as_before() {
+        Catalog.country = "GB"
+        val v = JSONObject(Catalog.requestBody(Catalog.servicePage(Catalog.NETFLIX)[1])).getJSONObject("variables")
+        assertEquals("GB", v.getString("c"))
+        assertEquals(setOf("objectTypes", "packages"), v.getJSONObject("f").keySet())
+        assertEquals("Popular on Netflix", Catalog.cardShelf(Catalog.NETFLIX).heading)
+        assertTrue(Catalog.cardShelf(Catalog.NETFLIX) in Catalog.homePage())
+    }
+
+    @Test fun tidies_the_broadcasters_names() {
+        assertEquals("Channel 5", Catalog.serviceName("5")); assertEquals("Channel 5", Catalog.serviceName("My5"))
+        assertEquals("NOW", Catalog.serviceName("Now TV")); assertEquals("NOW", Catalog.serviceName("Now TV Cinema"))
+        assertEquals("RTÉ Player", Catalog.serviceName("RTE Player"))
+        assertEquals("BBC iPlayer", Catalog.serviceName("BBC iPlayer")); assertEquals("ITVX", Catalog.serviceName("ITVX"))
+    }
+
     @Test fun reads_where_a_title_streams() {
         val json = """{"data":{"popularTitles":{"edges":[{"node":{"id":"x","objectType":"MOVIE","content":{"title":"T"},
           "offers":[{"monetizationType":"FLATRATE","package":{"clearName":"Netflix"}},{"monetizationType":"RENT","package":{"clearName":"Apple TV Store"}},

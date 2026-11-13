@@ -16,7 +16,9 @@ For the Linux desktop and Steam Deck version, see [Flatpak installation, control
 | Torrent client | Optional | "Download next" and "Download now" controls, live speed and seeds. Works with **qBittorrent**, **Transmission** and **Deluge**. Any other client (rTorrent, Flood, Usenet clients...) still shows progress and can be cancelled through Sonarr and Radarr. |
 | Letterboxd | Optional | Follow anyone's public profile from the Letterboxd page. Nothing is signed in. |
 
-The streaming catalogue (what is on which service) comes from JustWatch for the country chosen during setup.
+The streaming catalogue (what is on which service) comes from JustWatch for the country chosen during setup. The British and Irish broadcasters under **Browse by service** (BBC iPlayer, ITVX, Channel 4, Channel 5, NOW, RTÉ Player) are the exception: each is only listed in its own country, so its page is always asked for there, and leads with what was made in Britain and Ireland. JustWatch lists only a handful of RTÉ Player's titles, so its page shows those and then Irish films and series from any service.
+
+**Choosing your services.** Home's "Browse by service" row starts as Netflix, HBO Max, Paramount+, Prime Video, Disney+ and Apple TV+. Scroll to its last card, **Add or remove**, to open **Your services**: press a service to stop following it, **Back to the original six** to start again, or **Find services** to search every streaming app and catch-up player JustWatch lists in about fifty countries (BBC, ITV, Sky, Adult Swim, Crunchyroll, E4 and so on). It is the same search page as the Letterboxd lists search: the on-screen keyboard, a phone to type from, or the microphone. A service that only runs in another country is still found, and its pages are asked for in that country. Each followed service gets a card, a "Popular on" row on Home (up to eight), and its own page; the mixed rows (Top 10, Trending, genres) draw on the followed services that run in your country. JustWatch has no flag for a service's own productions, so a page shows what is on the service, and the British and Irish broadcasters also show what was made in Britain and Ireland. What you follow is kept in Settings' storage on each TV, and is not part of the restore file.
 
 ### Optional helper services
 
@@ -168,7 +170,7 @@ adb shell am start -n com.danielportelabyrne.cinema/.CinemaActivity --es debug_s
 ```
 
 - `debug_setup_step` opens a setup page: `welcome`, `jellyfin`, `signin`, `seerr`, `arr`, `client`, `region`, `advanced` or `settings`.
-- `debug_cinema_dest` opens a Cinema page: `letterboxd`, `downloads`, `library` or `loading`.
+- `debug_cinema_dest` opens a Cinema page: `letterboxd`, `downloads`, `library`, `services`, `service-search` or `loading`.
 
 ## How the code is laid out
 

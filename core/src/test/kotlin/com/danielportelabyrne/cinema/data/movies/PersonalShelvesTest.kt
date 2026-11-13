@@ -86,6 +86,12 @@ class PersonalShelvesTest {
         assertTrue(PersonalShelves.hasService("HBO Max", listOf("Max")))
         assertTrue(PersonalShelves.hasService("Apple TV+", listOf("Apple TV Plus")))
         assertFalse(PersonalShelves.hasService("Netflix", listOf("Prime Video")))
+        assertTrue(PersonalShelves.hasService("Channel 5", listOf("My5")))
+        assertTrue(PersonalShelves.hasService("Channel 5", listOf("5")))
+        assertTrue(PersonalShelves.hasService("RTÉ Player", listOf("RTE Player")))
+        assertTrue(PersonalShelves.hasService("RTÉ Player", listOf("RTÉ Player")))
+        assertTrue(PersonalShelves.hasService("NOW", listOf("Now TV")))
+        assertFalse(PersonalShelves.hasService("Channel 4", listOf("Channel 5")))
         val known = listOf(facts(tmdb = "1", services = listOf("Netflix")), facts(tmdb = "2", services = emptyList()), facts(tmdb = "3", genres = listOf("Drama")))
         val f = PersonalFilter(PersonalPage.OnService("Netflix"), known, null)
         assertTrue(f.keeps(fav(tmdb = "1")))
@@ -224,6 +230,18 @@ class PersonalShelvesTest {
         assertEquals(listOf(facts(tmdb = "1", imdb = "tt1", genres = listOf("Crime"), services = listOf("Netflix"), at = 5)), merged)
         // Another title sharing nothing is kept beside it; one that disagrees on an id is not merged into it.
         assertEquals(3, TitleFactsStore.merge(merged, listOf(facts(tmdb = "2", at = 2), facts(tmdb = "1", imdb = "tt9", genres = listOf("Horror"), at = 3))).size)
+    }
+
+    @Test fun servicesLearnedInAnotherCountryJoinTheOnesKnownHere() {
+        val old = listOf(facts(tmdb = "1", genres = listOf("Drama"), services = listOf("BBC iPlayer"), at = 1))
+        val abroad = listOf(facts(tmdb = "1", services = listOf("RTÉ Player", "BBC iPlayer"), at = 5))
+        assertEquals(listOf("BBC iPlayer", "RTÉ Player"), TitleFactsStore.merge(old, abroad, addServices = true).single().services)
+        // Learned at home, they replace as before.
+        assertEquals(listOf("RTÉ Player", "BBC iPlayer"), TitleFactsStore.merge(old, abroad).single().services)
+        // Nothing known before: just the new ones. And the same again changes nothing.
+        assertEquals(listOf("RTÉ Player", "BBC iPlayer"), TitleFactsStore.merge(emptyList(), abroad, addServices = true).single().services)
+        val s = TitleFactsStore(MemoryPlatform()) { 5 }
+        s.learn(old); assertTrue(s.learn(abroad, addServices = true)); assertFalse(s.learn(abroad, addServices = true))
     }
 
     @Test fun learningTheSameAgainChangesNothing() {

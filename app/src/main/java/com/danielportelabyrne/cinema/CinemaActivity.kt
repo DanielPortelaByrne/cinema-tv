@@ -64,6 +64,7 @@ class CinemaActivity : AppCompatActivity() {
             com.danielportelabyrne.cinema.data.stremio.StremioClient()::addons, android.os.SystemClock::elapsedRealtime)
         val preset = Preset.load(platform)?.also { it.applySettings(platform, settings) }
         Catalog.country = settings.region
+        Catalog.followed = settings.followedServices
         jellyfin = JellyfinClient(AndroidPlatform(this))
         jellyfin.onReachabilityChanged = { reachable -> runOnUiThread {
             if (!isFinishing && !isDestroyed) CinemaToast.show(
@@ -102,7 +103,8 @@ class CinemaActivity : AppCompatActivity() {
             recentSearches = { settings.recentSearches(it) },
             saveRecentSearches = { keyboard, terms -> settings.setRecentSearches(keyboard, terms) },
             watchlist = { settings.watchlist },
-            saveWatchlist = { settings.watchlist = it }
+            saveWatchlist = { settings.watchlist = it },
+            saveFollowedServices = { settings.followedServices = it }
         )
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

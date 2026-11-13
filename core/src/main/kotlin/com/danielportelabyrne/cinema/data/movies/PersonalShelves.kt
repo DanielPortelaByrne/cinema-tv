@@ -80,7 +80,9 @@ object PersonalShelves {
         return genres.any { it.trim().lowercase() in names }
     }
 
-    private fun serviceKey(name: String) = Catalog.serviceName(name.trim()).lowercase().replace("+", "plus").replace(Regex("[^a-z0-9]"), "")
+    /** A service's name boiled down for comparing: tidied, lower case, accents dropped ("RTÉ" is "RTE" to some), no spaces. */
+    private fun serviceKey(name: String) = java.text.Normalizer.normalize(Catalog.serviceName(name.trim()), java.text.Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}"), "").lowercase().replace("+", "plus").replace(Regex("[^a-z0-9]"), "")
 
     /** True when one of [services] is the service named [label]. TMDB calls HBO Max "Max". */
     fun hasService(label: String, services: List<String>): Boolean {
@@ -201,11 +203,12 @@ class TitleFactsStore(platform: Platform, private val clock: () -> Long = System
 
     /**
      * Adds what [learned] says, replacing an older record of the same title. Held in memory at once; written by [flush],
-     * so a page loading many rows writes once. True when something changed.
+     * so a page loading many rows writes once. True when something changed. [addServices] is for what was learned in
+     * another country's catalogue: its services join the ones already known rather than replacing them.
      */
-    @Synchronized fun learn(learned: List<TitleFacts>): Boolean {
+    @Synchronized fun learn(learned: List<TitleFacts>, addServices: Boolean = false): Boolean {
         val now = all()
-        val next = merge(now, learned.map { it.copy(jellyfinId = null, atMs = if (it.atMs > 0) it.atMs else clock()) }.filter { it.hasId })
+        val next = merge(now, learned.map { it.copy(jellyfinId = null, atMs = if (it.atMs > 0) it.atMs else clock()) }.filter { it.hasId }, addServices)
         if (next == now) return false
         cache = next; dirty = true
         return true
@@ -222,14 +225,19 @@ class TitleFactsStore(platform: Platform, private val clock: () -> Long = System
         const val CAP = 1000
         private const val KEY = "all"
 
-        /** [list] with [learned] folded in: a record matching a learned one by id (with none disagreeing) is replaced, keeping what it knew that the new one does not. */
-        fun merge(list: List<TitleFacts>, learned: List<TitleFacts>): List<TitleFacts> {
+        /**
+         * [list] with [learned] folded in: a record matching a learned one by id (with none disagreeing) is replaced, keeping
+         * what it knew that the new one does not. With [addServices], the services it knew are kept beside the new ones:
+         * a title on RTÉ Player in Ireland is still on BBC iPlayer in Britain.
+         */
+        fun merge(list: List<TitleFacts>, learned: List<TitleFacts>, addServices: Boolean = false): List<TitleFacts> {
             var out = list
             for (f in learned) {
                 val ref = TitleRef(f.tmdbId, f.imdbId)
                 val old = out.filter { PersonalShelves.matches(f.kind, ref, it) }
                 val merged = old.fold(f) { acc, o -> acc.copy(tmdbId = acc.tmdbId ?: o.tmdbId, imdbId = acc.imdbId ?: o.imdbId,
-                    genres = acc.genres ?: o.genres, services = acc.services ?: o.services) }
+                    genres = acc.genres ?: o.genres,
+                    services = if (addServices && acc.services != null && o.services != null) (o.services + acc.services).distinct() else acc.services ?: o.services) }
                 if (old.size == 1 && old[0].copy(atMs = merged.atMs) == merged) continue   // nothing new
                 out = listOf(merged) + out.filterNot { o -> old.any { it === o } }
             }

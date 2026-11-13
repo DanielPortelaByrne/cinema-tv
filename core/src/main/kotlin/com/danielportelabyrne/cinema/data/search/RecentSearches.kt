@@ -1,7 +1,7 @@
 package com.danielportelabyrne.cinema.data.search
 
-/** The two search keyboards, each with its own recent searches. */
-enum class SearchKeyboard(val key: String) { GLOBAL("recent_searches"), LISTS("recent_list_searches") }
+/** The search keyboards, each with its own recent searches. */
+enum class SearchKeyboard(val key: String) { GLOBAL("recent_searches"), LISTS("recent_list_searches"), SERVICES("recent_service_searches") }
 
 /**
  * The searches the owner ran lately on one keyboard, most recent first. Pure, so it can be tested.

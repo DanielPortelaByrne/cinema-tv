@@ -1,5 +1,7 @@
 package com.danielportelabyrne.cinema.data.settings
 
+import com.danielportelabyrne.cinema.data.movies.FollowedServices
+import com.danielportelabyrne.cinema.data.movies.Service
 import com.danielportelabyrne.cinema.data.movies.Watchlist
 import com.danielportelabyrne.cinema.data.movies.WatchlistFilm
 import com.danielportelabyrne.cinema.data.search.RecentSearches
@@ -117,6 +119,11 @@ class CinemaSettings(platform: Platform) {
     fun setRecentSearches(keyboard: SearchKeyboard, terms: List<String>) { prefs.edit().putString(keyboard.key, RecentSearches.encode(terms)).apply() }
 
     /** Films the owner means to watch, shown as the Watchlist row in My library. */
+    /** The services followed on Home ("Browse by service"), in order. The original six until the owner changes them. */
+    var followedServices: List<Service>
+        get() = FollowedServices.parse(prefs.getString("followed_services", null)) ?: FollowedServices.DEFAULT
+        set(v) { prefs.edit().putString("followed_services", FollowedServices.toJson(v)).apply() }
+
     var watchlist: List<WatchlistFilm>
         get() = Watchlist.parse(prefs.getString("watchlist_films", null))
         set(v) { prefs.edit().putString("watchlist_films", Watchlist.toJson(v)).apply() }

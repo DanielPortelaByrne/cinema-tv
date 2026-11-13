@@ -139,7 +139,7 @@ class ServiceCard(context: Context, label: String, private val colours: Pair<Int
 
         /**
          * Each service's colours, from its own branding but deepened and warmed a little toward Cinema's dark brown, so the
-         * row sits in the page rather than shouting: (top left, bottom right). Unknown services get Cinema's own maroon.
+         * row sits in the page rather than shouting: (top left, bottom right). One it has none for gets a steady colour of its own.
          */
         fun coloursFor(code: String): Pair<Int, Int> = when (code) {
             "nfx" -> 0xFFA3121A.toInt() to 0xFF180607.toInt()
@@ -148,7 +148,19 @@ class ServiceCard(context: Context, label: String, private val colours: Pair<Int
             "amp" -> 0xFF1689BA.toInt() to 0xFF071B26.toInt()
             "dnp" -> 0xFF137A86.toInt() to 0xFF081A2E.toInt()
             "atp" -> 0xFF5E5A56.toInt() to 0xFF141210.toInt()
-            else -> Cinema.STRIPE_TERRA to Cinema.MAROON
+            "bbc" -> 0xFFB3276C.toInt() to 0xFF1A0611.toInt()
+            "itv" -> 0xFF6F7F1A.toInt() to 0xFF0F1C24.toInt()
+            "al4" -> 0xFF2F8A4E.toInt() to 0xFF0B1A10.toInt()
+            "myf" -> 0xFF9C7A10.toInt() to 0xFF0D1A30.toInt()
+            "ntv" -> 0xFF0C7A5E.toInt() to 0xFF051A16.toInt()
+            "rte" -> 0xFFC43A4E.toInt() to 0xFF210A10.toInt()
+            else -> generated(code)
+        }
+
+        /** A service the app has no colours for gets its own, steady for that service: a deep hue from its code, near-black at the far corner. */
+        private fun generated(code: String): Pair<Int, Int> {
+            val hue = ((code.hashCode() and 0x7FFFFFFF) % 360).toFloat()
+            return android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.62f, 0.62f)) to android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.7f, 0.1f))
         }
 
         private fun mix(a: Int, b: Int, t: Float): Int {
@@ -158,4 +170,43 @@ class ServiceCard(context: Context, label: String, private val colours: Pair<Int
 
         private fun lighten(c: Int) = mix(c, 0xFFFFFFFF.toInt(), 0.25f)
     }
+}
+
+/**
+ * The last card of "Browse by service": a quiet glass card with a plus, which opens the page where services are added
+ * and removed. As tall as a service card and about half as wide. Focused it grows like one.
+ */
+class ManageServicesCard(context: Context) : FrameLayout(context) {
+    var onFocus: ((Boolean) -> Unit)? = null
+    private val rest = Cinema.glass(context, 30f, Cinema.GLASS)
+    private val lit = Cinema.glass(context, 30f, 0x29FFF2DE)
+
+    init {
+        isFocusable = true; isClickable = true; clipChildren = false; clipToPadding = false
+        contentDescription = "Add or remove services"
+        background = rest
+        val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        val disc = FrameLayout(context).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Cinema.alpha(Cinema.CREAM, 0.12f)) } }
+        disc.addView(Cinema.icon(context, com.danielportelabyrne.cinema.R.drawable.ic_cin_plus, Cinema.CREAM), LayoutParams(Cinema.px(context, 44), Cinema.px(context, 44), Gravity.CENTER))
+        column.addView(disc, LinearLayout.LayoutParams(Cinema.px(context, 96), Cinema.px(context, 96)))
+        column.addView(Cinema.text(context, "Add or remove", 32, Cinema.CREAM, serif = true, weight = 500).apply { maxLines = 1; gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 22) })
+        column.addView(Cinema.text(context, "Your services", 15, Cinema.alpha(Cinema.CREAM, 0.7f), weight = 600, tracking = 0.18f, caps = true),
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 6) })
+        addView(column, LayoutParams(Cinema.px(context, W), Cinema.px(context, ServiceCard.H)))
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { super.onSizeChanged(w, h, oldw, oldh); pivotX = w / 2f; pivotY = h / 2f }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        background = if (gainFocus) lit else rest
+        translationZ = if (gainFocus) Cinema.pxf(context, 20) else 0f
+        val scale = if (gainFocus) 1.07f else 1f
+        if (Motion.animationsOn(this)) animate().scaleX(scale).scaleY(scale).setDuration(if (gainFocus) Motion.FOCUS_IN_MS else Motion.FOCUS_OUT_MS).setInterpolator(Motion.SETTLE).start()
+        else { scaleX = scale; scaleY = scale }
+        onFocus?.invoke(gainFocus)
+    }
+
+    companion object { const val W = 330 }
 }

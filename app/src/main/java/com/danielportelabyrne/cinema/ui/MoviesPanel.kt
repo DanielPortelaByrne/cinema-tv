@@ -110,6 +110,9 @@ import com.danielportelabyrne.cinema.design.cinema.AmbientBackground
 import com.danielportelabyrne.cinema.design.cinema.CinemaButton
 import com.danielportelabyrne.cinema.design.cinema.CinemaConfirm
 import com.danielportelabyrne.cinema.data.search.RecentSearches
+import com.danielportelabyrne.cinema.data.movies.FollowedServices
+import com.danielportelabyrne.cinema.data.movies.ServiceDirectory
+import com.danielportelabyrne.cinema.data.movies.ServiceDirectoryRepository
 import com.danielportelabyrne.cinema.data.movies.Watchlist
 import com.danielportelabyrne.cinema.data.movies.WatchlistFilm
 import com.danielportelabyrne.cinema.data.search.SearchKeyboard
@@ -180,7 +183,9 @@ class MoviesPanel(
     /** Films the owner means to watch: shown as the Watchlist row in My library. */
     private val watchlist: () -> List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm> = { emptyList() },
     /** Keeps the watchlist after a title is added to it or taken off it. */
-    private val saveWatchlist: (List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm>) -> Unit = {}
+    private val saveWatchlist: (List<com.danielportelabyrne.cinema.data.movies.WatchlistFilm>) -> Unit = {},
+    /** Keeps the services followed on Home ("Browse by service") after they change. */
+    private val saveFollowedServices: (List<Service>) -> Unit = {}
 ) {
     /** Where the page is: one of the tabs, or a service or genre opened from Home, or search. */
     private sealed class Dest {
@@ -200,6 +205,9 @@ class MoviesPanel(
         class LbListPage(val path: String) : Dest()
         object LbSearch : Dest()
         object LbFollow : Dest()
+        /** The services followed on Home, and the search for more to follow. */
+        object ServiceManage : Dest()
+        object ServiceSearch : Dest()
         /** Music: the server's album lists, one album, one artist. */
         object Music : Dest()
         class MusicAlbum(val id: String) : Dest()
@@ -210,7 +218,7 @@ class MoviesPanel(
 
     /** The rail item a page belongs to: a service or genre page is part of Home, every Letterboxd page of Letterboxd. */
     private fun railOf(d: Dest): Dest = when (d) {
-        is Dest.OnService, is Dest.InGenre -> Dest.Home
+        is Dest.OnService, is Dest.InGenre, Dest.ServiceManage, Dest.ServiceSearch -> Dest.Home
         is Dest.LbPerson, is Dest.LbListPage, Dest.LbSearch, Dest.LbFollow -> Dest.Letterboxd
         is Dest.MusicAlbum, is Dest.MusicArtist -> Dest.Music
         Dest.Watchlist -> Dest.Library
@@ -341,7 +349,8 @@ class MoviesPanel(
         if (!topBuilt) { buildTop(); topBuilt = true }
         syncIntegrations()
         val reuse = current === Dest.Home && trail.isEmpty() && content.childCount > 0 && heroSet &&
-            Perf.now() - builtAt < REUSE_MS && jellyfin.isConnected == builtConnected
+            Perf.now() - builtAt < REUSE_MS && jellyfin.isConnected == builtConnected && !servicesDirty
+        servicesDirty = false
         trail.clear(); current = Dest.Home
         styleTabs()
         if (reuse) reopen() else build()
@@ -534,6 +543,7 @@ class MoviesPanel(
             "search" -> Dest.Search; "films" -> Dest.Films; "series" -> Dest.Series; "docs" -> Dest.Docs
             "library" -> Dest.Library; "downloads" -> Dest.Downloads
             "letterboxd" -> Dest.Letterboxd; "lb-search" -> Dest.LbSearch; "lb-follow" -> Dest.LbFollow
+            "services" -> Dest.ServiceManage; "service-search" -> Dest.ServiceSearch
             "music" -> Dest.Music
             else -> when {
                 name.startsWith("music-album:") -> Dest.MusicAlbum(name.removePrefix("music-album:"))
@@ -1030,12 +1040,15 @@ class MoviesPanel(
             Dest.Watchlist -> buildWatchlist(gen)
             Dest.Downloads -> buildDownloads(gen)
             Dest.Search -> buildSearch()
-            is Dest.OnService -> { buildHero(); heroTag("Streaming on", d.service.label, Catalog.logoUrl(d.service)); shelves(Catalog.servicePage(d.service), gen, personal) }
+            // A service with few titles listed fills its page with its country's own films and series, so it is not all "streaming on" it.
+            is Dest.OnService -> { buildHero(); heroTag(if (d.service.sparse) "${d.service.homeName} films & series" else "Streaming on", d.service.label, Catalog.logoUrl(d.service)); shelves(Catalog.servicePage(d.service), gen, personal) }
             is Dest.InGenre -> { buildHero(); heroTag("Genre", d.genre.label); shelves(Catalog.genrePage(d.genre), gen, personal) }
             Dest.Letterboxd -> buildLetterboxd(gen)
             is Dest.LbPerson -> buildLbPerson(d.user, gen)
             is Dest.LbListPage -> buildLbList(d.path, gen)
             Dest.LbSearch -> buildLbSearch(gen)
+            Dest.ServiceManage -> buildServiceManage(gen)
+            Dest.ServiceSearch -> buildServiceSearch(gen)
             Dest.LbFollow -> buildLbFollow(gen)
             Dest.Music -> buildMusic(gen)
             is Dest.MusicAlbum -> buildMusicAlbum(d.id, gen)
@@ -1047,7 +1060,7 @@ class MoviesPanel(
 
     /** Each section of the app has the same ground in its own colours (see AmbientBackground.Palette). */
     private fun paletteFor(d: Dest): AmbientBackground.Palette = when (d) {
-        Dest.Home -> AmbientBackground.HOME
+        Dest.Home, Dest.ServiceManage, Dest.ServiceSearch -> AmbientBackground.HOME
         Dest.Films -> AmbientBackground.FILMS
         Dest.Series -> AmbientBackground.SERIES
         Dest.Docs -> AmbientBackground.DOCS
@@ -1079,7 +1092,8 @@ class MoviesPanel(
             images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 76), tag = pageTag) { b -> icon.setImageBitmap(b) }
         }
         val words = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        words.addView(Cinema.text(activity, kicker, 17, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
+        // Its own width: left to match the column, a kicker wider than a short name ("NOW") wrapped and lost its last word.
+        words.addView(Cinema.text(activity, kicker, 17, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2))
         words.addView(Cinema.text(activity, name, 38, Cinema.CREAM, serif = true, weight = 500), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 2) })
         tag.addView(words)
         (heroFrame as FrameLayout).addView(tag, FrameLayout.LayoutParams(-2, -2).apply { marginStart = pageStart; topMargin = Cinema.px(activity, 20) })
@@ -1160,7 +1174,8 @@ class MoviesPanel(
             // A Top 10 row is exactly that: ten numbered posters, nothing after them.
             val fetched = catalog.shelf(spec).titles.take(if (spec.ranked) 10 else SHELF_LIMIT).map { entry(it) }
             // Each title's own genres and services, kept so the personal shelves can tell which pages it belongs on.
-            learnFacts(fetched.map { TitleFacts.of(it.title, System.currentTimeMillis()) })
+            // A broadcaster's shelf asked for abroad lists that country's services: they add to what is known here.
+            learnFacts(fetched.map { TitleFacts.of(it.title, System.currentTimeMillis()) }, addServices = spec.country != null && spec.country != Catalog.country)
             val look =com.danielportelabyrne.cinema.data.movies.ShelfLooks.resolve(planned, fetched.map { it.title })
             val lead = if (look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT)
                 com.danielportelabyrne.cinema.data.movies.ShelfLooks.spotlightIndex(fetched.map { it.title }) ?: 0 else 0
@@ -2399,19 +2414,40 @@ class MoviesPanel(
      * List search (`C`): the keyboard on the left, the best matches on the right as they arrive, every match in a row
      * beneath, and with nothing typed, the lists of the people followed here.
      */
-    private fun buildLbSearch(gen: Int) {
-        lbTyped = ""
+    /**
+     * The live parts of a page with the search keyboard, which [keyboardSearchPage] builds: the Letterboxd lists search and
+     * the services search are both this page with different results. [typed] is the query. [side] is beside the keyboard,
+     * [below] under it. Set [onIdle] (nothing typed yet: recent searches, suggestions) and [onQuery] (a query to run),
+     * then call [start].
+     */
+    private class KbSearch(val field: SearchField, val side: LinearLayout, val below: LinearLayout) {
+        var typed = ""
+        var onIdle: () -> Unit = {}
+        var onQuery: (String) -> Unit = {}
+        var focusFirst: () -> Unit = {}
+
+        /** Runs [q]: too short a query shows the idle side. */
+        fun run(q: String) { if (q.length < 2) onIdle() else onQuery(q) }
+
+        /** Searches [term] as if it had been typed (a recent search, a suggestion). */
+        fun search(term: String) { typed = term; field.render(term, null); run(term) }
+
+        fun clear() { side.removeAllViews(); below.removeAllViews() }
+
+        fun start() { onIdle(); focusFirst() }
+    }
+
+    /**
+     * A search page with the in-app QWERTY keyboard, the same search bar as the global search (SearchField: [lead] is its
+     * icon, then the query, a phone to type from and the microphone), a phone that types into it and voice that fills it.
+     * Typing runs [KbSearch.onQuery] once it pauses. The caller fills [KbSearch.side] and [KbSearch.below].
+     */
+    private fun keyboardSearchPage(lead: View, prompt: String, phoneId: String, phoneLabel: String): KbSearch {
         val stage = FrameLayout(activity).apply { clipChildren = false; clipToPadding = false }
         content.addView(stage, LinearLayout.LayoutParams(-1, Cinema.px(activity, 900)))
         val left = Cinema.px(activity, 176)
         fun place(v: View, x: Int, y: Int, w: Int = -2, h: Int = -2) = stage.addView(v, FrameLayout.LayoutParams(w, h).apply { leftMargin = x; topMargin = y })
-        // The same search bar as the global search (SearchField), led by the Letterboxd mark and the word "Lists".
-        val lead = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        lead.addView(Cinema.icon(activity, R.drawable.ic_cin_search, Cinema.SAFFRON), LinearLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40)))
-        lead.addView(com.danielportelabyrne.cinema.design.cinema.LbDots.view(activity, 12), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 22) })
-        lead.addView(Cinema.text(activity, "Lists", 20, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 16) })
-        val field = SearchField(activity, lead, prompt = "Search Letterboxd lists", hintText = "")
-        val query = field.query
+        val field = SearchField(activity, lead, prompt = prompt, hintText = "")
         place(field, left, Cinema.px(activity, 12), activity.resources.displayMetrics.widthPixels - left - pageEnd, Cinema.px(activity, 112))
         val typeToSearch = Cinema.eyebrow(activity, listOf("Type to search"), color = Cinema.DIM, markAlpha = 0.5f)
         place(typeToSearch, left, Cinema.px(activity, 170))
@@ -2419,9 +2455,80 @@ class MoviesPanel(
         place(side, Cinema.px(activity, 1232), Cinema.px(activity, 170), Cinema.px(activity, 592))
         val below = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         content.addView(below, LinearLayout.LayoutParams(-1, -2))
+        val kb = KbSearch(field, side, below)
         var pending: Runnable? = null
+        fun runSoon() {
+            pending?.let { ui.removeCallbacks(it) }
+            pending = Runnable { kb.run(kb.typed.trim()) }.also { ui.postDelayed(it, 450) }
+        }
+        val keyboard = QwertyKeyboard(activity) { key ->
+            kb.typed = Qwerty.type(kb.typed, key)
+            field.render(kb.typed, null)
+            runSoon()
+        }
+        keyboard.onLeave = { leaveKeyboard(field) }
+        keyboard.upTarget = { searchBarControl(field) }
+        place(keyboard, left, Cinema.px(activity, 240), Cinema.px(activity, 980), Cinema.px(activity, 476))
+        // Typing from a phone: the full text it sends is the query, live as it is typed.
+        val phone = phoneTargetFor(phoneId, phoneLabel, Qwerty.MAX_LENGTH, { kb.typed }, { text ->
+            kb.typed = text.take(Qwerty.MAX_LENGTH)
+            field.render(kb.typed, null)
+            runSoon()
+        }, { pending?.let { ui.removeCallbacks(it) }; kb.run(kb.typed.trim()) })
+        // Speaking the query: the words said replace it, and the search runs when they are done.
+        // The same listening screen as the global search: the keyboard gives way to it while the microphone listens.
+        val listening = VoiceListeningView(activity).apply { visibility = View.GONE }
+        stage.addView(listening, FrameLayout.LayoutParams(-1, -2).apply { leftMargin = left; rightMargin = pageEnd; topMargin = Cinema.px(activity, 230) })
+        fun showListening(partial: String, level: Float, hint: String) {
+            keyboard.visibility = View.INVISIBLE; side.visibility = View.INVISIBLE; below.visibility = View.INVISIBLE; typeToSearch.visibility = View.INVISIBLE; listening.visibility = View.VISIBLE
+            field.render(kb.typed, partial)
+            listening.update(partial, level, hint)
+        }
+        fun showKeyboard() {
+            keyboard.visibility = View.VISIBLE; side.visibility = View.VISIBLE; below.visibility = View.VISIBLE; typeToSearch.visibility = View.VISIBLE; listening.visibility = View.GONE
+            field.render(kb.typed, null)
+        }
+        fun startSpeech() {
+            voiceSink = { state ->
+                when (state) {
+                    is VoiceState.Listening -> showListening(state.partial, state.level, "Speak now · Back to cancel")
+                    VoiceState.Requesting -> showListening("", 0f, "Allow the microphone to search by voice")
+                    is VoiceState.Done -> {
+                        voiceSink = null
+                        showKeyboard()
+                        kb.typed = state.text.take(Qwerty.MAX_LENGTH)
+                        field.render(kb.typed, null)
+                        kb.run(kb.typed.trim())
+                    }
+                    is VoiceState.Unavailable -> {
+                        voiceSink = null
+                        showKeyboard()
+                        field.query.text = state.reason; field.query.setTextColor(Cinema.MUTED)
+                    }
+                    VoiceState.Idle -> { voiceSink = null; showKeyboard() }
+                    else -> Unit
+                }
+            }
+            ensureVoice().start()
+        }
+        // The field's icons, as on the global search: a phone to type from, and the microphone to speak with.
+        field.onPhone = { PhoneInput.toggleQr() }
+        usePhoneTarget(field, phone)
+        field.onMic = { startSpeech() }
+        kb.focusFirst = { keyboard.keys.firstOrNull { it.contentDescription == "q" }?.let { requestFocusRobust(overlay as ViewGroup, it) } }
+        return kb
+    }
+
+    private fun buildLbSearch(gen: Int) {
+        // The same search bar as the global search (SearchField), led by the Letterboxd mark and the word "Lists".
+        val lead = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        lead.addView(Cinema.icon(activity, R.drawable.ic_cin_search, Cinema.SAFFRON), LinearLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40)))
+        lead.addView(com.danielportelabyrne.cinema.design.cinema.LbDots.view(activity, 12), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 22) })
+        lead.addView(Cinema.text(activity, "Lists", 20, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 16) })
+        val kb = keyboardSearchPage(lead, "Search Letterboxd lists", "lb-search", "Search lists")
+        val side = kb.side; val below = kb.below
         fun showResults(q: String, lists: List<com.danielportelabyrne.cinema.data.letterboxd.LbList>?) {
-            side.removeAllViews(); below.removeAllViews()
+            kb.clear()
             side.addView(Cinema.text(activity, if (lists == null) "Searching for “$q”…" else "Lists matching “$q”", 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
             if (lists == null) return
             if (lists.isEmpty()) { side.addView(note("No lists found"), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) }); return }
@@ -2442,11 +2549,11 @@ class MoviesPanel(
             lbListRow("All matching lists", "${lists.size}", lists, gen, into = below)
         }
         fun showIdle() {
-            side.removeAllViews(); below.removeAllViews()
-            addRecent(SearchKeyboard.LISTS, side, search = { term -> lbTyped = term; field.render(term, null); lbSearchRunner?.invoke(term) }, refresh = { showIdle() })
+            kb.clear()
+            addRecent(SearchKeyboard.LISTS, side, search = { term -> kb.search(term) }, refresh = { showIdle() })
             side.addView(Cinema.text(activity, "Try a theme, a director or a mood", 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true))
             listOf("a24", "comfort", "horror", "ghibli", "noir").forEachIndexed { i, s ->
-                side.addView(pill(s, accent = false).apply { setOnClickListener { lbTyped = s; field.render(s, null); lbSearchRunner?.invoke(s) } },
+                side.addView(pill(s, accent = false).apply { setOnClickListener { kb.search(s) } },
                     LinearLayout.LayoutParams(-2, Cinema.px(activity, 54)).apply { topMargin = Cinema.px(activity, if (i == 0) 22 else 12) })
             }
             // Lists by the people followed here.
@@ -2455,7 +2562,7 @@ class MoviesPanel(
             val all = java.util.concurrent.ConcurrentHashMap<String, List<com.danielportelabyrne.cinema.data.letterboxd.LbList>>()
             lb.following.forEach { u ->
                 lb.load("/$u/lists/", com.danielportelabyrne.cinema.data.letterboxd.LetterboxdRepository.HOUR, { com.danielportelabyrne.cinema.data.letterboxd.Lb.lists(it) }) { l ->
-                    if (gen != generation || lbTyped.isNotBlank() || l == null) return@load
+                    if (gen != generation || kb.typed.isNotBlank() || l == null) return@load
                     all[u] = l.map { it.copy(ownerName = it.ownerName ?: lbName(u)) }
                     holder.removeAllViews(); lbListRow("Lists by the people you follow", null, all.values.flatten(), gen, into = holder)
                 }
@@ -2480,74 +2587,16 @@ class MoviesPanel(
             }
         }
         fun runQuery(q: String) {
-            if (q.length < 2) { showIdle(); return }
             showResults(q, null)
-            val current = { gen == generation && lbTyped.trim() == q }
+            val current = { gen == generation && kb.typed.trim() == q }
             listSearch(q, current) { l ->
                 val words = keywordsOf(q)
                 if (l.isNullOrEmpty() && words.size > 1) searchKeywords(q, words, current) else showResults(q, l.orEmpty())
             }
         }
-        lbSearchRunner = { q -> runQuery(q) }
-        val keyboard = QwertyKeyboard(activity) { key ->
-            lbTyped = Qwerty.type(lbTyped, key)
-            field.render(lbTyped, null)
-            pending?.let { ui.removeCallbacks(it) }
-            pending = Runnable { runQuery(lbTyped.trim()) }.also { ui.postDelayed(it, 450) }
-        }
-        keyboard.onLeave = { leaveKeyboard(field) }
-        keyboard.upTarget = { searchBarControl(field) }
-        place(keyboard, left, Cinema.px(activity, 240), Cinema.px(activity, 980), Cinema.px(activity, 476))
-        // Typing from a phone: the full text it sends is the query, live as it is typed.
-        val lbPhoneTarget = phoneTargetFor("lb-search", "Search lists", Qwerty.MAX_LENGTH, { lbTyped }, { text ->
-            lbTyped = text.take(Qwerty.MAX_LENGTH)
-            field.render(lbTyped, null)
-            pending?.let { ui.removeCallbacks(it) }
-            pending = Runnable { runQuery(lbTyped.trim()) }.also { ui.postDelayed(it, 450) }
-        }, { pending?.let { ui.removeCallbacks(it) }; runQuery(lbTyped.trim()) })
-        // Speaking the query: the words said replace it, and the search runs when they are done.
-        // The same listening screen as the global search: the keyboard gives way to it while the microphone listens.
-        // As on the global search: the listening view spans the page, and the bar says LISTENING in the same place.
-        val listening = VoiceListeningView(activity).apply { visibility = View.GONE }
-        stage.addView(listening, FrameLayout.LayoutParams(-1, -2).apply { leftMargin = left; rightMargin = pageEnd; topMargin = Cinema.px(activity, 230) })
-        fun showListening(partial: String, level: Float, hint: String) {
-            keyboard.visibility = View.INVISIBLE; side.visibility = View.INVISIBLE; below.visibility = View.INVISIBLE; typeToSearch.visibility = View.INVISIBLE; listening.visibility = View.VISIBLE
-            field.render(lbTyped, partial)
-            listening.update(partial, level, hint)
-        }
-        fun showKeyboard() {
-            keyboard.visibility = View.VISIBLE; side.visibility = View.VISIBLE; below.visibility = View.VISIBLE; typeToSearch.visibility = View.VISIBLE; listening.visibility = View.GONE
-            field.render(lbTyped, null)
-        }
-        fun startListSpeech() {
-            voiceSink = { state ->
-                when (state) {
-                    is VoiceState.Listening -> showListening(state.partial, state.level, "Speak now · Back to cancel")
-                    VoiceState.Requesting -> showListening("", 0f, "Allow the microphone to search by voice")
-                    is VoiceState.Done -> {
-                        voiceSink = null
-                        showKeyboard()
-                        lbTyped = state.text.take(Qwerty.MAX_LENGTH)
-                        field.render(lbTyped, null)
-                        runQuery(lbTyped.trim())
-                    }
-                    is VoiceState.Unavailable -> {
-                        voiceSink = null
-                        showKeyboard()
-                        query.text = state.reason; query.setTextColor(Cinema.MUTED)
-                    }
-                    VoiceState.Idle -> { voiceSink = null; showKeyboard() }
-                    else -> Unit
-                }
-            }
-            ensureVoice().start()
-        }
-        // The field's icons, as on the global search: a phone to type from, and the microphone to speak with.
-        field.onPhone = { PhoneInput.toggleQr() }
-        usePhoneTarget(field, lbPhoneTarget)
-        field.onMic = { startListSpeech() }
-        showIdle()
-        keyboard.keys.firstOrNull { it.contentDescription == "q" }?.let { requestFocusRobust(overlay as ViewGroup, it) }
+        kb.onIdle = { showIdle() }
+        kb.onQuery = { q -> runQuery(q) }
+        kb.start()
     }
 
     /** The same round phone button as the search bar and every field, so they look and light up alike. Types from a phone. */
@@ -2585,9 +2634,6 @@ class MoviesPanel(
         phoneTarget = null
         PhoneInput.hideQr()
     }
-
-    /** Runs a list search for a suggestion pressed on the search page (set by [buildLbSearch]). */
-    private var lbSearchRunner: ((String) -> Unit)? = null
 
     /**
      * Follow someone (`F`): type a username and their profile appears beside the keyboard, favourites and all, with
@@ -2865,8 +2911,8 @@ class MoviesPanel(
     }
 
     /** Keeps what a catalogue row said about its titles; written to disk a few seconds later, once for many rows. */
-    private fun learnFacts(learned: List<TitleFacts>) {
-        if (!titleFacts.learn(learned)) return
+    private fun learnFacts(learned: List<TitleFacts>, addServices: Boolean = false) {
+        if (!titleFacts.learn(learned, addServices)) return
         ui.removeCallbacks(flushFacts); ui.postDelayed(flushFacts, FACTS_FLUSH_MS)
     }
 
@@ -5626,8 +5672,8 @@ class MoviesPanel(
             card.onFocus = { lit -> if (lit) reveal(card) }
             card.setOnClickListener { go(Dest.OnService(s), remember = true) }
             r.inner.addView(card, cardParams(i))
-            // The fan is the service's own Popular shelf, which Home asks for anyway (and keeps), so this costs no extra fetch.
-            val spec = Catalog.homePage().firstOrNull { it.packages == listOf(s.code) } ?: return@forEachIndexed
+            // The fan is a shelf Home or the service's own page asks for anyway (and keeps), so this costs no extra fetch.
+            val spec = Catalog.cardShelf(s)
             // Only once the row nears the screen, and never ahead of the shelves on show (worker, not the shelf pool).
             fans += { worker.execute {
                 val posters = catalog.shelf(spec).titles.mapNotNull { it.posterUrl }.take(3)
@@ -5640,8 +5686,161 @@ class MoviesPanel(
                 }
             } }
         }
+        // The last card: where services are added and removed.
+        val manage = ManageServicesCard(activity).apply {
+            onFocus = { lit -> if (lit) reveal(this) }
+            setOnClickListener { go(Dest.ServiceManage, remember = true) }
+        }
+        r.inner.addView(manage, cardParams(Catalog.SERVICES.size))
         pending += Lazy(r) { fans.forEach { it() } }
     }
+
+    // --- Following services ----------------------------------------------------------------------
+
+    /** Every service JustWatch lists, for finding one to follow. Fetched once and kept on this TV for a week. */
+    private val directory = ServiceDirectoryRepository(AndroidPlatform(activity))
+
+    /** Set when the services followed change, so Home is built again rather than reopened as it was left. */
+    private var servicesDirty = false
+
+    private fun isFollowing(s: Service) = FollowedServices.isFollowing(Catalog.followed, s.code)
+
+    private fun setFollowing(s: Service, follow: Boolean) {
+        Catalog.followed = if (follow) FollowedServices.follow(Catalog.followed, s) else FollowedServices.unfollow(Catalog.followed, s.code)
+        saveFollowedServices(Catalog.followed)
+        servicesDirty = true
+        CinemaToast.show(activity, if (follow) "Following ${s.label}" else "Stopped following ${s.label}", Toast.LENGTH_SHORT)
+    }
+
+    /**
+     * One service as a card to follow or unfollow: its app icon, its name, where it runs, and whether it is followed.
+     * Pressing it flips that. Used by the services page and by the services search, so both look and act alike.
+     */
+    private fun serviceRow(s: Service): View {
+        val card = GlowCard(activity, 26f).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(Cinema.px(activity, 22), 0, Cinema.px(activity, 26), 0); contentDescription = s.label
+        }
+        val icon = ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; setBackgroundColor(Cinema.PLACEHOLDER)
+            outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, Cinema.pxf(activity, 18)) } }
+        }
+        card.addView(icon, LinearLayout.LayoutParams(Cinema.px(activity, 88), Cinema.px(activity, 88)))
+        Catalog.logoUrl(s)?.let { url -> images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 88), tag = pageTag) { b -> icon.setImageBitmap(b) } }
+        val words = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        words.addView(Cinema.text(activity, s.label, 28, Cinema.CREAM, serif = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        words.addView(Cinema.text(activity, ServiceDirectory.whereLine(s, Catalog.country), 18, Cinema.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 4) })
+        card.addView(words, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = Cinema.px(activity, 20) })
+        val state = Cinema.text(activity, "", 20, Cinema.CREAM, weight = 600).apply { gravity = Gravity.CENTER; maxLines = 1; setPadding(Cinema.px(activity, 26), 0, Cinema.px(activity, 26), 0) }
+        fun paint() {
+            val on = isFollowing(s); val r = Cinema.pxf(activity, 200)
+            state.text = if (on) "✓  Following" else "+  Follow"
+            state.setTextColor(if (on) Cinema.CREAM else 0xFF1D0D05.toInt())
+            state.background = if (on) GradientDrawable().apply { cornerRadius = r; setColor(Cinema.GLASS_STRONG) }
+                else GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFFEB8A56.toInt(), 0xFFD4623A.toInt())).apply { cornerRadius = r }
+            card.contentDescription = (if (on) "Following " else "Follow ") + s.label
+        }
+        paint()
+        card.addView(state, LinearLayout.LayoutParams(-2, Cinema.px(activity, 52)).apply { marginStart = Cinema.px(activity, 14) })
+        card.setOnClickListener { setFollowing(s, !isFollowing(s)); paint() }
+        return card
+    }
+
+    private fun addServiceRows(into: LinearLayout, services: List<Service>) =
+        services.forEach { into.addView(serviceRow(it), LinearLayout.LayoutParams(-1, Cinema.px(activity, 120)).apply { topMargin = Cinema.px(activity, 16) }) }
+
+    private fun smallHeading(text: String) = Cinema.text(activity, text, 17, Cinema.DIM, weight = 600, tracking = 0.24f, caps = true)
+
+    /**
+     * Your services: the ones followed (press one to stop following it), a way to find more, and a few the app knows that
+     * are not followed yet. Reached from the last card of Browse by service on Home.
+     */
+    private fun buildServiceManage(gen: Int) {
+        // The search is next: have the list of services ready by the time it is opened.
+        worker.execute { directory.all(Catalog.country) }
+        val followed = Catalog.followed
+        val header = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; setPadding(pageStart, Cinema.px(activity, 44), pageEnd, 0) }
+        header.addView(Cinema.eyebrow(activity, listOf("Browse by service", if (followed.isEmpty()) "None followed" else "${followed.size} followed")))
+        header.addView(Cinema.title(activity, "Your services", 96, maxLines = 1), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 16) })
+        header.addView(Cinema.text(activity, "Follow the places films and series stream, air or first appear. They show on Home under Browse by service.", 24, Cinema.MUTED).apply { maxLines = 2 },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 14) })
+        val buttons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
+        val find = CinemaButton(activity, CinemaButton.Kind.PRIMARY, "Find services", R.drawable.ic_cin_search).apply { setOnClickListener { go(Dest.ServiceSearch, remember = true) } }
+        buttons.addView(find)
+        val reset = CinemaButton(activity, CinemaButton.Kind.GLASS, "Back to the original six").apply {
+            setOnClickListener {
+                Catalog.followed = FollowedServices.DEFAULT; saveFollowedServices(Catalog.followed); servicesDirty = true
+                CinemaToast.show(activity, "Following the original six again", Toast.LENGTH_SHORT)
+                go(Dest.ServiceManage)
+            }
+        }
+        buttons.addView(reset, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 18) })
+        header.addView(buttons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
+        content.addView(header)
+        val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(pageStart, Cinema.px(activity, 36), pageEnd, Cinema.px(activity, 60)) }
+        content.addView(list, LinearLayout.LayoutParams(-1, -2))
+        if (followed.isEmpty()) list.addView(note("You follow no services. Find one, or go back to the original six."))
+        else { list.addView(smallHeading("Following")); addServiceRows(list, followed) }
+        val others = Catalog.KNOWN.filter { k -> followed.none { it.code == k.code } }
+        if (others.isNotEmpty()) {
+            list.addView(smallHeading("Suggested"), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 44) })
+            addServiceRows(list, others)
+        }
+        if (gen == generation) focusContent()
+    }
+
+    /**
+     * Find services: the same search page as the Letterboxd lists search (the in-app keyboard, a phone or the microphone),
+     * over every streaming app and catch-up player JustWatch lists in about fifty countries. Each result follows or
+     * unfollows when pressed. A service that only runs in another country is still found: its pages are asked for there.
+     */
+    private fun buildServiceSearch(gen: Int) {
+        val lead = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        lead.addView(Cinema.icon(activity, R.drawable.ic_cin_search, Cinema.SAFFRON), LinearLayout.LayoutParams(Cinema.px(activity, 40), Cinema.px(activity, 40)))
+        lead.addView(Cinema.text(activity, "Services", 20, Cinema.DIM, weight = 600, tracking = 0.2f, caps = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 22) })
+        val kb = keyboardSearchPage(lead, "Search streaming services and channels", "service-search", "Search services")
+        val side = kb.side; val below = kb.below
+        worker.execute { directory.all(Catalog.country) }
+        fun showIdle() {
+            kb.clear()
+            addRecent(SearchKeyboard.SERVICES, side, search = { term -> kb.search(term) }, refresh = { showIdle() })
+            side.addView(smallHeading("Try a channel, an app or a network"))
+            listOf("bbc", "sky", "adult swim", "e4", "itv", "crunchyroll", "hulu").forEachIndexed { i, s ->
+                side.addView(pill(s, accent = false).apply { setOnClickListener { kb.search(s) } },
+                    LinearLayout.LayoutParams(-2, Cinema.px(activity, 54)).apply { topMargin = Cinema.px(activity, if (i == 0) 22 else 12) })
+            }
+        }
+        /** [found] null while it is being looked up; [offline] when the list of services could not be fetched at all. */
+        fun showResults(q: String, found: List<Service>?, offline: Boolean = false) {
+            kb.clear()
+            side.addView(smallHeading(if (found == null) "Looking up “$q”…" else "Services matching “$q”").apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+            if (found == null) return
+            if (offline) { side.addView(note("Couldn't reach the list of services. Check the network and try again."), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) }); return }
+            if (found.isEmpty()) { side.addView(note("No service called “$q”. Streaming apps and catch-up players are listed here, not every channel."), LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 18) }); return }
+            saveRecentSearches(SearchKeyboard.SERVICES, RecentSearches.add(recentSearches(SearchKeyboard.SERVICES), q))
+            addServiceRows(side, found.take(3))
+            if (found.size > 3) {
+                val more = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(pageStart, Cinema.px(activity, 20), pageEnd, Cinema.px(activity, 60)) }
+                more.addView(smallHeading("More matches"))
+                addServiceRows(more, found.drop(3))
+                below.addView(more)
+            }
+        }
+        fun runQuery(q: String) {
+            showResults(q, null)
+            val current = { gen == generation && kb.typed.trim() == q }
+            worker.execute {
+                val all = directory.all(Catalog.country)
+                val found = ServiceDirectory.search(all, q, Catalog.country)
+                activity.runOnUiThread { if (current()) showResults(q, found, offline = all.isEmpty()) }
+            }
+        }
+        kb.onIdle = { showIdle() }
+        kb.onQuery = { q -> runQuery(q) }
+        kb.start()
+    }
+
 
     private fun genreTiles() {
         val r = row("Browse by genre", null)
