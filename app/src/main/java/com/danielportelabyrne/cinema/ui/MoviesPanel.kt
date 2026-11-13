@@ -51,6 +51,9 @@ import com.danielportelabyrne.cinema.data.movies.PersonalPage
 import com.danielportelabyrne.cinema.data.movies.TitleFacts
 import com.danielportelabyrne.cinema.data.movies.TitleFactsStore
 import com.danielportelabyrne.cinema.data.movies.PlayHistoryStore
+import com.danielportelabyrne.cinema.data.movies.HistoryDay
+import com.danielportelabyrne.cinema.data.movies.HistoryItem
+import com.danielportelabyrne.cinema.data.movies.HistoryTimeline
 import com.danielportelabyrne.cinema.data.movies.RecentCard
 import com.danielportelabyrne.cinema.data.movies.RecentTarget
 import com.danielportelabyrne.cinema.data.movies.RecentlyWatched
@@ -195,6 +198,8 @@ class MoviesPanel(
         object Docs : Dest()
         object Library : Dest()
         object Watchlist : Dest()
+        /** Everything watched, as a timeline: films and runs of episodes under their dates. */
+        object History : Dest()
         object Downloads : Dest()
         object Search : Dest()
         class OnService(val service: Service) : Dest()
@@ -458,7 +463,7 @@ class MoviesPanel(
     /** Debug builds only (see MainActivity): opens a destination by name for UI-review screenshots. */
     fun debugGo(name: String) {
         // "letterboxd", "downloads", "library": open that rail page.
-        when (name) { "letterboxd" -> { go(Dest.Letterboxd); return }; "downloads" -> { go(Dest.Downloads); return }; "library" -> { go(Dest.Library); return }; "watchlist" -> { go(Dest.Watchlist); return } }
+        when (name) { "letterboxd" -> { go(Dest.Letterboxd); return }; "downloads" -> { go(Dest.Downloads); return }; "library" -> { go(Dest.Library); return }; "watchlist" -> { go(Dest.Watchlist); return }; "history" -> { go(Dest.History); return } }
         // "lbtest:/path/": fetch one Letterboxd page and log what came back (checks the browser fallback on a device).
         if (name.startsWith("lbtest:")) {
             val web = com.danielportelabyrne.cinema.data.letterboxd.LetterboxdWeb(activity)
@@ -620,6 +625,7 @@ class MoviesPanel(
             Triple("Letterboxd", R.drawable.ic_cin_lb, Dest.Letterboxd),
             Triple("Music", R.drawable.ic_cin_music, Dest.Music),
             Triple("My library", R.drawable.ic_cin_lib, Dest.Library),
+            Triple("History", R.drawable.ic_cin_history, Dest.History),
             Triple("Downloads", R.drawable.ic_cin_dl, Dest.Downloads)
         )
         destinations.forEach { (label, icon, dest) ->
@@ -1038,6 +1044,7 @@ class MoviesPanel(
             Dest.Docs -> { buildHero(); shelves(Catalog.documentariesPage(), gen, personal) }
             Dest.Library -> buildLibrary(gen)
             Dest.Watchlist -> buildWatchlist(gen)
+            Dest.History -> buildHistory(gen)
             Dest.Downloads -> buildDownloads(gen)
             Dest.Search -> buildSearch()
             // A service with few titles listed fills its page with its country's own films and series, so it is not all "streaming on" it.
@@ -1064,7 +1071,7 @@ class MoviesPanel(
         Dest.Films -> AmbientBackground.FILMS
         Dest.Series -> AmbientBackground.SERIES
         Dest.Docs -> AmbientBackground.DOCS
-        Dest.Library, Dest.Watchlist -> AmbientBackground.LIBRARY
+        Dest.Library, Dest.Watchlist, Dest.History -> AmbientBackground.LIBRARY
         Dest.Downloads -> AmbientBackground.DOWNLOADS
         Dest.Search -> AmbientBackground.SEARCH
         Dest.Settings -> AmbientBackground.SETTINGS
@@ -3133,7 +3140,7 @@ class MoviesPanel(
 
     private val playHistory by lazy { PlayHistoryStore(AndroidPlatform(activity)) }
     private var recentRow: Row? = null
-    private class RecentView(val view: ResumeCard, val card: RecentCard)
+    private class RecentView(val view: ResumeCard, val item: HistoryItem)
     /** The Home shelf's cards, newest first. */
     private val recentViews = ArrayList<RecentView>()
     /** An episode chosen on the shelf: the series page it opens selects it. Taken by [seasonSection]. */
@@ -3157,8 +3164,8 @@ class MoviesPanel(
     }
 
     /** The shelf for this page; titles [filter] could not place are left for it to report. */
-    private fun recentCards(filter: PersonalFilter = personalFilter()): List<RecentCard> =
-        RecentlyWatched.shelf(watchedRecords(), knownTitles(), keep = filter::keeps)
+    private fun recentCards(filter: PersonalFilter = personalFilter()): List<HistoryItem> =
+        HistoryTimeline.group(RecentlyWatched.shelf(watchedRecords(), knownTitles(), limit = HISTORY_LIMIT, keep = filter::keeps)).take(HOME_STOPS)
 
     /**
      * What was watched: the saved history, plus what streams and the library already say was played (read, never written),
@@ -3189,31 +3196,97 @@ class MoviesPanel(
         refreshRecent()
     }
 
-    private fun fillRecent(row: Row, cards: List<RecentCard>, gen: Int) {
+    private fun fillRecent(row: Row, items: List<HistoryItem>, gen: Int) {
         recentViews.clear(); row.deferred.clear(); row.inner.removeAllViews()
-        cards.forEachIndexed { i, c ->
-            val v = recentCardView(row, c, i, gen)
-            row.inner.addView(v, cardParams(i)); recentViews += RecentView(v, c)
+        items.forEachIndexed { i, item ->
+            val v = recentCardView(row, item, i, gen)
+            row.inner.addView(v, cardParams(i)); recentViews += RecentView(v, item)
         }
-        row.setCount(cards.size)
+        row.inner.addView(historyDoor(), cardParams(1))
+        row.setCount(items.size)
         row.scroller.post { row.loadNear() }
     }
 
-    private fun recentCardView(row: Row, c: RecentCard, index: Int, gen: Int): ResumeCard {
+    /** The shelf's last card: the way to the whole History page. */
+    private fun historyDoor(): View {
+        val card = PosterCard(activity, ResumeCard.W_SMALL, ResumeCard.H_SMALL, titled = false, radiusPx = 18f)
+        card.contentDescription = "Open your viewing history"
+        card.poster.background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFF4A2A1C.toInt(), 0xFF1A0F0A.toInt())).apply { cornerRadius = Cinema.pxf(activity, 18) }
+        card.poster.foreground = null
+        val column = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.START
+            setPadding(Cinema.px(activity, 26), 0, Cinema.px(activity, 22), Cinema.px(activity, 24))
+        }
+        column.addView(Cinema.text(activity, "Timeline", 16, Cinema.SAFFRON, weight = 700, tracking = 0.18f, caps = true))
+        column.addView(Cinema.text(activity, "View history", 34, Cinema.CREAM, serif = true, weight = 400).apply { maxLines = 1 }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 6) })
+        column.addView(Cinema.text(activity, "Everything you've watched, by day", 17, Cinema.MUTED).apply { maxLines = 2 }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 6) })
+        card.poster.addView(column, FrameLayout.LayoutParams(-1, -1))
+        card.onFocus = { lit -> if (lit) reveal(card) }
+        card.setOnClickListener { go(Dest.History, remember = true) }
+        return card
+    }
+
+    private fun recentCardView(row: Row, item: HistoryItem, index: Int, gen: Int): ResumeCard {
+        val c = item.lead
+        val meta = if (item is HistoryItem.Run) item.summary else c.meta
         val card = ResumeCard(activity, featured = false)
-        card.contentDescription = listOf(c.title, c.meta).filter { it.isNotBlank() }.joinToString(", ")
+        card.contentDescription = listOf(c.title, meta).filter { it.isNotBlank() }.joinToString(", ")
         card.title.text = c.title
-        card.meta.text = c.meta
+        card.meta.text = meta
         card.showBar(c.progress != null)
         card.setProgress(c.progress ?: 0f)
         c.artUrl?.let { url ->
-            val headers = if (c.entry.source == com.danielportelabyrne.cinema.data.movies.PlayedEntry.SOURCE_JELLYFIN && jellyfin.isConnected) jellyfin.playbackHeaders() else emptyMap()
-            val load = { images.load(url, headers, maxWidth = Cinema.px(activity, 480), tag = pageTag) { b -> if (gen == generation) card.setStill(b) } }
+            val load = { images.load(url, historyHeaders(c), maxWidth = Cinema.px(activity, 480), tag = pageTag) { b -> if (gen == generation) card.setStill(b) } }
             if (index >= EAGER_POSTERS) row.deferred += card to { load() } else load()
         }
         card.onFocus = { lit -> if (lit) reveal(card) }
+        // OK opens the title's page on its newest episode of the run, as it did when each episode had its own card.
         card.setOnClickListener { openRecent(c) }
         return card
+    }
+
+    private fun historyHeaders(c: RecentCard): Map<String, String> =
+        if (c.entry.source == com.danielportelabyrne.cinema.data.movies.PlayedEntry.SOURCE_JELLYFIN && jellyfin.isConnected) jellyfin.playbackHeaders() else emptyMap()
+
+    // --- The history page ---------------------------------------------------------------------------
+
+    /**
+     * Everything watched, newest first, as a timeline: each film or unbroken run of one season's episodes (see
+     * [HistoryTimeline]) under its day. Drawn from the same records as Home's Recently watched, read off the main thread.
+     */
+    private fun buildHistory(gen: Int) {
+        val header = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; setPadding(pageStart, 0, pageEnd, 0) }
+        val eyebrow = Cinema.eyebrow(activity, listOf("Your viewing"))
+        header.addView(eyebrow)
+        header.addView(Cinema.title(activity, "History", 96, maxLines = 1), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 16) })
+        content.addView(header)
+        val holder = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(pageStart, Cinema.px(activity, 36), pageEnd, 0) }
+        holder.addView(note("Loading your history…"))
+        content.addView(holder)
+        worker.execute {
+            val result = runCatching {
+                val items = HistoryTimeline.group(RecentlyWatched.shelf(watchedRecords(), knownTitles(), limit = HISTORY_LIMIT, keep = personalFilter(PersonalPage.Home)::keeps))
+                items to HistoryTimeline.days(items, System.currentTimeMillis())
+            }
+            activity.runOnUiThread {
+                if (gen != generation || current !== Dest.History) return@runOnUiThread
+                holder.removeAllViews()
+                val (items, days) = result.getOrNull() ?: run {
+                    holder.addView(note("The history could not be read just now. Go back and open it again."))
+                    return@runOnUiThread
+                }
+                if (items.isEmpty()) {
+                    holder.addView(note("Nothing watched yet. Films and episodes you play appear here, newest first."))
+                    return@runOnUiThread
+                }
+                eyebrow.addView(Cinema.text(activity, "${items.size} stops", 17, Cinema.MUTED).apply { maxLines = 1 }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 14) })
+                val timeline = HistoryTimelineView(activity,
+                    art = { c, done -> c.artUrl?.let { url -> images.load(url, historyHeaders(c), maxWidth = Cinema.px(activity, 480), tag = pageTag) { b -> if (gen == generation) done(b) } } },
+                    open = { openRecent(it) }, reveal = { reveal(it) })
+                holder.addView(timeline.build(days))
+                ui.postDelayed({ if (gen == generation && !top.hasFocus() && content.findFocus() == null) focusContent() }, 300)
+            }
+        }
     }
 
     /** OK opens the film's or series' page (never the player). An episode's page opens on its season, with that episode picked. */
@@ -3258,9 +3331,9 @@ class MoviesPanel(
 
     private var recentSeq = 0
 
-    private fun applyRecent(row: Row, now: List<RecentCard>) {
-        if (now == recentViews.map { it.card }) return
-        val old = recentViews.map { it.card.entry }
+    private fun applyRecent(row: Row, now: List<HistoryItem>) {
+        if (now == recentViews.map { it.item }) return
+        val old = recentViews.map { it.item.lead.entry }
         val focusedAt = recentViews.indexOfFirst { it.view.hasFocus() }
         val returnAt = recentViews.indexOfFirst { it.view === returnFocus }
         val lastAt = recentViews.indexOfFirst { it.view === lastContentFocus }
@@ -3269,7 +3342,7 @@ class MoviesPanel(
         recentViews.forEach { it.view.onFocus = null; it.view.setOnClickListener(null) }
         restPrefetch?.let { ui.removeCallbacks(it) }
         fillRecent(row, now, generation)
-        fun carried(at: Int): View? = if (at < 0) null else RecentlyWatched.focusAfter(old, at, now.map { it.entry }).let { recentViews.getOrNull(it)?.view }
+        fun carried(at: Int): View? = if (at < 0) null else RecentlyWatched.focusAfter(old, at, now.map { it.lead.entry }).let { recentViews.getOrNull(it)?.view }
         if (now.isEmpty()) {
             row.hide(); row.inner.minimumHeight = 0
             val kids = (0 until content.childCount).map { content.getChildAt(it) }
@@ -6150,6 +6223,9 @@ class MoviesPanel(
         const val TRACK_HEIGHT = 84
         const val TRACK_GAP = 8
         const val EAGER_POSTERS = 9
+        /** How many played films and episodes the History page reads, and how many stops Home previews. */
+        const val HISTORY_LIMIT = 300
+        const val HOME_STOPS = 12
         const val LB_ROW_LIMIT = 40     // a Letterboxd row shows at most this many; the page itself holds more      // a screen and a half of posters per row; the rest load as the row scrolls
         const val HERO_BACKDROP_PX = 1920
         const val STORAGE_TTL_MS = 60 * 60_000L
