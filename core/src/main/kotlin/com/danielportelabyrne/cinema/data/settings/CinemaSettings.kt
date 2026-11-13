@@ -125,6 +125,11 @@ class CinemaSettings(platform: Platform) {
         get() = prefs.getString("featured_history", null)
         set(v) { prefs.edit().putString("featured_history", v).apply() }
 
+    /** How the owner laid out each page, row by row (see PageLayouts). Raw: the panel parses it. */
+    var pageLayouts: String?
+        get() = prefs.getString("page_layouts", null)
+        set(v) { prefs.edit().putString("page_layouts", v).apply() }
+
     /** The TV channels followed on Home ("Browse by channel"), in order. None until the owner follows one. */
     var followedChannels: List<Channel>
         get() = FollowedChannels.parse(prefs.getString("followed_channels", null))

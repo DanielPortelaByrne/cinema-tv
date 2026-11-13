@@ -76,16 +76,17 @@ object FastFocus {
         return if (before is HorizontalScrollView) null else before
     }
 
+    /**
+     * Brings [view] to the middle of its row, so a card or a title is met where the eye rests instead of being dragged
+     * along to the edge. The row stops at its ends, so the first and last items sit as near the middle as they can.
+     */
     private fun glideSideways(view: View, scroller: HorizontalScrollView, margin: Int) {
         val r = Rect(0, 0, view.width, view.height)
         scroller.offsetDescendantRectToMyCoords(view, r)
-        val left = scroller.scrollX
-        val right = left + scroller.width
-        val target = when {
-            r.left - margin < left -> r.left - margin
-            r.right + margin > right -> minOf(r.left - margin, r.right + margin - scroller.width)
-            else -> return
-        }.coerceAtLeast(0)
+        val content = scroller.getChildAt(0)
+        val maxScroll = maxOf(0, (content?.width ?: 0) - scroller.width + scroller.paddingLeft + scroller.paddingRight)
+        val target = (r.centerX() - scroller.width / 2).coerceIn(0, maxScroll)
+        if (Math.abs(target - scroller.scrollX) < 2) return
         scroller.smoothScrollTo(target, 0)
     }
 

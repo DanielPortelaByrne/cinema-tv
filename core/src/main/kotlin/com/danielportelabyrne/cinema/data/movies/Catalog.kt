@@ -111,8 +111,8 @@ object Catalog {
      * The followed services the mixed rows (Top 10, Trending, the genres) draw on: those that run in the viewer's own
      * country, so one query can name them together. A national broadcaster has pages of its own and stays out.
      */
-    private val MIXED: List<Service> get() = followed.filter { it.country == null && it.madeIn.isEmpty() }.ifEmpty { STREAMERS }
-    private val MAJOR: List<String> get() = MIXED.map { it.code }
+    internal val MIXED: List<Service> get() = followed.filter { it.country == null && it.madeIn.isEmpty() }.ifEmpty { STREAMERS }
+    internal val MAJOR: List<String> get() = MIXED.map { it.code }
 
     val GENRES = listOf(
         Genre("act", "Action"), Genre("cmy", "Comedy"), Genre("crm", "Crime"), Genre("drm", "Drama"), Genre("hrr", "Horror"),

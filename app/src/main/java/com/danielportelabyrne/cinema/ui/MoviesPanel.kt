@@ -65,6 +65,10 @@ import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.CatalogRepository
 import com.danielportelabyrne.cinema.data.movies.Genre
 import com.danielportelabyrne.cinema.data.movies.Kind
+import com.danielportelabyrne.cinema.data.movies.LayoutPage
+import com.danielportelabyrne.cinema.data.movies.PageLayouts
+import com.danielportelabyrne.cinema.data.movies.Section
+import com.danielportelabyrne.cinema.data.movies.SectionType
 import com.danielportelabyrne.cinema.ui.EpisodeCards
 import com.danielportelabyrne.cinema.data.movies.SavedStream
 import com.danielportelabyrne.cinema.data.movies.ContinueSource
@@ -196,7 +200,10 @@ class MoviesPanel(
     private val saveFollowedChannels: (List<com.danielportelabyrne.cinema.data.movies.Channel>) -> Unit = {},
     /** How often Home has featured each title (see FeaturedRotation), as kept, and the way to keep it. */
     private val featuredHistory: () -> String? = { null },
-    private val saveFeaturedHistory: (String) -> Unit = {}
+    private val saveFeaturedHistory: (String) -> Unit = {},
+    /** How the owner laid out each page (see PageLayouts), as kept, and the way to keep it. */
+    private val pageLayouts: () -> String? = { null },
+    private val savePageLayouts: (String) -> Unit = {}
 ) {
     /** Where the page is: one of the tabs, or a service or genre opened from Home, or search. */
     private sealed class Dest {
@@ -457,6 +464,7 @@ class MoviesPanel(
      * then lets the panel close. Back never opens the rail: only a fresh Left does.
      */
     fun back(): Boolean {
+        layoutEditor?.let { it.back(); return true }
         if (PhoneInput.hideQr()) return true
         if (voiceActive) { voice?.cancel(); return true }
         if (streamLoading != null) { closeStreamLoading(); return true }
@@ -734,6 +742,7 @@ class MoviesPanel(
      * returns to where you were on the page, and Left goes nowhere. Returns false to let the views decide.
      */
     fun navigate(focused: View, direction: Int): Boolean {
+        layoutEditor?.let { it.move(focused, direction); return true }
         if (streamLoading != null || voiceActive) return true
         if (!isWithin(focused, top)) return false
         val items = shownTabs()
@@ -771,6 +780,7 @@ class MoviesPanel(
      * candidate is the rail. Left still goes to the rail. False when this does not apply.
      */
     fun recoverFocus(direction: Int): Boolean {
+        layoutEditor?.let { it.focusFirst(); return true }
         if (!isVisible || streamLoading != null) return false
         // A title page is open: its first control, never the page hidden beneath it.
         if (detailOpen) {
@@ -1116,13 +1126,12 @@ class MoviesPanel(
         when (val d = current) {
             // Home threads its own rows between the catalogue's: the spotlight right under the featured title, then what
             // is part-watched, then Top 10, with picks, services, the library and genres spread through the rest.
-            Dest.Home -> { buildHero(); featureFromPool(gen); shelves(Catalog.homePage(), gen, mapOf(
-                1 to { personalRows(gen) }, 2 to { picksRow(gen) }, 3 to { serviceTiles(gen); channelTiles(gen) },
-                5 to { libraryRow(gen, "My library", 18) }, 7 to { genreTiles() }), rankedFirst = true) }
-            Dest.Films -> { buildHero(); shelves(Catalog.filmsPage(), gen, personal) }
-            Dest.Series -> { buildHero(); shelves(Catalog.seriesPage(), gen, personal) }
-            Dest.Docs -> { buildHero(); shelves(Catalog.documentariesPage(), gen, personal) }
-            Dest.Library -> buildLibrary(gen)
+            // The four main pages and the library are laid out row by row as the owner chose (see PageLayouts).
+            Dest.Home -> { buildHero(); featureFromPool(gen); layoutPage(LayoutPage.HOME, gen) }
+            Dest.Films -> { buildHero(); layoutPage(LayoutPage.FILMS, gen) }
+            Dest.Series -> { buildHero(); layoutPage(LayoutPage.SERIES, gen) }
+            Dest.Docs -> { buildHero(); layoutPage(LayoutPage.DOCS, gen) }
+            Dest.Library -> if (jellyfin.isConnected) { buildHero(); layoutPage(LayoutPage.LIBRARY, gen) } else buildLibrary(gen)
             Dest.Watchlist -> buildWatchlist(gen)
             Dest.History -> buildHistory(gen)
             Dest.Downloads -> buildDownloads(gen)
@@ -3790,6 +3799,112 @@ class MoviesPanel(
         }
     }
 
+    // --- Pages laid out by the owner -------------------------------------------------------------------
+
+    /** The editor over the page, while it is open. */
+    private var layoutEditor: LayoutEditor? = null
+
+    private fun savedLayouts() = PageLayouts.parse(pageLayouts())
+
+    /**
+     * Draws [page] as the owner laid it out: the catalogue's rows go through [shelves] in the order given, and the app's
+     * own rows go in between them where they were placed. The page ends with the way to change it.
+     */
+    private fun layoutPage(page: LayoutPage, gen: Int) {
+        val sections = PageLayouts.of(page, savedLayouts())
+        val specs = ArrayList<ShelfSpec>()
+        val between = LinkedHashMap<Int, MutableList<() -> Unit>>()
+        libraryLook = 0
+        for (s in sections) {
+            if (s.type.catalogue) specs += PageLayouts.specs(s)
+            else between.getOrPut(specs.size) { ArrayList() } += { appSection(s, gen) }
+        }
+        // Rows placed after the last catalogue row run at the end, so a page of only the app's own rows still draws.
+        shelves(specs, gen, between.mapValues { (_, list) -> { list.forEach { it() } } }, rankedFirst = true)
+        content.addView(actionCard("Customise ${page.label}", "Add, remove and reorder its rows") { openLayoutEditor(page) },
+            LinearLayout.LayoutParams(dp(380), dp(64)).apply { marginStart = pageStart; topMargin = dp(40) })
+    }
+
+    private fun appSection(s: Section, gen: Int) {
+        when (s.type) {
+            SectionType.CONTINUE -> continueRow(gen)
+            SectionType.FAVOURITES -> favouritesRow(gen)
+            SectionType.RECENT -> recentRow(gen)
+            SectionType.PICKS -> picksRow(gen)
+            SectionType.SERVICES -> serviceTiles(gen)
+            SectionType.CHANNELS -> channelTiles(gen)
+            SectionType.GENRE_TILES -> genreTiles()
+            SectionType.MY_LIBRARY -> libraryRow(gen, "My library", 18)
+            SectionType.WATCHLIST -> watchlistRow()
+            SectionType.LIBRARY_LATEST -> librarySection(gen) { all -> listOf(libraryOrder().label to all.take(20)) }
+            SectionType.LIBRARY_FILMS -> librarySection(gen) { all -> listOf("Films" to all.filter { it.title.kind == Kind.MOVIE }) }
+            SectionType.LIBRARY_SERIES -> librarySection(gen) { all -> listOf("Series" to all.filter { it.title.kind == Kind.SHOW }) }
+            SectionType.LIBRARY_GENRES -> librarySection(gen) { all ->
+                all.flatMap { e -> e.title.genres.map { g -> g to e } }.groupBy({ it.first }, { it.second })
+                    .filterValues { it.size >= 2 }.entries.sortedByDescending { it.value.size }.take(6).map { it.key to it.value }
+            }
+            else -> Unit
+        }
+    }
+
+    /** Library rows on one page take turns through the looks, as the catalogue's do. */
+    private var libraryLook = 0
+    private var libraryWaiters: MutableList<(List<Entry>) -> Unit>? = null
+    private var libraryWaitGen = -1
+
+    /** Fetches the library once for the whole page, however many of its rows are on it. */
+    private fun withLibrary(gen: Int, use: (List<Entry>) -> Unit) {
+        libraryWaiters?.takeIf { libraryWaitGen == gen }?.let { it += use; return }
+        val waiting = mutableListOf(use); libraryWaiters = waiting; libraryWaitGen = gen
+        worker.execute {
+            val items = libraryOrder().sort(jellyfin.library())
+            activity.runOnUiThread {
+                if (libraryWaiters === waiting) libraryWaiters = null
+                if (gen != generation) return@runOnUiThread
+                val all = libraryEntries(items)
+                // My library's featured titles are its latest additions.
+                if (current === Dest.Library && !heroSet) all.filter { it.title.backdropUrl != null }.take(3).let { f ->
+                    if (f.isNotEmpty()) setHero(f, all.map { e -> e.title }, f.map { recencyLabel(it) }) }
+                waiting.forEach { it(all) }
+            }
+        }
+    }
+
+    /** A place on the page now for library rows, filled once the library is in. */
+    private fun librarySection(gen: Int, rows: (List<Entry>) -> List<Pair<String, List<Entry>>>) {
+        if (!jellyfin.isConnected) return
+        val holder = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        content.addView(holder, LinearLayout.LayoutParams(-1, -2))
+        val looks = listOf(com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT, com.danielportelabyrne.cinema.data.movies.ShelfLook.STILLS,
+            com.danielportelabyrne.cinema.data.movies.ShelfLook.GRID, com.danielportelabyrne.cinema.data.movies.ShelfLook.POSTERS,
+            com.danielportelabyrne.cinema.data.movies.ShelfLook.SMALL_STILLS)
+        withLibrary(gen) { all ->
+            if (!holder.isAttachedToWindow) return@withLibrary
+            rows(all).filter { it.second.isNotEmpty() }.forEach { (heading, list) ->
+                val r = row(heading, "${list.size}", into = holder)
+                drawEntries(r, list, com.danielportelabyrne.cinema.data.movies.ShelfLooks.resolve(looks[libraryLook++ % looks.size], list.map { it.title }), libraryChip = false)
+            }
+        }
+    }
+
+    private fun openLayoutEditor(page: LayoutPage) {
+        if (layoutEditor != null) return
+        val back = activity.currentFocus
+        val editor = LayoutEditor(activity, page, PageLayouts.of(page, savedLayouts()),
+            // A page left as its default is not kept, so later improvements to the default still reach it.
+            onSave = { list -> savePageLayouts(PageLayouts.encode(if (list == PageLayouts.defaults(page)) savedLayouts() - page else savedLayouts() + (page to list))) },
+            onClose = { changed ->
+                layoutEditor?.let { (overlay as ViewGroup).removeView(it) }
+                layoutEditor = null
+                if (changed) build() else back?.takeIf { it.isAttachedToWindow }?.requestFocus()
+            })
+        layoutEditor = editor
+        (overlay as ViewGroup).addView(editor, FrameLayout.LayoutParams(-1, -1))
+        editor.elevation = Cinema.pxf(activity, 60)
+        editor.post { editor.focusFirst() }
+    }
+
+
     // --- My library --------------------------------------------------------------------------------
 
     private fun buildLibrary(gen: Int) {
@@ -5258,6 +5373,8 @@ class MoviesPanel(
         }
         cancelDwellStart()
         slowPool.execute {
+            // An episode's own blurb and length for the player, never the series' (cached once the season has been listed).
+            val listed = episode?.let { ep -> e.title.tmdbId?.toLongOrNull()?.let { t -> runCatching { seerr.episodes(t, ep.first) }.getOrNull()?.firstOrNull { it.number == ep.second } } }
             // A stream found while the viewer rested on the page is used as it is (or waited for, if it is still being found).
             // Anything else, or a search that failed, is searched for now.
             val ahead = aheadStreams.take(streamKey(e, episode))?.let { pending -> runCatching { pending.get(130, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull() }
@@ -5272,7 +5389,8 @@ class MoviesPanel(
                     remember(e.title, streamed = true)
                     PlayerActivity.launch(activity, ranked, label, found.imdb,
                         artUrl = e.title.backdropUrl ?: e.title.posterUrl,
-                        meta = PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview), episode = episode,
+                        meta = if (episode == null) PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview)
+                            else PlayerMeta(label, e.title.year, e.title.genres, listed?.runtime ?: e.title.runtimeMin, e.title.age, e.title.imdbScore, listed?.overview), episode = episode,
                         history = streamHistory(e, found.imdb, episode))
                     // The player opens over this same screen; take it down once it is covered.
                     ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
@@ -5685,7 +5803,9 @@ class MoviesPanel(
 
         /** One episode's card, with its actions. [rebind] redraws it after a request, without reloading the season. */
         fun episodeCard(s: SeasonState, ep: EpisodeRow, mine: JellyfinItem?, token: Int, today: String): Shown {
-            val card = EpisodeCard(activity, ep.number, ep.name, ep.overview ?: mine?.overview)
+            // The episode's own blurb: a copy of the whole series' description (some sources fall back to it) is not shown as one.
+            val blurb = (ep.overview ?: mine?.overview)?.takeIf { it.isNotBlank() && it.trim() != e.title.overview?.trim() }
+            val card = EpisodeCard(activity, ep.number, ep.name, blurb)
             val label = "${e.title.name} · S${s.number} E${ep.number}"
             fun latest() = episodeCardState(mine != null, states[s.number to ep.number], s.availability, ep.airDate, today, tmdb != null,
                 seerr.hasStreamService, EpisodeCards.download(downloads, tmdb, s.number, ep.number))
@@ -5722,7 +5842,7 @@ class MoviesPanel(
             }
             // The whole blurb, with the still and the episode's facts. Play (when there is one to press) reuses the card's own Play disc.
             card.onInfo = {
-                val about = (ep.overview ?: mine?.overview)?.trim().orEmpty()
+                val about = blurb?.trim().orEmpty()
                 val facts = EpisodeCards.metaParts(runtime, resume?.second, ep.airDate).joinToString(" · ").ifBlank { null }
                 val actions = if (look.playShown) listOf(SheetAction(if (mine != null) "Play" else "Stream", label, primary = true) { card.play.performClick() }) else emptyList()
                 infoSheet.show("S${s.number} · E${ep.number}", ep.name.ifBlank { "Episode ${ep.number}" }, facts,
@@ -5777,6 +5897,7 @@ class MoviesPanel(
                     else -> Unit
                 }
             }
+            card.onUp = { selectedTab()?.requestFocus() == true }
             card.onLit = { lit ->
                 if (lit) FastFocus.reveal(card, null, dp(24), dp(56), 0)
                 // An episode that would be streamed: search for it while the viewer looks at it.
@@ -5840,7 +5961,6 @@ class MoviesPanel(
                                 when (code) {
                                     android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> { stops.getOrNull(i + 1)?.requestFocus(); true }
                                     android.view.KeyEvent.KEYCODE_DPAD_LEFT -> { stops.getOrNull(i - 1)?.requestFocus(); true }
-                                    android.view.KeyEvent.KEYCODE_DPAD_UP -> selectedTab()?.requestFocus() == true
                                     else -> false
                                 }
                             }

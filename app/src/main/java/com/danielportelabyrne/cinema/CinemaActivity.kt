@@ -108,7 +108,9 @@ class CinemaActivity : AppCompatActivity() {
             saveFollowedServices = { settings.followedServices = it },
             saveFollowedChannels = { settings.followedChannels = it },
             featuredHistory = { settings.featuredHistory },
-            saveFeaturedHistory = { settings.featuredHistory = it }
+            saveFeaturedHistory = { settings.featuredHistory = it },
+            pageLayouts = { settings.pageLayouts },
+            savePageLayouts = { settings.pageLayouts = it }
         )
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

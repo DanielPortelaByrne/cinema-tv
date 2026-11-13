@@ -46,6 +46,11 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
     var deletable = false
         set(v) { field = v; updateDelete() }
     var onDelete: (() -> Unit)? = null
+    /**
+     * Up from anywhere on the card (a disc, the delete disc, the card itself) goes where this says, normally the shown
+     * season's tab. Without it the focus search picks whichever tab happens to sit above the disc, which is another season.
+     */
+    var onUp: (() -> Boolean)? = null
     /** Called once the card lights up or goes out, so the page can scroll it into view. */
     var onLit: ((Boolean) -> Unit)? = null
     /** Shown above the Download disc while it has focus ("Download S2 E4"); null for none. */
@@ -155,6 +160,14 @@ class EpisodeCard(context: Context, val number: Int, name: String, overview: Str
     private fun showPlayIcon() {
         if (watched) play.set(R.drawable.ic_cin_check, Cinema.SAFFRON, ring = false, progress = null) else play.set(R.drawable.ic_cin_play, Cinema.CREAM, ring = false, progress = null)
         play.contentDescription = if (watched) "Watched. Play episode $number again" else "Play episode $number"
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP && hasFocus()) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && onUp?.invoke() == true) return true
+            if (onUp != null) return true   // never let a stray Up fall to a neighbouring season
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     /** Every focus stop on the card, left to right. */
