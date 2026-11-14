@@ -46,6 +46,7 @@ import com.danielportelabyrne.cinema.data.movies.FavouritesStore
 import com.danielportelabyrne.cinema.data.movies.KnownTitle
 import com.danielportelabyrne.cinema.data.movies.ContinueAction
 import com.danielportelabyrne.cinema.data.movies.ContinueDismissals
+import com.danielportelabyrne.cinema.data.movies.HiddenTitles
 import com.danielportelabyrne.cinema.data.movies.PersonalFilter
 import com.danielportelabyrne.cinema.data.movies.PersonalPage
 import com.danielportelabyrne.cinema.data.movies.TitleFacts
@@ -562,7 +563,7 @@ class MoviesPanel(
         var line: LinearLayout? = null
         var lineRow: Row? = null
         fun add(titles: List<Title>) {
-            val fresh = titles.filter { it.key !in shown }.map { entry(it) }
+            val fresh = unhidden(titles.filter { it.key !in shown }.map { entry(it) })
             fresh.forEach { shown[it.title.key] = it }
             val related = shown.values.map { it.title }
             fresh.forEach { e ->
@@ -1276,7 +1277,7 @@ class MoviesPanel(
         if (current !== Dest.Search) { if (voiceActive) voice?.cancel(); searchUi = null }
         frost?.post { frost?.refresh(500); updateEdgeFade() }
         builtAt = Perf.now(); builtConnected = jellyfin.isConnected; awaitingLibrary.clear()
-        starred.clear(); favShelfCards.clear(); favRow = null; recentViews.clear(); recentRow = null; refreshFavSnapshot()
+        hiddenViews.clear(); starred.clear(); favShelfCards.clear(); favRow = null; recentViews.clear(); recentRow = null; refreshFavSnapshot()
         continueViews.clear(); continueRow = null; continueBusy = false; continueAgain = false; continueEpoch++
         ambientView?.palette = paletteFor(current)
         // Rows never wait for the library: they draw from the catalogue at once, and this one fetch badges them when it lands.
@@ -1442,7 +1443,7 @@ class MoviesPanel(
             val startAt = Perf.now()
             val libraryAt = Perf.now()
             // A Top 10 row is exactly that: ten numbered posters, nothing after them.
-            val fetched = catalog.shelf(spec).titles.take(if (spec.ranked) 10 else SHELF_LIMIT).map { entry(it) }
+            val fetched = unhidden(catalog.shelf(spec).titles.take(if (spec.ranked) 10 else SHELF_LIMIT).map { entry(it) })
             // Each title's own genres and services, kept so the personal shelves can tell which pages it belongs on.
             // A broadcaster's shelf asked for abroad lists that country's services: they add to what is known here.
             learnFacts(fetched.map { TitleFacts.of(it.title, System.currentTimeMillis()).let { f -> if (spec.channel != null) f.copy(services = null) else f } }, addServices = spec.country != null && spec.country != Catalog.country)
@@ -3928,8 +3929,9 @@ class MoviesPanel(
         val row = row("Picked for you", null)
         row.inner.minimumHeight = Cinema.px(activity, 488)
         var shown: List<String> = emptyList()
-        fun show(list: List<com.danielportelabyrne.cinema.data.movies.Pick>) {
+        fun show(all: List<com.danielportelabyrne.cinema.data.movies.Pick>) {
             if (gen != generation) return
+            val list = all.filterNot { isHidden(entry(pickTitle(it))) }
             val keys = list.map { it.suggestion.key }
             if (keys == shown) return
             shown = keys
@@ -4130,7 +4132,8 @@ class MoviesPanel(
      * Fills [r] with [entries] drawn in [look], as the catalogue's shelves are: a spotlight leads with its first title
      * that has a wide picture; a grid stacks stills two to a column. Pictures far along the row wait until it nears them.
      */
-    private fun drawEntries(r: Row, entries: List<Entry>, look: com.danielportelabyrne.cinema.data.movies.ShelfLook, libraryChip: Boolean = true) {
+    private fun drawEntries(r: Row, all: List<Entry>, look: com.danielportelabyrne.cinema.data.movies.ShelfLook, libraryChip: Boolean = true) {
+        val entries = unhidden(all)
         val lead = if (look == com.danielportelabyrne.cinema.data.movies.ShelfLook.SPOTLIGHT) com.danielportelabyrne.cinema.data.movies.ShelfLooks.spotlightIndex(entries.map { it.title }) ?: 0 else 0
         val list = if (lead > 0) listOf(entries[lead]) + entries.filterIndexed { i, _ -> i != lead } else entries
         val related = list.map { it.title }
@@ -6767,6 +6770,47 @@ class MoviesPanel(
         }
     }
 
+    private val hiddenTitles by lazy { HiddenTitles(AndroidPlatform(activity)) }
+    /** Every title card on this page with the view that holds it (the card, or what wraps it), so hiding a title clears it everywhere here at once. */
+    private val hiddenViews = ArrayList<Pair<View, Entry>>()
+
+    private fun isHidden(e: Entry) = hiddenTitles.isHidden(jellyfin.ownerScope, e.title.kind, e.title.tmdbId, e.title.imdbId ?: e.library?.imdbId, e.title.name, e.title.year)
+
+    /** [list] without the titles the viewer hid. */
+    private fun unhidden(list: List<Entry>): List<Entry> = if (hiddenTitles.count(jellyfin.ownerScope) == 0) list else list.filterNot { isHidden(it) }
+
+    /**
+     * Makes [card] hideable: hold OK for its menu. A card for a title already hidden (on a list that was not filtered)
+     * is drawn away, so no list shows one. [holder] is what to remove with it, when the card sits in a wrapper.
+     */
+    private fun hideable(card: View, e: Entry, holder: View = card) {
+        hiddenViews += holder to e
+        if (isHidden(e)) { holder.visibility = View.GONE; return }
+        card.setOnLongClickListener { hideMenu(e, card); true }
+    }
+
+    /** The menu on a title card (hold OK): open it, or hide it from every list. */
+    private fun hideMenu(e: Entry, card: View) {
+        val t = e.title
+        val actions = listOf(
+            SheetAction("Open", t.name, primary = true, icon = R.drawable.ic_cin_info) { card.performClick() },
+            SheetAction("Hide from every list", "Gone from all lists on this TV. Bring it back in Settings", icon = R.drawable.ic_cin_x) { hideTitle(e, card) }
+        )
+        infoSheet.show("TITLE", t.name, listOfNotNull(t.year?.toString(), t.genres.firstOrNull()).joinToString(" · ").ifBlank { null }, emptyList(), null, actions)
+    }
+
+    private fun hideTitle(e: Entry, card: View) {
+        val t = e.title
+        hiddenTitles.hide(jellyfin.ownerScope, t.kind, t.tmdbId, t.imdbId ?: e.library?.imdbId, t.name, t.year)
+        // Focus moves along the row first, so the remote never lands nowhere.
+        val gone = hiddenViews.filter { (_, other) -> isHidden(other) }.map { it.first }
+        val next = listOf(View.FOCUS_RIGHT, View.FOCUS_LEFT, View.FOCUS_DOWN, View.FOCUS_UP)
+            .firstNotNullOfOrNull { d -> card.focusSearch(d)?.takeIf { it !== card && it !in gone && it.isShown } }
+        gone.forEach { it.visibility = View.GONE }
+        next?.requestFocus()
+        CinemaToast.show(activity, "Hid ${t.name}. Settings brings it back", Toast.LENGTH_LONG)
+    }
+
     /** A poster with its name beneath; grows and glows on focus; a badge says when it is already in the library. */
     private fun card(e: Entry, related: List<Title>, small: Boolean = false, nested: Boolean = true, badge: Boolean = true, defer: Row? = null, note: String? = null, chip: String? = null, star: Boolean = true, onSelect: (() -> Unit)? = null): View {
         val card = PosterCard(activity, if (small) 200 else 260, if (small) 300 else 390)
@@ -6776,6 +6820,7 @@ class MoviesPanel(
         dress(card, e, badge, defer)
         chip?.let { card.chip(it) }
         if (star) trackFavourite(card, e)
+        hideable(card, e)
         card.onFocus = { lit -> if (lit) { reveal(card); if (onSelect == null) prefetchOnRest(card, e) } }
         card.setOnClickListener { if (onSelect != null) onSelect() else if (nested) openDetail(e, related) else { closeDetail(restoreFocus = false); openDetail(e, related) } }
         return card
@@ -6842,6 +6887,7 @@ class MoviesPanel(
             val load = { images.loadShadedPoster(u, e.posterHeaders, w, pageTag) { b: Bitmap -> card.setShadedPoster(b); Perf.end("movies.open->firstPoster") } }
             if (defer != null) defer.deferred += (holder ?: card) to load else load()
         }
+        hideable(card, e)
         card.onFocus = { lit -> if (lit) { reveal(card); prefetchOnRest(card, e) } }
         card.setOnClickListener { openDetail(e, related) }
         return card
@@ -6857,6 +6903,7 @@ class MoviesPanel(
         val card = PosterCard(activity, 224, 336, titled = false)
         card.contentDescription = "$rank. ${e.title.name}"
         dress(card, e, defer = defer, holder = box)
+        hideable(card, e, holder = box)
         card.onFocus = { lit -> if (lit) { reveal(card); prefetchOnRest(card, e) } }
         card.setOnClickListener { openDetail(e, related) }
         box.addView(card, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = Cinema.px(activity, 118) })

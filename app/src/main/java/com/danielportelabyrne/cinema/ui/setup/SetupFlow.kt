@@ -697,6 +697,16 @@ class SetupFlow(
             }
         }
 
+        val hidden = com.danielportelabyrne.cinema.data.movies.HiddenTitles(AndroidPlatform(activity))
+        val hiddenScope = jellyfin.ownerScope
+        val hiddenNone = "None. Hold OK on a title to hide it from every list"
+        val hiddenCount = hidden.count(hiddenScope)
+        val hiddenRow = p.row("Hidden titles", if (hiddenCount == 0) hiddenNone else "$hiddenCount hidden from every list")
+        if (hiddenCount > 0) hiddenRow.button("Show them again") {
+            hidden.clear(hiddenScope); changed = true
+            hiddenRow.detail.text = "All shown again. $hiddenNone"
+        }
+
         p.row("Save sign-in", "Download your settings and sign-ins to your phone, to restore after an update or reinstall")
             .button("Save to phone") { phoneStep(PhoneKind.SAVE, back = ::overview) }
 
