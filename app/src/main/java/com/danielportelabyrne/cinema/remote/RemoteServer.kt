@@ -3,11 +3,12 @@ package com.danielportelabyrne.cinema.remote
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.Application
-import android.app.Instrumentation
 import android.content.Context
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import com.danielportelabyrne.cinema.data.remote.RemoteProtocol
 import com.danielportelabyrne.cinema.data.remote.RemoteProtocol.Key
@@ -30,8 +31,6 @@ object RemoteServer {
     private const val TAG = "RemoteServer"
     private val main = Handler(Looper.getMainLooper())
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "cinema-remote").apply { isDaemon = true } }
-    private val keys = Executors.newSingleThreadExecutor { r -> Thread(r, "cinema-remote-keys").apply { isDaemon = true } }
-    private val instrumentation = Instrumentation()
 
     @Volatile private var started = false
     @Volatile private var resumed: Activity? = null
@@ -133,12 +132,12 @@ object RemoteServer {
             "POST" to "/key" -> if (!known(r.headers[RemoteProtocol.TOKEN_HEADER.lowercase()])) 401 to "" else {
                 val key = RemoteProtocol.key(form["key"]) ?: return 400 to "unknown key"
                 if (resumed == null) return 409 to "Cinema is not on screen"
-                keys.execute { press(code(key)) }; 200 to "ok"
+                press(code(key)); 200 to "ok"
             }
             "POST" to "/text" -> if (!known(r.headers[RemoteProtocol.TOKEN_HEADER.lowercase()])) 401 to "" else {
                 val text = form["text"].orEmpty().take(500)
                 if (resumed == null) return 409 to "Cinema is not on screen"
-                keys.execute { runCatching { instrumentation.sendStringSync(text) } }; 200 to "ok"
+                type(text); 200 to "ok"
             }
             else -> 404 to ""
         }
@@ -179,10 +178,28 @@ object RemoteServer {
         Key.MENU -> KeyEvent.KEYCODE_MENU; Key.SEARCH -> KeyEvent.KEYCODE_SEARCH; Key.DEL -> KeyEvent.KEYCODE_DEL
     }
 
-    /** Off the main thread: Instrumentation waits for the window to take the key. */
+    /**
+     * Hands the key to Cinema's own window, as the system does for a real remote. (Injecting through Instrumentation is refused
+     * on a TV: it needs a permission only the system holds.) Runs on the main thread, in the order the phone sent them.
+     */
     private fun press(code: Int) {
-        try { instrumentation.sendKeyDownUpSync(code) }
-        catch (e: SecurityException) { Log.w(TAG, "key not delivered: Cinema is not the focused window") }
-        catch (e: Exception) { Log.w(TAG, "key not delivered: ${e.javaClass.simpleName}") }
+        main.post {
+            val a = resumed ?: return@post
+            val t = SystemClock.uptimeMillis()
+            try {
+                a.dispatchKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0))
+                a.dispatchKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0))
+            } catch (e: Exception) { Log.w(TAG, "key not delivered: ${e.javaClass.simpleName}") }
+        }
+    }
+
+    /** Types [text] into whatever has focus, as a keyboard would. */
+    private fun type(text: String) {
+        main.post {
+            val a = resumed ?: return@post
+            try {
+                KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(text.toCharArray())?.forEach { a.dispatchKeyEvent(it) }
+            } catch (e: Exception) { Log.w(TAG, "text not delivered: ${e.javaClass.simpleName}") }
+        }
     }
 }
