@@ -37,7 +37,7 @@
 
         <activity
             android:name=".player.PlayerActivity"
-            android:exported="false"
+            android:exported="${playerExported}"
             android:launchMode="singleTop"
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true"

@@ -62,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.danielportelabyrne.cinema.data.movies.Catalog
+import com.danielportelabyrne.cinema.data.movies.LayoutPage
 import com.danielportelabyrne.cinema.data.movies.Service
 import com.danielportelabyrne.cinema.data.movies.ShelfLooks
 import com.danielportelabyrne.cinema.data.movies.Title
@@ -108,12 +109,9 @@ fun TabHeader(title: String, eyebrow: List<String> = emptyList(), ribbon: Ribbon
 
 // --- Home ---------------------------------------------------------------------------------------
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(model: Model) {
-    val shelves = model.shelves
-    val rows = model.rowsFor("home") { Catalog.homePage() }
-    val plan = ShelfLooks.plan(rows.map { it.spec }, rankedFirst = true).map { (spec, look) -> rows.first { it.spec === spec } to look }
+    val rows = catalogueRows(model, LayoutPage.HOME)
     PullToRefreshBox(isRefreshing = model.loading, onRefresh = { model.refresh(force = true) }) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
             item { Hero(model, rows) }
@@ -123,17 +121,7 @@ fun HomeScreen(model: Model) {
                     Text("Away from home? Your offline copies are under More → On this phone.", style = MaterialTheme.typography.bodyMedium, color = Palette.ivoryMuted)
                 }
             }
-            if (shelves != null) {
-                item { ItemRow(model, "Continue watching", shelves.resume, wide = true) }
-                item { ItemRow(model, "Next up", shelves.nextUp, wide = true) }
-            }
-            plan.firstOrNull()?.let { (row, look) -> item(key = row.spec.heading) { ShelfRow(model, row, look) } }
-            item { Services(model) }
-            if (shelves != null) {
-                item { ItemRow(model, "Films in your library", shelves.films) }
-                item { ItemRow(model, "Series in your library", shelves.series) }
-            }
-            items(plan.drop(1), key = { it.first.spec.heading }) { (row, look) -> ShelfRow(model, row, look) }
+            layoutSections(model, LayoutPage.HOME)
         }
     }
 }
@@ -196,47 +184,18 @@ private fun Hero(model: Model, rows: List<CatalogueRow>) {
 private fun Title.kindLabel() = if (kind == com.danielportelabyrne.cinema.data.movies.Kind.SHOW) "Series" else "Film"
 
 @Composable
-private fun Services(model: Model) {
-    val services = model.settings.followedServices
-    if (services.isEmpty()) return
-    RowTitle("Browse by service")
-    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(services, key = { it.code }) { s -> ServiceChip(model, s) }
-    }
-}
-
-@Composable
-private fun ServiceChip(model: Model, s: Service) {
-    Row(Modifier.glass(18.dp).clip(RoundedCornerShape(18.dp)).clickable { model.push(Screen.ServicePage(s)) }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        s.icon?.let { RemoteImage(model, "https://images.justwatch.com$it", Modifier.size(38.dp).clip(RoundedCornerShape(9.dp))) }
-        Text(s.label, style = MaterialTheme.typography.titleSmall, color = Palette.ivory, modifier = Modifier.padding(start = 10.dp, end = 6.dp))
-    }
-}
-
-@Composable
-fun ServiceScreen(model: Model, page: Screen.ServicePage) {
-    val rows = model.rowsFor("svc:" + page.service.code) { Catalog.servicePage(page.service) }
-    val plan = ShelfLooks.plan(rows.map { it.spec }).map { (spec, look) -> rows.first { it.spec === spec } to look }
-    Column(Modifier.fillMaxSize()) {
-        TabHeader(page.service.label, listOf("On the service"), RibbonShape.SWOOP)
-        LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) { items(plan, key = { it.first.spec.heading }) { (r, l) -> ShelfRow(model, r, l) } }
-    }
-}
+fun ServiceScreen(model: Model, page: Screen.ServicePage) =
+    SpecPage(model, "svc:" + page.service.code, page.service.label, listOf("On the service")) { Catalog.servicePage(page.service) }
 
 @Composable
 fun BrowseScreen(model: Model) {
-    val rows = if (!model.browseSeries) model.rowsFor("films") { Catalog.filmsPage() } else model.rowsFor("series") { Catalog.seriesPage() }
-    val plan = ShelfLooks.plan(rows.map { it.spec }, rankedFirst = true).map { (spec, look) -> rows.first { it.spec === spec } to look }
+    val page = model.browsePage
     Column(Modifier.fillMaxSize()) {
-        TabHeader(if (model.browseSeries) "Series" else "Films", listOf("Browse", model.settings.region))
+        TabHeader(page.label, listOf("Browse", model.settings.region))
         Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChoicePill("Films", !model.browseSeries) { model.browseSeries = false }
-            ChoicePill("Series", model.browseSeries) { model.browseSeries = true }
+            listOf(LayoutPage.FILMS, LayoutPage.SERIES, LayoutPage.DOCS).forEach { p -> ChoicePill(p.label, page == p) { model.browsePage = p } }
         }
-        LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-            item { Services(model) }
-            items(plan, key = { it.first.spec.heading }) { (r, l) -> ShelfRow(model, r, l) }
-        }
+        LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) { layoutSections(model, page) }
     }
 }
 
@@ -271,6 +230,7 @@ fun SearchScreen(model: Model) {
 
 @Composable
 fun LibraryScreen(model: Model) {
+    var rowsView by remember { mutableStateOf(true) }
     var which by remember { mutableStateOf(0) }
     val all = model.library
     val order = model.libraryOrder
@@ -278,12 +238,17 @@ fun LibraryScreen(model: Model) {
     Column(Modifier.fillMaxSize()) {
         TabHeader("My library", listOf("${all.size} titles", order.label), RibbonShape.SWOOP) { IconButton(onClick = { model.refresh(force = true) }) { Icon(Icons.Filled.Refresh, "Refresh", tint = Palette.ivory) } }
         Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChoicePill("Films", which == 0) { which = 0 }
-            ChoicePill("Series", which == 1) { which = 1 }
-            // The same setting as Settings, Library order: tapping moves to the next one.
-            val entries = com.danielportelabyrne.cinema.data.settings.LibraryOrder.entries
-            ChoicePill(order.label, false) { model.chooseLibraryOrder(entries[(entries.indexOf(order) + 1) % entries.size]) }
+            ChoicePill("Rows", rowsView) { rowsView = true }
+            ChoicePill("All titles", !rowsView) { rowsView = false }
+            if (!rowsView) {
+                ChoicePill("Films", which == 0) { which = 0 }
+                ChoicePill("Series", which == 1) { which = 1 }
+                // The same setting as Settings, Library order: tapping moves to the next one.
+                val entries = com.danielportelabyrne.cinema.data.settings.LibraryOrder.entries
+                ChoicePill(order.label, false) { model.chooseLibraryOrder(entries[(entries.indexOf(order) + 1) % entries.size]) }
+            }
         }
+        if (rowsView) { LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) { layoutSections(model, LayoutPage.LIBRARY) }; return }
         if (shown.isEmpty()) { Empty(if (model.client.isConnected) "Nothing here yet." else "Sign in to Jellyfin in More → Settings."); return }
         LazyVerticalGrid(GridCells.Adaptive(104.dp), contentPadding = PaddingValues(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {

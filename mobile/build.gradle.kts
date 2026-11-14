@@ -57,6 +57,8 @@ android {
         val build = providers.gradleProperty("cinema.versionCode").orNull?.toIntOrNull() ?: 1
         versionCode = build
         versionName = "1.$build"
+        // Only a test build for an emulator exposes the player to adb (-Pcinema.testExported=true); never a release.
+        manifestPlaceholders["playerExported"] = providers.gradleProperty("cinema.testExported").getOrElse("false")
     }
 
     signingConfigs {

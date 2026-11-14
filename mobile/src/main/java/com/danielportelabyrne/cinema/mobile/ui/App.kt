@@ -34,7 +34,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.Kind
+import com.danielportelabyrne.cinema.data.movies.LayoutPage
 import com.danielportelabyrne.cinema.mobile.Model
 import com.danielportelabyrne.cinema.mobile.R
 import com.danielportelabyrne.cinema.mobile.Screen
@@ -49,10 +51,11 @@ fun CinemaApp(model: Model) {
         top is Screen.TitlePage -> if (top.title.kind == Kind.SHOW) Grounds.SERIES else Grounds.FILMS
         top is Screen.Downloads || top is Screen.Offline || top is Screen.Requests -> Grounds.DOWNLOADS
         top is Screen.Settings || top is Screen.Remote -> Grounds.SETTINGS
-        top is Screen.ServicePage -> Grounds.HOME
+        top is Screen.ServicePage || top is Screen.ChannelPage || top is Screen.GenrePage -> Grounds.HOME
+        top is Screen.LayoutEditor -> Grounds.SETTINGS
         else -> when (model.tab) {
             Tab.HOME -> Grounds.HOME
-            Tab.BROWSE -> if (model.browseSeries) Grounds.SERIES else Grounds.FILMS
+            Tab.BROWSE -> when (model.browsePage) { LayoutPage.SERIES -> Grounds.SERIES; LayoutPage.DOCS -> Grounds.HOME; else -> Grounds.FILMS }
             Tab.SEARCH -> Grounds.SEARCH
             Tab.LIBRARY -> Grounds.LIBRARY
             Tab.MORE -> Grounds.SETTINGS
@@ -77,6 +80,9 @@ fun CinemaApp(model: Model) {
                     }
                     is Screen.TitlePage -> TitleScreen(model, s)
                     is Screen.ServicePage -> ServiceScreen(model, s)
+                    is Screen.ChannelPage -> SpecPage(model, "chan:" + s.channel.id, s.channel.name, listOf("TV channel")) { Catalog.channelPage(s.channel) }
+                    is Screen.GenrePage -> SpecPage(model, "genre:" + s.genre.code, s.genre.label, listOf("Genre")) { Catalog.genrePage(s.genre) }
+                    is Screen.LayoutEditor -> LayoutEditorScreen(model, s.page)
                     Screen.Downloads -> DownloadsScreen(model)
                     Screen.Offline -> OfflineScreen(model)
                     Screen.Remote -> RemoteScreen(model)

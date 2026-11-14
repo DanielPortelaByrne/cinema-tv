@@ -22,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.ui.platform.ComposeView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -64,9 +65,9 @@ class PlayerActivity : AppCompatActivity() {
     private val main = Handler(Looper.getMainLooper())
 
     private lateinit var view: PlayerView
-    private lateinit var bar: LinearLayout
-    private lateinit var titleView: TextView
-    private lateinit var nextButton: ImageButton
+    private val ui = PlayerUi()
+    private val active get() = view.player ?: local
+    private var chapterMs: List<Long> = emptyList()
     private lateinit var local: ExoPlayer
     private var cast: CastPlayer? = null
     private var session: MediaSession? = null
@@ -109,61 +110,45 @@ class PlayerActivity : AppCompatActivity() {
             else -> finish()
         }
         main.postDelayed(progress, PROGRESS_MS)
+        main.post(tick)
     }
 
     // --- Views ---------------------------------------------------------------------------------
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    @SuppressLint("ClickableViewAccessibility")
+    private val actions = object : PlayerActions {
+        override fun back() { finish() }
+        override fun playPause() { val p = active; if (p.isPlaying) p.pause() else p.play() }
+        override fun seekBy(ms: Long) { val p = active; p.seekTo((p.currentPosition + ms).coerceIn(0L, if (p.duration > 0) p.duration else Long.MAX_VALUE)) }
+        override fun seekTo(ms: Long) { active.seekTo(ms) }
+        override fun next() { playNext() }
+        override fun pip() { enterPip() }
+    }
+
+    /** The picture, with the Compose controls over it (the wavy scrubber, the ribbon, the tracks panel). */
     private fun buildViews() {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        view = PlayerView(this).apply {
-            setShowSubtitleButton(true)
-            setShowNextButton(false); setShowPreviousButton(false)
-            controllerShowTimeoutMs = 3500
-            setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v -> bar.visibility = v })
-        }
+        view = PlayerView(this).apply { useController = false; setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER) }
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
-
-        bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            setBackgroundColor(0x66000000)
-        }
-        fun icon(res: Int, desc: String, onClick: () -> Unit) = ImageButton(this).apply {
-            setImageResource(res); contentDescription = desc; setBackgroundColor(Color.TRANSPARENT)
-            setColorFilter(Color.WHITE); setOnClickListener { onClick() }
-        }
-        bar.addView(icon(androidx.media3.ui.R.drawable.exo_ic_chevron_left, "Back") { finish() }, LinearLayout.LayoutParams(dp(44), dp(44)))
-        titleView = TextView(this).apply { setTextColor(Color.WHITE); textSize = 17f; maxLines = 1; setPadding(dp(8), 0, dp(8), 0) }
-        bar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
-        nextButton = icon(androidx.media3.ui.R.drawable.exo_ic_skip_next, "Next episode") { playNext() }.apply { visibility = View.GONE }
-        bar.addView(nextButton, LinearLayout.LayoutParams(dp(44), dp(44)))
-        if (Build.VERSION.SDK_INT >= 26) bar.addView(icon(androidx.media3.ui.R.drawable.exo_ic_fullscreen_exit, "Picture in picture") { enterPip() }, LinearLayout.LayoutParams(dp(44), dp(44)))
-        runCatching {
-            val route = MediaRouteButton(this)
-            CastButtonFactory.setUpMediaRouteButton(applicationContext, route)
-            bar.addView(route, LinearLayout.LayoutParams(dp(44), dp(44)))
-        }
-        root.addView(bar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        root.addView(ComposeView(this).apply {
+            setContent { PlayerOverlay(ui, actions) { ctx -> MediaRouteButton(ctx).also { runCatching { CastButtonFactory.setUpMediaRouteButton(applicationContext, it) } } } }
+        }, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
+    }
 
-        // Double-tap the left or right of the screen to go back or forward ten seconds; a single tap shows the controls.
-        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent) = true
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (view.isControllerFullyVisible) view.hideController() else view.showController(); return true
-            }
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                val p = view.player ?: return false
-                if (e.x < view.width / 2f) p.seekBack() else p.seekForward()
-                toast(if (e.x < view.width / 2f) "−10 s" else "+10 s")
-                return true
-            }
-        })
-        view.setOnTouchListener { _, e -> gestures.onTouchEvent(e) }
+    /** Twice a second: the controls read the position, state and chapters from whichever player is in use. */
+    private val tick = object : Runnable {
+        override fun run() {
+            val p = active
+            ui.positionMs = p.currentPosition.coerceAtLeast(0L)
+            ui.durationMs = p.duration.takeIf { it > 0 } ?: 0L
+            ui.playing = p.isPlaying
+            ui.buffering = p.playbackState == Player.STATE_BUFFERING
+            ui.casting = view.player === cast
+            if (ui.durationMs > 0 && chapterMs.isNotEmpty()) ui.chapters = chapterMs.map { it.toFloat() / ui.durationMs }
+            main.postDelayed(this, 250)
+        }
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -185,8 +170,10 @@ class PlayerActivity : AppCompatActivity() {
     private fun start(i: JellyfinItem, positionMs: Long) {
         if (item != null) report("Stopped")
         item = i; offlineId = null; transcoding = false
-        titleView.text = label(i)
-        nextButton.visibility = if (i.isEpisode) View.VISIBLE else View.GONE
+        ui.title = if (i.isEpisode) i.name else i.name
+        ui.eyebrow = if (i.isEpisode) listOfNotNull(i.seriesName, "S${i.season ?: 0} E${i.episode ?: 0}") else listOfNotNull("Film", i.year?.toString())
+        ui.hasNext = i.isEpisode
+        chapterMs = i.chapters.map { it.startMs }.filter { it > 0 }
         playLocal(client.streamUrl(i), label(i), positionMs, null)
         report("Playing")
     }
@@ -194,11 +181,11 @@ class PlayerActivity : AppCompatActivity() {
     private fun playOffline(id: String) {
         val copy = model.offline.find(id) ?: run { finish(); return }
         offlineId = id
-        titleView.text = copy.name + (copy.subtitle?.let { " · $it" } ?: "")
+        ui.title = copy.name; ui.eyebrow = listOfNotNull("On this phone", copy.subtitle); ui.hasNext = false; chapterMs = emptyList()
         playLocal(Uri.fromFile(java.io.File(copy.file)).toString(), copy.name, copy.resumeMs, null)
     }
 
-    private fun playUrl(url: String, title: String) { titleView.text = title; playLocal(url, title, 0L, null) }
+    private fun playUrl(url: String, title: String) { ui.title = title; ui.eyebrow = listOf("Streaming"); ui.hasNext = false; chapterMs = emptyList(); playLocal(url, title, 0L, null) }
 
     private fun playLocal(url: String, title: String, positionMs: Long, mime: String?) {
         val media = MediaItem.Builder().setUri(url).setMimeType(mime)
@@ -218,6 +205,8 @@ class PlayerActivity : AppCompatActivity() {
                 playLocal(client.transcodeUrl(i), label(i), local.currentPosition, MimeTypes.APPLICATION_M3U8)
             } else { toast("This won't play: ${error.errorCodeName}") }
         }
+
+        override fun onTracksChanged(tracks: androidx.media3.common.Tracks) { buildTracks(tracks) }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (item != null) report("Progress")
@@ -271,6 +260,40 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    // --- Audio and subtitles -------------------------------------------------------------------
+
+    private fun trackName(f: androidx.media3.common.Format, n: Int): String {
+        val lang = f.language?.takeIf { it != "und" }?.let { java.util.Locale(it).getDisplayLanguage(java.util.Locale.ENGLISH).ifBlank { it } }
+        val base = f.label ?: lang ?: "Track $n"
+        val extra = listOfNotNull(f.sampleMimeType?.substringAfter('/')?.uppercase()?.takeIf { f.sampleMimeType?.startsWith("audio") == true }, f.channelCount.takeIf { it > 0 && f.sampleMimeType?.startsWith("audio") == true }?.let { "${it}ch" })
+        return if (extra.isEmpty() || base.contains(extra.first())) base else base + " · " + extra.joinToString(" ")
+    }
+
+    private fun buildTracks(tracks: androidx.media3.common.Tracks) {
+        val p = local
+        fun select(group: androidx.media3.common.Tracks.Group, index: Int, type: Int) {
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(type, false)
+                .setOverrideForType(androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, index)).build()
+            buildTracks(p.currentTracks)
+        }
+        val audio = ArrayList<TrackOption>(); val text = ArrayList<TrackOption>()
+        var an = 0; var tn = 0
+        tracks.groups.forEach { g ->
+            for (i in 0 until g.length) {
+                if (!g.isTrackSupported(i)) continue
+                when (g.type) {
+                    C.TRACK_TYPE_AUDIO -> audio += TrackOption(trackName(g.getTrackFormat(i), ++an), g.isTrackSelected(i)) { select(g, i, C.TRACK_TYPE_AUDIO) }
+                    C.TRACK_TYPE_TEXT -> text += TrackOption(trackName(g.getTrackFormat(i), ++tn), g.isTrackSelected(i) && !p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) { select(g, i, C.TRACK_TYPE_TEXT) }
+                }
+            }
+        }
+        if (text.isNotEmpty()) text.add(0, TrackOption("Off", text.none { it.selected }) {
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build(); buildTracks(p.currentTracks)
+        })
+        ui.audio = audio; ui.text = text
+    }
+
     // --- Cast ----------------------------------------------------------------------------------
 
     private fun setUpCast() {
@@ -297,7 +320,7 @@ class PlayerActivity : AppCompatActivity() {
         val (url, mime, title) = when {
             i != null -> Triple(client.transcodeUrl(i) + "&api_key=" + token(), MimeTypes.APPLICATION_M3U8, label(i))
             offlineId != null -> { toast("Offline copies play on this phone only"); return }
-            else -> Triple(local.currentMediaItem?.localConfiguration?.uri?.toString() ?: return, null, titleView.text.toString())
+            else -> Triple(local.currentMediaItem?.localConfiguration?.uri?.toString() ?: return, null, ui.title)
         }
         local.pause()
         c.setMediaItem(MediaItem.Builder().setUri(url).setMimeType(mime ?: MimeTypes.VIDEO_MP4)
@@ -337,8 +360,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onPictureInPictureModeChanged(inPip: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(inPip, newConfig)
-        view.useController = !inPip
-        bar.visibility = if (inPip) View.GONE else bar.visibility
+        ui.pip = inPip
     }
 
     override fun onStop() {

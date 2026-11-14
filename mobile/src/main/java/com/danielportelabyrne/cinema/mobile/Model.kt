@@ -53,6 +53,9 @@ sealed class Screen {
         var version by mutableIntStateOf(0)
     }
     class ServicePage(val service: Service) : Screen()
+    class ChannelPage(val channel: com.danielportelabyrne.cinema.data.movies.Channel) : Screen()
+    class GenrePage(val genre: com.danielportelabyrne.cinema.data.movies.Genre) : Screen()
+    class LayoutEditor(val page: com.danielportelabyrne.cinema.data.movies.LayoutPage) : Screen()
     data object Downloads : Screen()
     data object Offline : Screen()
     data object Remote : Screen()
@@ -84,8 +87,26 @@ class Model(val context: Context) {
 
     var needsSetup by mutableStateOf(!client.isConnected && !settings.setupDone)
     var tab by mutableStateOf(Tab.HOME)
-    /** Browse's Films / Series switch, kept here so the page's colours can follow it. */
-    var browseSeries by mutableStateOf(false)
+    /** Which of Browse's pages (Films, Series, Documentaries) is showing, kept here so the page's colours can follow it. */
+    var browsePage by mutableStateOf(com.danielportelabyrne.cinema.data.movies.LayoutPage.FILMS)
+    /** Bumped when a page's layout is saved, so the pages redraw. */
+    var layoutVersion by mutableIntStateOf(0)
+    val favourites by lazy { com.danielportelabyrne.cinema.data.movies.FavouritesStore(platform) }
+    val picks by lazy { com.danielportelabyrne.cinema.data.movies.PicksRepository(platform, seerr, client, com.danielportelabyrne.cinema.data.movies.WatchHistory(platform)) }
+
+    /** The page as the owner laid it out (on the TV or here: it is the same saved layout), else its default rows. */
+    fun layoutOf(page: com.danielportelabyrne.cinema.data.movies.LayoutPage): List<com.danielportelabyrne.cinema.data.movies.Section> {
+        @Suppress("UNUSED_VARIABLE") val v = layoutVersion
+        return com.danielportelabyrne.cinema.data.movies.PageLayouts.of(page, com.danielportelabyrne.cinema.data.movies.PageLayouts.parse(settings.pageLayouts))
+    }
+
+    /** Saves a page's rows. A page left as its default is not kept, so later improvements to the default still reach it. */
+    fun saveLayout(page: com.danielportelabyrne.cinema.data.movies.LayoutPage, list: List<com.danielportelabyrne.cinema.data.movies.Section>) {
+        val L = com.danielportelabyrne.cinema.data.movies.PageLayouts
+        val saved = L.parse(settings.pageLayouts)
+        settings.pageLayouts = L.encode(if (list == L.defaults(page)) saved - page else saved + (page to list))
+        layoutVersion++
+    }
     /** How My library lists films and series: the same setting as on the TV (it travels with the person's profile). */
     var libraryOrder by mutableStateOf(settings.libraryOrder)
     fun chooseLibraryOrder(order: com.danielportelabyrne.cinema.data.settings.LibraryOrder) { settings.libraryOrder = order; libraryOrder = order }
@@ -228,7 +249,8 @@ class Model(val context: Context) {
     fun back(): Boolean = if (stack.isNotEmpty()) { stack.removeAt(stack.lastIndex); true } else if (tab != Tab.HOME) { tab = Tab.HOME; true } else false
 
     fun open(t: Title, library: JellyfinItem? = null) {
-        val lib = library ?: if (client.isConnected) client.findLoaded(t.imdbId, t.tmdbId, t.kind == Kind.SHOW) else null
+        val lib = library ?: if (client.isConnected) (if (t.key.startsWith("jf:")) this.library.firstOrNull { it.id == t.key.removePrefix("jf:") } else null)
+            ?: client.findLoaded(t.imdbId, t.tmdbId, t.kind == Kind.SHOW) else null
         val page = Screen.TitlePage(t, lib)
         push(page)
         loadTitle(page)
