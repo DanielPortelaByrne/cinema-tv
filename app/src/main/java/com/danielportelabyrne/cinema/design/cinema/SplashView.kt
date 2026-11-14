@@ -9,7 +9,6 @@ import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.view.View
@@ -22,7 +21,6 @@ import com.danielportelabyrne.cinema.design.cinema.SplashJingle.Timeline
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
-import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.pow
 
@@ -31,8 +29,9 @@ import kotlin.math.pow
  * fall onto the screen as a slipped stack, each landing making its own note (big discs play low, small ones high).
  * The three outer discs land together on the bass pluck; the orange disc lands on the first piano note and the saffron
  * one on the second, landing a little high and sliding back down to rest. Then the stack hangs there, off register and slowly slipping, through
- * the silence, until on the late landing it snaps into register: the discs become the flat Cinema mark, a ripple runs
- * out through the rings, the play triangle prints with the chord's top note, and the wordmark slides out from behind.
+ * the silence, until on the late landing it snaps into register: the discs become the flat Cinema mark, the play
+ * triangle prints with the chord's top note, and the coloured rings burst outwards one after another (the outer ring
+ * first) and step back in (the inner ring first), on black; then the wordmark slides out from behind.
  *
  * Every frame is a pure function of one clock, read from the sound as it leaves the speaker ([SplashJingle.Voice],
  * [IdentClock]), so the picture and the notes cannot drift apart. Any key skips it. The mark and wordmark are the app's
@@ -48,7 +47,6 @@ class SplashView(context: Context) : View(context) {
 
     private val disc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0xFF000000.toInt() }
-    private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
     private val sweep = Paint(Paint.ANTI_ALIAS_FLAG)
     private val triangle = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF1B0D06.toInt(); style = Paint.Style.FILL }
     private val trianglePath: Path = PathParser.createPathFromPathData("M25.2,24.2v7.6a1,1 0 0,0 1.5,0.86l6.3,-3.8a1,1 0 0,0 0,-1.72l-6.3,-3.8a1,1 0 0,0 -1.5,0.86z")
@@ -59,9 +57,6 @@ class SplashView(context: Context) : View(context) {
     private val bandWidth = 26f
     // Built once and moved with the canvas, so drawing a frame allocates nothing.
     private val sweepShader = LinearGradient(0f, 0f, bandWidth, 0f, intArrayOf(0x00FFF3D0, 0x66FFF3D0, 0x00FFF3D0), null, Shader.TileMode.CLAMP)
-    private var glowShader: RadialGradient? = null
-    private var washShader: RadialGradient? = null
-    private val wash = Paint(Paint.ANTI_ALIAS_FLAG)
     private var wordmark: android.widget.TextView? = null
     private var markPx = 0f
     private var gapPx = 0f
@@ -90,14 +85,6 @@ class SplashView(context: Context) : View(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         markPx = min(w, h) * 0.30f
         gapPx = markPx * 18f / 56f
-        // A bell-shaped falloff in the glow's own colour (fading to transparent *black* would darken the rim), reaching zero well
-        // inside the circle it is drawn in, so no outer edge shows.
-        val orange = Cinema.STRIPE_ORANGE and 0x00FFFFFF
-        val bell = floatArrayOf(1f, 0.74f, 0.45f, 0.22f, 0.09f, 0.03f, 0f)
-        glowShader = RadialGradient(0f, 0f, markPx * GLOW_RADIUS, IntArray(bell.size) { orange or ((bell[it] * 255).toInt() shl 24) },
-            FloatArray(bell.size) { it / (bell.size - 1f) }, Shader.TileMode.CLAMP)
-        washShader = RadialGradient(0f, 0f, WASH_UNIT, IntArray(bell.size) { orange or ((bell[it] * 255).toInt() shl 24) },
-            FloatArray(bell.size) { it / (bell.size - 1f) }, Shader.TileMode.CLAMP)
         // The wordmark exactly as the Movies page sets it beside the mark: Fraunces 500, 36 on a 56 mark, tracked -0.02.
         val textPx = markPx * 36f / 56f
         wordmark = Cinema.text(context, "Cinema", textPx * 2f / resources.displayMetrics.density, Cinema.CREAM, serif = true, weight = 500, tracking = -0.02f).apply {
@@ -230,23 +217,6 @@ class SplashView(context: Context) : View(context) {
         val q = Motion.SETTLE.getInterpolation(progress(Timeline.LOCKUP, Timeline.LOCKUP_LENGTH))
         val mx = w / 2f + q * (-lockupW / 2f + markPx / 2f)
 
-        // The landing: a low warm bloom behind the mark, and a faint wash that spreads across the screen and ebbs away.
-        val sinceDum = clockMs - Timeline.DUM
-        if (sinceDum > 0) {
-            val bloom = (1f - progress(Timeline.DUM, 1100)).let { it * it } * 0.30f
-            glow.shader = glowShader
-            glow.alpha = (bloom * 255).toInt()
-            canvas.save(); canvas.translate(mx, cy); canvas.drawCircle(0f, 0f, markPx * GLOW_RADIUS, glow); canvas.restore()
-            // The wash is one pulse: it swells out with the landing, then ebbs away, so the mark ends on black (and is
-            // still before the page is built under it).
-            val spread = progress(Timeline.DUM, 1100)
-            val swell = smooth(progress(Timeline.DUM, 180)) * (1f - smooth(progress(Timeline.DUM + 260, WASH_EBB)))
-            val reach = markPx * 1.2f + (hypot(w, h) * 1.05f - markPx * 1.2f) * Motion.SWOOSH.getInterpolation(spread)
-            wash.shader = washShader
-            wash.alpha = (swell * WASH_STRENGTH * 255).toInt()
-            canvas.save(); canvas.translate(w / 2f, cy); canvas.scale(reach / WASH_UNIT, reach / WASH_UNIT); canvas.drawCircle(0f, 0f, WASH_UNIT, wash); canvas.restore()
-        }
-
         // How out of register the stack is: fully slipped once built, creeping a touch further through the silence (the
         // held breath), then pulled into register, accelerating, to arrive exactly on the landing.
         val creep = smooth(progress(Timeline.DIT + 140, Timeline.DUM - Timeline.SNAP - Timeline.DIT - 140))
@@ -256,6 +226,7 @@ class SplashView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(mx, cy)
         canvas.scale(u, u)
+        var outside = Float.MAX_VALUE                    // the radius of the disc just drawn, which this one must stay inside
         for (i in radii.indices) {
             // When each disc lands, how far it falls (from above the screen, so it starts larger), and its settle.
             val lands = when (i) { 3 -> Timeline.DI; 4 -> Timeline.DIT; else -> Timeline.BUP }
@@ -266,14 +237,18 @@ class SplashView(context: Context) : View(context) {
             val light = i >= 3
             val lift = 1f + height * (if (light) 0.55f else 0.32f)
             val press = if (light) settle(lands, 0.06f, 110f, 34f) else settle(lands, 0.035f, 150f, 45f)
-            // The ripple of the landing, from the centre out: each ring swells a little in turn and settles.
-            val ripple = 1f + 0.018f * pulse(clockMs - Timeline.DUM - 22f * (radii.size - 1 - i), 42f)
+            // The landing's burst: the rings step out one after another, outer first, then step back in, inner first.
+            val out = BURST_OUT.getInterpolation(progress(Timeline.DUM + BURST_STEP_OUT * i, BURST_OUT_MS))
+            val home = smooth(progress(Timeline.DUM + BURST_IN_AT + BURST_STEP_IN * (radii.size - 1 - i), BURST_IN_MS))
+            val burst = 1f + BURST[i] * out * (1f - home)
             // The saffron disc lands a little high and slides back down the slip to rest: the sigh falling to its note.
             val skid = if (i == 4) (1f - smooth(progress(Timeline.DIT, 170))) * 0.9f else 0f
             val along = ((slip[i] + skid) - SLIP_CENTRE) * outOfRegister
             val x = along * SLIP_X
             val y = along * SLIP_Y
-            val r = radii[i] * lift * press * ripple
+            // Every band stays in sight: a disc never grows past the one around it, whatever the timing.
+            val r = min(radii[i] * lift * press * burst, outside - MIN_BAND)
+            outside = r
             val alpha = min(1f, d * 2.6f)
             // Its shadow on the disc below, cut-paper sharp: deeper and softer while it is in the air, gone once the
             // print is registered and flat.
@@ -299,7 +274,7 @@ class SplashView(context: Context) : View(context) {
             canvas.restore()
         }
         // A band of light crosses the finished mark once, clipped to its outer ring.
-        val sp = progress(Timeline.DUM + 120, 560)
+        val sp = progress(Timeline.SHEEN, 560)
         if (sp in 0.001f..0.999f) {
             clip.reset(); clip.addCircle(0f, 0f, 27f, Path.Direction.CW)
             canvas.save()
@@ -328,19 +303,25 @@ class SplashView(context: Context) : View(context) {
     }
 
     companion object {
-        /** The bloom behind the mark, in mark widths. Wide, because it fades out before reaching its rim. */
-        private const val GLOW_RADIUS = 2.1f
-
         /** The pause after the first frame before the opening begins (see [onDraw]). */
         private const val START_DELAY_MS = 250L
         private const val TAG = "Opening"
         private val BEATS = listOf("BUP" to Timeline.BUP, "DI" to Timeline.DI, "DIT" to Timeline.DIT, "DUM" to Timeline.DUM, "END" to Timeline.END)
 
-        /** The screen-filling wash: the unit its gradient is built at, and how strong it is at the centre (0..1). */
-        private const val WASH_UNIT = 1000f
-        private const val WASH_STRENGTH = 0.13f
-        /** How long the wash takes to ebb back to black; it is gone well before [Timeline.FADE_START]. */
-        private const val WASH_EBB = 820
+        /**
+         * The landing's burst, per disc outermost first: how much larger each grows at full stretch (the outer ones most,
+         * so the bands open out), when each sets off (outer first, [BURST_STEP_OUT] apart) and when each comes home
+         * (from [BURST_IN_AT] after the landing, inner first, [BURST_STEP_IN] apart). All home by about DUM + 900 ms.
+         */
+        private val BURST = floatArrayOf(0.70f, 0.60f, 0.50f, 0.40f, 0.28f)
+        private const val BURST_STEP_OUT = 40
+        private const val BURST_OUT_MS = 210
+        private const val BURST_IN_AT = 300
+        private const val BURST_STEP_IN = 45
+        private const val BURST_IN_MS = 420
+        private val BURST_OUT = android.view.animation.PathInterpolator(0.1f, 0.7f, 0.25f, 1f)   // bursts, then eases to a stop
+        /** The narrowest a band may get, in mark units. */
+        private const val MIN_BAND = 1.4f
 
         /** The slip runs up and to the right (35 degrees), centred so the slipped stack still sits in the middle. */
         private val SLIP_X = cos(35.0 * PI / 180).toFloat()
@@ -349,8 +330,6 @@ class SplashView(context: Context) : View(context) {
 
         private fun smooth(t: Float) = t * t * (3f - 2f * t)
 
-        /** 0 before [t] reaches 0, rising to 1 at [peakMs] and falling away after: one soft swell. */
-        private fun pulse(t: Float, peakMs: Float) = if (t <= 0f) 0f else (t / peakMs) * exp(1f - t / peakMs)
 
         /**
          * Puts the splash over [root], unless it would only get in the way: a restored screen (rotation, process

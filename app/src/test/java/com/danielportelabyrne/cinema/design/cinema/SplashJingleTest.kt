@@ -65,6 +65,7 @@ class SplashJingleTest {
         assertTrue(Timeline.DIT + 400 < Timeline.DUM - Timeline.SNAP)   // a real silence, longer than everything before it
         assertTrue(Timeline.DUM < Timeline.TRIANGLE && Timeline.TRIANGLE < Timeline.LOCKUP)
         assertTrue(Timeline.LOCKUP + Timeline.LOCKUP_LENGTH < Timeline.FADE_START && Timeline.END < Timeline.FADE_START)
+        assertTrue(Timeline.DUM < Timeline.BURST_HOME && Timeline.BURST_HOME < Timeline.LOCKUP + 200)   // the rings are home as the wordmark comes
     }
 }
 
