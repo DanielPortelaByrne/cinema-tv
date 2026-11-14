@@ -42,7 +42,8 @@ class JellyfinClient(platform: Platform) {
     /** Points this TV at a (possibly different) server; any sign-in for the old one is dropped. */
     fun setServer(address: String) {
         val base = JellyfinApi.cleanBase(address)
-        if (base != prefs.getString("server", null)) prefs.edit().putString("server", base).remove("token").remove("userId").apply()
+        if (base != prefs.getString("server", null)) prefs.edit().putString("server", base).remove("token").remove("userId")
+            .remove(SCOPE_SERVER).remove(SERVER_ID).apply()
         invalidateLibrary()
     }
 
@@ -67,8 +68,11 @@ class JellyfinClient(platform: Platform) {
     private val token: String? get() = prefs.getString("token", null)
     private val userId: String? get() = prefs.getString("userId", null)
 
-    /** Who owns per-user lists on this TV: this server and this signed-in user, so nothing leaks between them. */
-    val ownerScope: String get() = com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope(server, userId)
+    /**
+     * Who owns per-user lists on this TV: this server and this signed-in user, so nothing leaks between them. The server
+     * part is the address the lists were first kept under, so they stay with the server when it moves (see [relocate]).
+     */
+    val ownerScope: String get() = com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope(prefs.getString(SCOPE_SERVER, null) ?: server, userId)
 
     /**
      * What a player needs to fetch a stream: the token travels in a header, never in the address. Jellyfin 12
@@ -82,7 +86,7 @@ class JellyfinClient(platform: Platform) {
     fun disconnect() { prefs.edit().remove("token").remove("userId").apply() }
 
     /** Forgets the server as well as the sign-in (Settings, Reset everything). */
-    fun forget() { prefs.edit().remove("server").remove("token").remove("userId").apply(); invalidateLibrary() }
+    fun forget() { prefs.edit().remove("server").remove("token").remove("userId").remove(SCOPE_SERVER).remove(SERVER_ID).apply(); invalidateLibrary() }
 
     /** The server and token a restore file carries, or null when not signed in. The password is never here. */
     fun savedSession(): JellyfinSession? {
@@ -92,7 +96,9 @@ class JellyfinClient(platform: Platform) {
 
     /** Puts back a sign-in from a restore file, as a normal sign-in would keep it: the token only. */
     fun restoreSession(session: JellyfinSession) {
-        prefs.edit().putString("server", session.server).putString("token", session.token).putString("userId", session.userId).apply()
+        val edit = prefs.edit()
+        if (JellyfinApi.cleanBase(session.server) != JellyfinApi.cleanBase(server)) edit.remove(SCOPE_SERVER).remove(SERVER_ID)
+        edit.putString("server", session.server).putString("token", session.token).putString("userId", session.userId).apply()
         invalidateLibrary()
     }
 
@@ -488,12 +494,63 @@ class JellyfinClient(platform: Platform) {
     /** True for a short while after the server could not be reached. */
     val backingOff: Boolean get() = reachability.backingOff
 
+    // --- Following a server that has moved --------------------------------------------------------
+
+    private val relocating = AtomicBoolean(false)
+    @Volatile private var lastRelocation = 0L
+
+    /** The saved address stopped answering: look for the server elsewhere, in the background, at most once a minute. */
+    private fun relocateSoon() {
+        if (!isConnected || debugServer != null) return
+        val now = System.currentTimeMillis()
+        if (now - lastRelocation < RELOCATE_EVERY_MS || !relocating.compareAndSet(false, true)) return
+        lastRelocation = now
+        Thread({ try { relocate() } finally { relocating.set(false) } }, "jellyfin-relocate").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Home routers hand out addresses afresh, so the server that was at one address yesterday can be at another today.
+     * Asks the network who is Jellyfin ([found]) and moves to the one that is this same server: the same server id when
+     * it is known, and in every case one that accepts this TV's sign-in (a token from one server means nothing to
+     * another). The sign-in and the lists stay as they are. Blocking; true when the TV has moved to a new address.
+     */
+    fun relocate(found: List<FoundServer> = JellyfinDiscovery.find()): Boolean {
+        val user = userId ?: return false
+        val old = JellyfinApi.cleanBase(server)
+        val knownId = prefs.getString(SERVER_ID, null)
+        for (candidate in found) {
+            val base = JellyfinApi.cleanBase(candidate.address)
+            if (base == old || (knownId != null && candidate.id.isNotBlank() && candidate.id != knownId)) continue
+            if (!acceptsSignIn(base, user)) continue
+            prefs.edit().putString(SCOPE_SERVER, prefs.getString(SCOPE_SERVER, null) ?: old).putString("server", base)
+                .apply { if (candidate.id.isNotBlank()) putString(SERVER_ID, candidate.id) }.apply()
+            Log.i(TAG, "Jellyfin has moved from $old to $base; following it")
+            invalidateLibrary()
+            reached()
+            return true
+        }
+        return false
+    }
+
+    /** True when the server at [base] knows this TV's sign-in for [user]. Never signs out, whatever it answers. */
+    private fun acceptsSignIn(base: String, user: String): Boolean = try {
+        val connection = URL("$base/Users/$user").openConnection() as HttpURLConnection
+        connection.connectTimeout = 3000
+        connection.readTimeout = 5000
+        connection.setRequestProperty("Authorization", JellyfinApi.authHeader(deviceId, deviceName, token))
+        connection.exchange { connection.responseCode == 200 }
+    } catch (_: Exception) { false }
+
     companion object {
         /** Debug builds only: overrides the address for this process, to time the app with the server unreachable. */
         @Volatile var debugServer: String? = null
         private const val LIBRARY_TTL_MS = 5 * 60_000L
         private const val LIBRARY_POLL_MS = 5 * 60_000L
         private const val UNREACHABLE_BACKOFF_MS = 30_000L
+        private const val RELOCATE_EVERY_MS = 60_000L
+        /** The address the per-user lists are kept under, once the server has moved from it (see [ownerScope]). */
+        private const val SCOPE_SERVER = "scopeServer"
+        private const val SERVER_ID = "serverId"
         private val refresher = Executors.newSingleThreadExecutor { r -> Thread(r, "library-refresh").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
         private val libraryPoller = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "library-poll").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
     }
@@ -543,6 +600,7 @@ class JellyfinClient(platform: Platform) {
                 reportedUnreachable = true
                 onReachabilityChanged?.invoke(false)
             }
+            if (unreachable) relocateSoon()
             Log.w(TAG, "$method ${url.substringBefore('?')} failed: ${e.javaClass.simpleName} after ${Perf.now() - at} ms" + if (unreachable) " (unreachable)" else "")
             Outcome(null, unreachable)
         }

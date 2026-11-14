@@ -7,8 +7,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.SocketTimeoutException
 
-/** A Jellyfin server that answered on the local network. */
-data class FoundServer(val name: String, val address: String)
+/** A Jellyfin server that answered on the local network. [id] is the server's own, which stays the same when it moves. */
+data class FoundServer(val name: String, val address: String, val id: String = "")
 
 /**
  * Finds Jellyfin servers on the home network the way Jellyfin's own apps do: a UDP broadcast of "who is JellyfinServer?"
@@ -45,6 +45,6 @@ object JellyfinDiscovery {
     fun parse(json: String): FoundServer? = try {
         val o = JSONObject(json)
         val address = o.optString("Address").trim().trimEnd('/')
-        if (address.isEmpty()) null else FoundServer(o.optString("Name").ifBlank { address }, address)
+        if (address.isEmpty()) null else FoundServer(o.optString("Name").ifBlank { address }, address, o.optString("Id"))
     } catch (_: Exception) { null }
 }
