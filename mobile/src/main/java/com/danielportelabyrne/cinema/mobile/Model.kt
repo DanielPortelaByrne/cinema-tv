@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.danielportelabyrne.cinema.data.account.ProfileSync
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
@@ -104,7 +105,38 @@ class Model(val context: Context) {
         Catalog.followedChannels = settings.followedChannels
         client.onReachabilityChanged = { ok -> scope.launch { toast(if (ok) "Jellyfin is back" else "Can't reach the Jellyfin server") } }
         client.onLibraryChanged = { val latest = client.loadedLibrary(); scope.launch { library = latest } }
-        if (!needsSetup) { refresh(); client.startLibraryPolling() }
+        if (!needsSetup) { refresh(); client.startLibraryPolling(); pullProfile() }
+    }
+
+    /**
+     * Takes the person's Cinema profile that their TVs keep on Jellyfin (followed services and channels, watchlist,
+     * favourites, history, picks, Letterboxd follows...), when it is newer than what the phone last took. The first time,
+     * it is laid over the phone's own files, as on a TV meeting a person for the first time. The phone only reads it: it
+     * does not edit those lists yet, so it never saves over the TVs' copy.
+     */
+    fun pullProfile() = bg({
+        val (snapshot, at) = client.profileData()?.let { ProfileSync.fromPrefs(it) } ?: return@bg false
+        val prefs = platform.preferences("profile_sync")
+        if (at <= prefs.getLong("synced_at", 0L)) return@bg false
+        val applied = if (prefs.getLong("synced_at", 0L) == 0L) {
+            val local = org.json.JSONObject(ProfileSync.snapshot(platform))
+            val remote = org.json.JSONObject(snapshot)
+            remote.keys().forEach { f ->
+                val into = local.optJSONObject(f) ?: org.json.JSONObject().also { local.put(f, it) }
+                val from = remote.getJSONObject(f)
+                from.keys().forEach { k -> into.put(k, from.get(k)) }
+            }
+            ProfileSync.apply(platform, local.toString())
+        } else ProfileSync.apply(platform, snapshot)
+        if (applied) { prefs.edit().putLong("synced_at", at).apply(); client.adoptListsFromOtherAddresses() }
+        applied
+    }) { took ->
+        if (took == true) {
+            Catalog.followed = settings.followedServices
+            Catalog.followedChannels = settings.followedChannels
+            rows.clear()
+            toast("Brought over your Cinema profile")
+        }
     }
 
     fun <T> bg(work: () -> T, then: (T?) -> Unit = {}) {
@@ -128,6 +160,7 @@ class Model(val context: Context) {
         rows.clear()
         refresh(force = true)
         client.startLibraryPolling()
+        pullProfile()
     }
 
     // --- Library -------------------------------------------------------------------------------
