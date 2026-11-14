@@ -44,7 +44,11 @@ for tv in ${TV_ADDRESSES:-}; do
     echo "$tv: something is playing, will retry in the next window"
     continue
   fi
-  if "$adb" -s "$tv" install -r "$apk"; then
+  # Cinema is installed as if it had installed itself: Android only lets an app update itself silently when it is the
+  # installer on record, so without this every in-app update would stop and ask (and one "Later" would leave it behind).
+  installer=()
+  if [ "$label" = "cinema" ]; then installer=(-i com.danielportelabyrne.cinema); fi
+  if "$adb" -s "$tv" install -r ${installer[@]+"${installer[@]}"} "$apk"; then
     echo "$sha" > "$state/$(echo "$tv" | tr ':' '_').sha"
     echo "$tv: updated to $sha"
   else
