@@ -35,6 +35,10 @@ class CinemaButton(context: Context, kind: Kind, label: CharSequence, iconRes: I
     var kind: Kind = kind
         set(value) { field = value; restyle() }
 
+    /** A darker resting background (with a faint edge), for icon buttons that would be lost over a busy picture. */
+    var dark = false
+        set(value) { field = value; restyle() }
+
     init {
         orientation = HORIZONTAL; gravity = Gravity.CENTER
         isFocusable = true; isClickable = true
@@ -74,6 +78,7 @@ class CinemaButton(context: Context, kind: Kind, label: CharSequence, iconRes: I
         val (fill, text) = when {
             kind == Kind.TERRA -> GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFFEB8A56.toInt(), 0xFFD4623A.toInt())).apply { cornerRadius = r } to 0xFF1D0D05.toInt()
             lit -> GradientDrawable().apply { cornerRadius = r; setColor(Cinema.CREAM) } to if (kind == Kind.DANGER) 0xFF8A2A12.toInt() else Cinema.INK
+            dark -> GradientDrawable().apply { cornerRadius = r; setColor(0xE60C0806.toInt()); setStroke(Cinema.px(context, 2), Cinema.alpha(Cinema.CREAM, 0.2f)) } to Cinema.CREAM
             else -> Cinema.glass(context, rMock, if (kind == Kind.PRIMARY) Cinema.GLASS_STRONG else Cinema.GLASS) to if (kind == Kind.DANGER) Cinema.DANGER_TEXT else Cinema.CREAM
         }
         background = fill

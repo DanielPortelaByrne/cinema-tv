@@ -170,7 +170,7 @@ object Cinema {
      * The meta line: certificate box, then the plain items with faint dots between, then the IMDb star. Only what is
      * known is shown; an empty list gives an empty row.
      */
-    fun meta(context: Context, certificate: String?, items: List<String>, rating: String?, sizePx: Number = 23): LinearLayout {
+    fun meta(context: Context, certificate: String?, items: List<String>, rating: String?, sizePx: Number = 23, imdb: Boolean = false): LinearLayout {
         val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val gap = px(context, 16)
         fun sep() { if (row.childCount > 0) row.addView(dot(context, DIM, 4), LinearLayout.LayoutParams(px(context, 4), px(context, 4)).apply { marginStart = gap; marginEnd = gap }) }
@@ -183,7 +183,13 @@ object Cinema {
         items.filter { it.isNotBlank() }.forEach { sep(); row.addView(text(context, it, sizePx, MUTED).apply { maxLines = 1 }) }
         rating?.let { r ->
             sep()
-            row.addView(icon(context, R.drawable.ic_cin_star, SAFFRON), LinearLayout.LayoutParams(px(context, 22), px(context, 22)).apply { marginEnd = px(context, 8) })
+            if (imdb) {
+                // IMDb's yellow tag, so this number is plainly IMDb's.
+                row.addView(text(context, "IMDb", sizePx.toFloat() * 0.62f, 0xFF141008.toInt(), weight = 800, tracking = 0.02f).apply {
+                    setPadding(px(context, 8), px(context, 1), px(context, 8), px(context, 1))
+                    background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = pxf(context, 6); setColor(0xFFF5C518.toInt()) }
+                }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = px(context, 10) })
+            } else row.addView(icon(context, R.drawable.ic_cin_star, SAFFRON), LinearLayout.LayoutParams(px(context, 22), px(context, 22)).apply { marginEnd = px(context, 8) })
             row.addView(text(context, r, sizePx, CREAM, weight = 500))
         }
         return row
