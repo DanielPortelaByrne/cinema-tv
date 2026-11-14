@@ -38,6 +38,7 @@ object LauncherProfile {
  * keeps anything of its own the saved copy does not have.
  */
 class ProfileSyncer(private val context: Context, private val jellyfin: JellyfinClient, private val userId: String) {
+    private companion object { const val RETRY_MS = 30_000L }
     private val platform = AndroidPlatform(context)
     private val device = context.getSharedPreferences("accounts", Context.MODE_PRIVATE)
     private val pool = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "profile-sync").apply { isDaemon = true } }
@@ -94,6 +95,19 @@ class ProfileSyncer(private val context: Context, private val jellyfin: Jellyfin
 
     private fun push() {
         if (jellyfin.currentUserId != userId) return
+        // Someone saved a newer copy since this TV last synced (another TV, or a restore): take it rather than overwrite it.
+        // Unable to read it (the server just restarted, or is backing off), nothing is saved until it can be checked.
+        val saved = jellyfin.profileData() ?: run { pushSoon(RETRY_MS); return }
+        val remote = ProfileSync.fromPrefs(saved)
+        if (remote != null && remote.second > syncedAt) {
+            if (ProfileSync.apply(platform, remote.first)) {
+                syncedAt = remote.second
+                pushedHash = ProfileSync.snapshot(platform).hashCode()
+                jellyfin.adoptListsFromOtherAddresses()
+                android.util.Log.i("Accounts", "took a newer saved profile instead of saving over it (${remote.first.length} chars)")
+            }
+            return
+        }
         val snapshot = ProfileSync.snapshot(platform)
         val hash = snapshot.hashCode()
         if (hash == pushedHash) return
