@@ -190,12 +190,14 @@ jobs:
         with:
           name: launcher-apk
           path: artifacts-launcher
-      - name: Install on the TVs in the quiet hours
-        env:
-          TV_ADDRESSES: ${{ vars.TV_ADDRESSES }}
-        run: scripts/ci/deploy-tvs.sh artifacts/app-release.apk cinema "$GITHUB_EVENT_NAME"
+      # The launcher first: it defines the permission Cinema asks for to read who is watching, and Android only grants
+      # a permission to an app installed after the app that defines it.
       - name: Install the launcher on the TVs in the quiet hours
         env:
           TV_ADDRESSES: ${{ vars.TV_ADDRESSES }}
         run: |
           GITHUB_SHA=$(cat artifacts-launcher/launcher.sha)             scripts/ci/deploy-tvs.sh artifacts-launcher/app-debug.apk launcher "$GITHUB_EVENT_NAME"
+      - name: Install on the TVs in the quiet hours
+        env:
+          TV_ADDRESSES: ${{ vars.TV_ADDRESSES }}
+        run: scripts/ci/deploy-tvs.sh artifacts/app-release.apk cinema "$GITHUB_EVENT_NAME"
