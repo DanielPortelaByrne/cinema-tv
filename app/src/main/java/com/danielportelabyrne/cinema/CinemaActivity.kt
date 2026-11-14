@@ -76,6 +76,16 @@ class CinemaActivity : AppCompatActivity() {
         val platform = AndroidPlatform(this)
         val accounts = com.danielportelabyrne.cinema.data.account.AccountStore(platform)
         val jf = JellyfinClient(platform)
+        // Signed out (a refused token, or a restore that carried one Jellyfin had thrown away) while people are saved here:
+        // sign back in as the first of them whose saved sign-in Jellyfin still accepts, then carry on as usual.
+        if (saved == null && !jf.isConnected && jf.hasServer && accounts.all().any { accounts.token(it.userId) != null } && !healTried) {
+            healTried = true
+            Thread {
+                val healed = healSignIn(accounts, jf)
+                runOnUiThread { if (!isDestroyed) { if (healed) choosePerson(saved, go) else { accounts.applyScope(); go() } } }
+            }.start()
+            return
+        }
         if (saved != null || !jf.isConnected) { android.util.Log.w("Accounts", "launch: straight in (restored=${saved != null})"); accounts.applyScope(); go(); return }
         Thread {
             // A person signed in afresh on this TV (Jellyfin then forgets their old token): keep their saved copy in step,
@@ -117,6 +127,23 @@ class CinemaActivity : AppCompatActivity() {
                 }.also { it.show() }
             }
         }.start()
+    }
+
+    private var healTried = false
+
+    /** Blocking. Restores the first saved person's sign-in (the one in use first) that Jellyfin still accepts. */
+    private fun healSignIn(accounts: com.danielportelabyrne.cinema.data.account.AccountStore, jf: JellyfinClient): Boolean {
+        val people = (listOfNotNull(accounts.active()) + accounts.all()).distinctBy { it.userId }
+        for (person in people) {
+            val token = accounts.token(person.userId) ?: continue
+            if (jf.tokenWorks(token, person.userId) != true) continue
+            jf.restoreSession(com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession(jf.server, token, person.userId))
+            accounts.activate(person.userId)
+            android.util.Log.w("Accounts", "signed back in as ${person.name} with their saved sign-in")
+            return true
+        }
+        android.util.Log.w("Accounts", "signed out, and no saved sign-in still works")
+        return false
     }
 
     /** Signs Jellyfin in as [person], takes their saved copy from the server, then opens Cinema as them. */

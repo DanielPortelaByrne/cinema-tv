@@ -5496,14 +5496,16 @@ class MoviesPanel(
         }
         // Just under the picker, as tall as the screen allows (it scrolls past that).
         val at = android.graphics.Rect(0, 0, anchor.width, anchor.height)
-        detail.offsetDescendantRectToMyCoords(anchor, at)
+        // The page can be rebuilt under the picker (seasons arriving late): then there is nothing to drop the menu from.
+        try { detail.offsetDescendantRectToMyCoords(anchor, at) } catch (_: IllegalArgumentException) { seasonMenuClose = null; return }
         val top = at.bottom + Cinema.px(activity, 12)
         val room = (detail.height - top - Cinema.px(activity, 40)).coerceAtLeast(Cinema.px(activity, 300))
         val tall = seasons.size * Cinema.px(activity, 92) + Cinema.px(activity, 24)
         menu.addView(panel, FrameLayout.LayoutParams(Cinema.px(activity, 640), minOf(room, tall)).apply { leftMargin = at.left; topMargin = top })
         detail.addView(menu, FrameLayout.LayoutParams(-1, -1))
         seasonMenuClose = close
-        (current ?: list.getChildAt(0))?.let { v -> v.post { v.requestFocus() } }
+        // A moment later the menu may already be gone (closed, or the page rebuilt): focus only a row still on screen.
+        (current ?: list.getChildAt(0))?.let { v -> v.post { if (v.isAttachedToWindow && menu.parent != null) runCatching { v.requestFocus() } } }
     }
 
     /** Slides the title page so [target] sits [inset] below its top. */
