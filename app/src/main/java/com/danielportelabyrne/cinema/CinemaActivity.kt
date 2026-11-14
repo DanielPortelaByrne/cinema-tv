@@ -170,6 +170,8 @@ class CinemaActivity : AppCompatActivity() {
             accounts.activate(person.userId)
             if (token != null && jf.currentUserId != person.userId) jf.restoreSession(com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession(jf.server, token, person.userId))
             syncer = com.danielportelabyrne.cinema.data.account.ProfileSyncer(this, jf, person.userId).also { s -> runCatching { s.pull() } }
+            // Their saved lists may be filed under an earlier address of the server: bring them to where it is now.
+            jf.adoptListsFromOtherAddresses()
             // The character picked on another TV comes with the person's saved things.
             AndroidPlatform.personalPrefs(this, "cinema_personal").getString("avatar", null)?.let { a ->
                 val picked = a.ifBlank { null }

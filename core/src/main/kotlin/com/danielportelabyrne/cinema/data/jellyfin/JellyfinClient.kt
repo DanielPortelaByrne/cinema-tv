@@ -69,10 +69,45 @@ class JellyfinClient(private val platform: Platform) {
     private val userId: String? get() = prefs.getString("userId", null)
 
     /**
-     * Who owns per-user lists on this TV: this server and this signed-in user, so nothing leaks between them. The server
-     * part is the address the lists were first kept under, so they stay with the server when it moves (see [relocate]).
+     * Who owns per-user lists on this TV: this server and this signed-in user, so nothing leaks between them. When the
+     * server's address changes, [adoptListsFromOtherAddresses] moves the lists to the new one.
      */
-    val ownerScope: String get() = com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope(prefs.getString(SCOPE_SERVER, null) ?: server, userId)
+    val ownerScope: String get() = com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope(server, userId)
+
+    /**
+     * The signed-in user's lists (history, favourites, dismissals...) kept under an earlier address of the server move to
+     * where it is now, in the person's own files. Where both exist, the fuller one is kept. Returns how many moved.
+     */
+    fun adoptListsFromOtherAddresses(): Int {
+        val user = userId ?: return 0
+        val here = com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope(server, user)
+        if (here.isBlank()) return 0
+        val elsewhere = Regex("""https?://[^|\s]+\|""" + Regex.escape(user))
+        var moved = 0
+        for (name in com.danielportelabyrne.cinema.data.account.ProfileScope.PERSONAL) {
+            val file = platform.preferences(name)
+            val all = HashMap(file.all)   // a copy: entries are moved while going through them
+            val edit = file.edit()
+            var changed = false
+            for ((key, value) in all) {
+                val at = elsewhere.find(key) ?: continue
+                val target = key.replaceRange(at.range, here)
+                if (target == key) continue
+                val existing = all[target]
+                if (existing == null || (value is String && existing is String && value.length > existing.length)) when (value) {
+                    is String -> edit.putString(target, value)
+                    is Boolean -> edit.putBoolean(target, value)
+                    is Long -> edit.putLong(target, value)
+                    is Int -> edit.putInt(target, value)
+                    else -> continue
+                }
+                edit.remove(key); changed = true; moved++
+            }
+            if (changed) edit.apply()
+        }
+        if (moved > 0) Log.i(TAG, "moved $moved list(s) to the server's current address")
+        return moved
+    }
 
     /**
      * What a player needs to fetch a stream: the token travels in a header, never in the address. Jellyfin 12
@@ -526,6 +561,7 @@ class JellyfinClient(private val platform: Platform) {
                 .apply { if (candidate.id.isNotBlank()) putString(SERVER_ID, candidate.id) }.apply()
             Log.i(TAG, "Jellyfin has moved from $old to $base; following it")
             com.danielportelabyrne.cinema.data.settings.ServerMove.follow(platform, old, base)
+            adoptListsFromOtherAddresses()
             invalidateLibrary()
             reached()
             return true
@@ -538,8 +574,10 @@ class JellyfinClient(private val platform: Platform) {
      * address the server first had is moved to where it is now. Does nothing once they have caught up.
      */
     fun followEarlierMove() {
+        if (debugServer != null || server.isBlank()) return
+        adoptListsFromOtherAddresses()
         val first = prefs.getString(SCOPE_SERVER, null) ?: return
-        if (debugServer == null && server.isNotBlank()) com.danielportelabyrne.cinema.data.settings.ServerMove.follow(platform, first, server)
+        com.danielportelabyrne.cinema.data.settings.ServerMove.follow(platform, first, server)
     }
 
     /**

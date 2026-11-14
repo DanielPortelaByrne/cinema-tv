@@ -39,13 +39,17 @@ class JellyfinRelocateTest {
 
     @Test fun follows_the_same_server_to_its_new_address_keeping_the_sign_in_and_lists() {
         val old = gone()
-        val client = signedInAt(old)
-        val scope = client.ownerScope
+        val platform = MemoryPlatform()
+        val client = JellyfinClient(platform).apply { restoreSession(JellyfinSession(old, "secret-token", "u1")) }
+        platform.preferences("play_history").edit().putString("hist_" + client.ownerScope, "[their history]").apply()
+        platform.preferences("play_history").edit().putString("hist_http://10.9.9.9:8096|someone-else", "[not theirs]").apply()
         val moved = jellyfin("secret-token")
         assertTrue(client.relocate(listOf(FoundServer("steamdeck", moved, "abc"))))
         assertEquals(moved, client.server)
         assertTrue(client.isConnected)
-        assertEquals(scope, client.ownerScope)                 // favourites, history and dismissals are still theirs
+        // Favourites, history and dismissals are still theirs, now under the server's new address.
+        assertEquals("[their history]", platform.preferences("play_history").getString("hist_" + client.ownerScope, null))
+        assertEquals("[not theirs]", platform.preferences("play_history").getString("hist_http://10.9.9.9:8096|someone-else", null))
     }
 
     @Test fun ignores_a_different_server_that_does_not_know_the_sign_in_and_does_not_sign_out() {
