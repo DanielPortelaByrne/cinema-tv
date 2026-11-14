@@ -45,13 +45,18 @@ object Avatars {
     /** The character's (or the title's) name a picture stands for. */
     fun castName(id: String?): String? = id?.takeIf { isCast(it) }?.substringAfterLast('|')
     private fun pictureUrl(id: String) = if (id.startsWith("art:")) id.removePrefix("art:").substringBeforeLast('|')
-        else "https://image.tmdb.org/t/p/w185" + id.removePrefix("cast:").substringBefore('|')
+        else castUrl(id.removePrefix("cast:").substringBefore('|'))
+
+    /** A cast photo at a size that stays sharp in a large disc on a TV (w185 was soft once enlarged). */
+    fun castUrl(profilePath: String) = "https://image.tmdb.org/t/p/h632$profilePath"
 
     private const val CREAM = 0xFFF6ECDB.toInt()
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val path = Path()
     private val box = RectF()
     private val photos = java.util.concurrent.ConcurrentHashMap<String, Bitmap>()
+    /** Where the face is in each cast photo (see Headshots), found once when the photo arrives. */
+    private val faces = java.util.concurrent.ConcurrentHashMap<String, Headshots.Face>()
     private val waiting = java.util.concurrent.ConcurrentHashMap<String, MutableList<java.lang.ref.WeakReference<View>>>()
 
     /** Fetches a picture once (kept while Cinema runs) and redraws [view] when it has come. */
@@ -61,10 +66,28 @@ object Avatars {
         view?.let { list += java.lang.ref.WeakReference(it) }
         if (list.size > 1) return   // already on its way
         Thread {
-            val b = try { java.net.URL(url).openStream().use { android.graphics.BitmapFactory.decodeStream(it) } } catch (_: Exception) { null }
-            if (b != null) photos[url] = b
+            load(url)
             waiting.remove(url)?.forEach { ref -> ref.get()?.let { v -> v.post { v.invalidate() } } }
         }.start()
+    }
+
+    /** Blocking: fetches [url] into the cache, and finds the face in it when it is a cast photo. */
+    private fun load(url: String): Bitmap? {
+        photos[url]?.let { return it }
+        val b = try { java.net.URL(url).openStream().use { android.graphics.BitmapFactory.decodeStream(it) } } catch (_: Exception) { null } ?: return null
+        if (url.startsWith("https://image.tmdb.org/")) Headshots.find(b)?.let { faces[url] = it }
+        photos[url] = b
+        return b
+    }
+
+    /**
+     * Blocking: the cast photo at [profilePath] as a headshot, or null when it is not a good one (no single clear face).
+     * The photo stays cached, so the picker then draws it at once. Returns how good it is, for ordering.
+     */
+    fun headshot(profilePath: String): Float? {
+        val url = castUrl(profilePath)
+        val b = load(url) ?: return null
+        return faces[url]?.let { Headshots.score(it, b.width) }
     }
 
     /** One person's picture in a disc of radius [r] about ([cx], [cy]). [view] is what to redraw when a picture arrives. */
@@ -121,10 +144,17 @@ object Avatars {
             val top = box.top + r * 0.08f
             c.drawBitmap(bitmap, Rect(0, 0, w, h), RectF(cx - dw / 2, top, cx + dw / 2, top + dh), p)
         } else {
-            // A cast photo zoomed out: head and shoulders, from the top of the portrait, its full width across the disc.
-            val tall = minOf(h, (w * 1.12f).toInt())
-            val dh = box.height(); val dw = dh * w / tall
-            c.drawBitmap(bitmap, Rect(0, 0, w, tall), RectF(cx - dw / 2, box.top, cx + dw / 2, box.bottom), p)
+            val face = faces[url]
+            if (face != null) {
+                // A headshot: the face centred, the head the same size in every disc (see Headshots.frame).
+                val f = Headshots.frame(face, w, h)
+                c.drawBitmap(bitmap, Rect(f.left.toInt(), f.top.toInt(), f.right.toInt(), f.bottom.toInt()), box, p)
+            } else {
+                // No face found: head and shoulders, from the top of the portrait, its full width across the disc.
+                val tall = minOf(h, (w * 1.12f).toInt())
+                val dh = box.height(); val dw = dh * w / tall
+                c.drawBitmap(bitmap, Rect(0, 0, w, tall), RectF(cx - dw / 2, box.top, cx + dw / 2, box.bottom), p)
+            }
         }
         c.restoreToCount(save)
     }

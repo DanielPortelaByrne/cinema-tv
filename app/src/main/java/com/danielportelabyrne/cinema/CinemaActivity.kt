@@ -119,8 +119,8 @@ class CinemaActivity : AppCompatActivity() {
                     else -> null
                 }
                 if (direct != null) { launcher?.takeIf { asked == null }?.let { accounts.link(direct.userId, it) }; become(accounts, jf, direct, go); return@runOnUiThread }
-                // Characters only for now: pictures from favourite titles (FavouriteCharacters) are left out of the picker.
-                whoScreen = com.danielportelabyrne.cinema.ui.account.WhoScreen(this, findViewById(R.id.cinemaRoot), accounts, jf, infoSheet, launcher) { person ->
+                whoScreen = com.danielportelabyrne.cinema.ui.account.WhoScreen(this, findViewById(R.id.cinemaRoot), accounts, jf, infoSheet, launcher,
+                    favourites = { a, give -> favouriteCharacters(accounts, jf, a, give) }) { person ->
                     // Remembered only when it is plainly the same person; otherwise Cinema asks again next time.
                     launcher?.takeIf { com.danielportelabyrne.cinema.data.account.AccountStore.sameName(it, person) }?.let { accounts.link(person.userId, it) }
                     become(accounts, jf, person, go)
@@ -130,6 +130,24 @@ class CinemaActivity : AppCompatActivity() {
     }
 
     private var healTried = false
+
+    /**
+     * For the character picker: headshots of the cast of [person]'s favourite films and series (their own favourites, not
+     * whoever is in use), found off the main thread and handed to [give] on it.
+     */
+    private fun favouriteCharacters(accounts: com.danielportelabyrne.cinema.data.account.AccountStore, jf: JellyfinClient,
+                                    person: com.danielportelabyrne.cinema.data.account.CinemaAccount, give: (List<Pair<String, String>>) -> Unit) {
+        Thread {
+            val found = runCatching {
+                val theirs = AndroidPlatform(this).forPerson(person.userId, person.userId == accounts.originalUserId)
+                val favourites = com.danielportelabyrne.cinema.data.movies.FavouritesStore(theirs)
+                    .list(com.danielportelabyrne.cinema.data.movies.FavouritesStore.scope(jf.server, person.userId))
+                com.danielportelabyrne.cinema.ui.account.FavouriteCharacters.find(favourites, com.danielportelabyrne.cinema.data.movies.SeerrClient(AndroidPlatform(this)))
+            }.onFailure { android.util.Log.w("Accounts", "favourite characters failed: ${it.javaClass.simpleName}") }.getOrDefault(emptyList())
+            android.util.Log.i("Accounts", "favourite characters for ${person.name}: ${found.size}")
+            runOnUiThread { if (!isDestroyed) give(found) }
+        }.start()
+    }
 
     /** Blocking. Restores the first saved person's sign-in (the one in use first) that Jellyfin still accepts. */
     private fun healSignIn(accounts: com.danielportelabyrne.cinema.data.account.AccountStore, jf: JellyfinClient): Boolean {
@@ -160,7 +178,8 @@ class CinemaActivity : AppCompatActivity() {
                 android.util.Log.w("Accounts", "${person.name}'s saved sign-in has expired; asking them to sign in again")
                 runOnUiThread {
                     if (isDestroyed) return@runOnUiThread
-                    val who = whoScreen ?: com.danielportelabyrne.cinema.ui.account.WhoScreen(this, findViewById(R.id.cinemaRoot), accounts, jf, infoSheet, null) { p ->
+                    val who = whoScreen ?: com.danielportelabyrne.cinema.ui.account.WhoScreen(this, findViewById(R.id.cinemaRoot), accounts, jf, infoSheet, null,
+                        favourites = { a, give -> favouriteCharacters(accounts, jf, a, give) }) { p ->
                         become(accounts, jf, p, go)
                     }.also { whoScreen = it; it.show() }
                     who.reconnect(person)

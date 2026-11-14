@@ -4,8 +4,9 @@ import com.danielportelabyrne.cinema.data.movies.Favourite
 import com.danielportelabyrne.cinema.data.movies.SeerrClient
 
 /**
- * The characters of someone's favourite films and series, to be on Cinema as: the actors' photos for live action, and
- * for an animation its own artwork (its characters are drawn; the cast are only their voices). Blocks: not for the main
+ * The characters of someone's favourite films and series, to be on Cinema as: the actors' headshots for live action
+ * (only photos with one clear face, see Headshots), and for an animation its own artwork (its characters are drawn; the
+ * cast are only their voices). Blocks: not for the main
  * thread. Each is (picture id for Avatars, what the picker calls it).
  */
 object FavouriteCharacters {
@@ -19,7 +20,10 @@ object FavouriteCharacters {
                 if (drawn.isNotEmpty()) drawn.forEach { (m, url) -> out += Avatars.artId(url, m.character) to "${m.character} · ${f.name}" }
                 else f.poster?.let { url -> out += Avatars.artId(url, f.name) to f.name }
             } else {
-                cast.take(perTitle).forEach { m -> out += Avatars.castId(m.profilePath, m.character) to "${m.character} · ${f.name}" }
+                // Only real headshots: of the billed cast, those whose photo shows one clear face, the best framed first.
+                cast.mapNotNull { m -> Avatars.headshot(m.profilePath)?.let { score -> m to score } }
+                    .sortedByDescending { it.second }.take(perTitle)
+                    .forEach { (m, _) -> out += Avatars.castId(m.profilePath, m.character) to "${m.character} · ${f.name}" }
             }
         }
         return out.distinctBy { it.first }.take(limit)

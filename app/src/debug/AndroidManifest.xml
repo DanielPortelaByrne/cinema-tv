@@ -7,5 +7,10 @@
             android:name=".IdentPreviewActivity"
             android:exported="true"
             android:theme="@style/Theme.Cinema" />
+        <!-- Checks the profile-picture headshots on real photos (see HeadshotCheckActivity). -->
+        <activity
+            android:name=".HeadshotCheckActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Cinema" />
     </application>
 </manifest>
