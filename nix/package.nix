@@ -68,7 +68,7 @@ stdenv.mkDerivation (finalAttrs: {
     export ANDROID_USER_HOME=$(mktemp -d)
   '';
 
-  gradleBuildTask = "assembleRelease";
+  gradleBuildTask = ":app:assembleRelease";
   # nixDownloadDeps fails on Android variant matching.
   gradleUpdateTask = finalAttrs.gradleBuildTask;
   gradleFlags = [
