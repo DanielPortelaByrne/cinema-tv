@@ -29,8 +29,8 @@ import kotlin.math.pow
  * one on the second, landing a little high and sliding back down to rest. Then the stack hangs there, off register and slowly slipping, through
  * the silence, until on the late landing it snaps into register: the discs become the flat Cinema mark, the play
  * triangle prints with the chord's top note, and the coloured rings burst outwards one after another (the outer ring
- * first) and step back in (the inner ring first), on black; then a shadow winds half way round the rings' edges, a
- * half spiral, and rolls off, as the wordmark slides out from behind.
+ * first) and step back in (the inner ring first), on black; then a deep shadow winds once round the rings' edges, a
+ * spiral, and rolls off, as the wordmark slides out from behind.
  *
  * Every frame is a pure function of one clock, read from the sound as it leaves the speaker ([SplashJingle.Voice],
  * [IdentClock]), so the picture and the notes cannot drift apart. Any key skips it. The mark and wordmark are the app's
@@ -250,13 +250,13 @@ class SplashView(context: Context) : View(context) {
                 val off = 0.45f + 2.6f * height
                 shade.alpha = (alpha * (0.30f - 0.16f * height) * (1f - snap) * 255).toInt()
                 canvas.drawCircle(x + off * 0.55f, y + off * 0.85f, r, shade)
-                // The finish: a shadow gathers on this ring's edge and turns half way round it, a beat behind the ring
-                // outside it (so together they wind in as a half spiral), then rolls off.
+                // The finish: a shadow gathers on this ring's edge and turns once all the way round it, a beat behind the
+                // ring outside it (so together they wind in as a spiral), then rolls off.
                 val roll = progress(Timeline.ROLL + ROLL_STEP * (i - 1), ROLL_MS)
                 if (roll in 0.001f..0.999f) {
                     val turn = Motion.SETTLE.getInterpolation(roll)
                     val presence = smooth(min(1f, roll / 0.25f)) * (1f - smooth(((roll - 0.6f) / 0.4f).coerceIn(0f, 1f)))
-                    val angle = (ROLL_FROM + 180f * turn) * (PI.toFloat() / 180f)
+                    val angle = (ROLL_FROM + 360f * turn) * (PI.toFloat() / 180f)
                     val reach = ROLL_REACH * presence
                     shade.alpha = (ROLL_DEPTH * presence * 255).toInt()
                     canvas.drawCircle(x + reach * cos(angle), y + reach * kotlin.math.sin(angle), r, shade)
@@ -314,15 +314,15 @@ class SplashView(context: Context) : View(context) {
         private const val BURST_IN_MS = 420
         private val BURST_OUT = android.view.animation.PathInterpolator(0.1f, 0.7f, 0.25f, 1f)   // bursts, then eases to a stop
         /**
-         * The finishing shadow: each ring's starts [ROLL_STEP] after the one outside it and takes [ROLL_MS] to turn half
-         * way round, from [ROLL_FROM] degrees (down and to the right, away from a light at the top left), reaching
+         * The finishing shadow: each ring's starts [ROLL_STEP] after the one outside it and takes [ROLL_MS] to turn once
+         * all the way round, from [ROLL_FROM] degrees (down and to the right, away from a light at the top left), reaching
          * [ROLL_REACH] mark units off the ring at [ROLL_DEPTH] strength before it rolls off.
          */
         private const val ROLL_STEP = 45
-        private const val ROLL_MS = 420
+        private const val ROLL_MS = 560
         private const val ROLL_FROM = 55f
-        private const val ROLL_REACH = 1.2f
-        private const val ROLL_DEPTH = 0.36f
+        private const val ROLL_REACH = 1.7f
+        private const val ROLL_DEPTH = 0.58f
         /** The narrowest a band may get, in mark units. */
         private const val MIN_BAND = 1.4f
 
