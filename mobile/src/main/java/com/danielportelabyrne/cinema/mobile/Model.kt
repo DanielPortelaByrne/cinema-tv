@@ -86,6 +86,9 @@ class Model(val context: Context) {
     var tab by mutableStateOf(Tab.HOME)
     /** Browse's Films / Series switch, kept here so the page's colours can follow it. */
     var browseSeries by mutableStateOf(false)
+    /** How My library lists films and series: the same setting as on the TV (it travels with the person's profile). */
+    var libraryOrder by mutableStateOf(settings.libraryOrder)
+    fun chooseLibraryOrder(order: com.danielportelabyrne.cinema.data.settings.LibraryOrder) { settings.libraryOrder = order; libraryOrder = order }
     val stack = mutableStateListOf<Screen>()
 
     var shelves by mutableStateOf<HomeShelves?>(null)
@@ -153,6 +156,16 @@ class Model(val context: Context) {
         toast = text
         toastJob?.cancel()
         toastJob = scope.launch { delay(3500); toast = null }
+    }
+
+    /** Everything this phone knows about the owner's servers and settings, as the TV's Reset does. Offline copies stay. */
+    fun resetEverything() {
+        client.forget(); seerr.setServer(null); settings.reset()
+        com.danielportelabyrne.cinema.data.movies.ArrSetup.forget()
+        platform.preferences("profile_sync").edit().clear().apply()
+        stack.clear(); shelves = null; library = emptyList(); rows.clear(); tab = Tab.HOME
+        libraryOrder = settings.libraryOrder
+        needsSetup = true
     }
 
     fun setupFinished() {

@@ -272,18 +272,17 @@ fun SearchScreen(model: Model) {
 @Composable
 fun LibraryScreen(model: Model) {
     var which by remember { mutableStateOf(0) }
-    var sortByName by remember { mutableStateOf(false) }
     val all = model.library
-    val shown = remember(all, which, sortByName) {
-        val f = when (which) { 0 -> all.filter { it.isMovie }; else -> all.filter { it.isSeries } }
-        if (sortByName) f.sortedBy { Model.fold(it.name).removePrefix("the ") } else f.sortedByDescending { it.addedMs ?: 0L }
-    }
+    val order = model.libraryOrder
+    val shown = remember(all, which, order) { order.sort(if (which == 0) all.filter { it.isMovie } else all.filter { it.isSeries }) }
     Column(Modifier.fillMaxSize()) {
-        TabHeader("My library", listOf("${all.size} titles"), RibbonShape.SWOOP) { IconButton(onClick = { model.refresh(force = true) }) { Icon(Icons.Filled.Refresh, "Refresh", tint = Palette.ivory) } }
+        TabHeader("My library", listOf("${all.size} titles", order.label), RibbonShape.SWOOP) { IconButton(onClick = { model.refresh(force = true) }) { Icon(Icons.Filled.Refresh, "Refresh", tint = Palette.ivory) } }
         Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ChoicePill("Films", which == 0) { which = 0 }
             ChoicePill("Series", which == 1) { which = 1 }
-            ChoicePill(if (sortByName) "A–Z" else "Newest", false) { sortByName = !sortByName }
+            // The same setting as Settings, Library order: tapping moves to the next one.
+            val entries = com.danielportelabyrne.cinema.data.settings.LibraryOrder.entries
+            ChoicePill(order.label, false) { model.chooseLibraryOrder(entries[(entries.indexOf(order) + 1) % entries.size]) }
         }
         if (shown.isEmpty()) { Empty(if (model.client.isConnected) "Nothing here yet." else "Sign in to Jellyfin in More → Settings."); return }
         LazyVerticalGrid(GridCells.Adaptive(104.dp), contentPadding = PaddingValues(16.dp),
