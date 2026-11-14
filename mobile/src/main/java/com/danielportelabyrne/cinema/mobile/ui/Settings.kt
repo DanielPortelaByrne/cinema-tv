@@ -32,7 +32,7 @@ import com.danielportelabyrne.cinema.mobile.Model
 @Composable
 fun SettingsScreen(model: Model) {
     Column(Modifier.fillMaxSize().imePadding()) {
-        PageHeader(model, "Settings")
+        TabHeader("Settings", listOf("Jellyfin", "Seerr", "Helpers"), RibbonShape.SWOOP)
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 32.dp)) {
             Card {
                 Label("Jellyfin")

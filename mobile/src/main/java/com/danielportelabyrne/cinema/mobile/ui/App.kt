@@ -4,55 +4,70 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.MoreHoriz
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.danielportelabyrne.cinema.data.movies.Kind
 import com.danielportelabyrne.cinema.mobile.Model
+import com.danielportelabyrne.cinema.mobile.R
 import com.danielportelabyrne.cinema.mobile.Screen
 import com.danielportelabyrne.cinema.mobile.Tab
 
 @Composable
 fun CinemaApp(model: Model) {
-    Box(Modifier.fillMaxSize().background(Palette.espresso)) {
+    var splash by rememberSaveable { mutableStateOf(true) }
+    val top = model.stack.lastOrNull()
+    val ground = when {
+        model.needsSetup -> Grounds.HOME
+        top is Screen.TitlePage -> if (top.title.kind == Kind.SHOW) Grounds.SERIES else Grounds.FILMS
+        top is Screen.Downloads || top is Screen.Offline || top is Screen.Requests -> Grounds.DOWNLOADS
+        top is Screen.Settings || top is Screen.Remote -> Grounds.SETTINGS
+        top is Screen.ServicePage -> Grounds.HOME
+        else -> when (model.tab) {
+            Tab.HOME -> Grounds.HOME
+            Tab.BROWSE -> if (model.browseSeries) Grounds.SERIES else Grounds.FILMS
+            Tab.SEARCH -> Grounds.SEARCH
+            Tab.LIBRARY -> Grounds.LIBRARY
+            Tab.MORE -> Grounds.SETTINGS
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Palette.bg)) {
+        Ground(ground)
         if (model.needsSetup) SetupScreen(model)
         else Scaffold(
-            containerColor = Palette.espresso,
+            containerColor = Color.Transparent,
             contentWindowInsets = WindowInsets(0),
-            bottomBar = {
-                NavigationBar(containerColor = Palette.surface) {
-                    Tab.entries.forEach { t ->
-                        NavigationBarItem(
-                            selected = model.tab == t, onClick = { model.selectTab(t) },
-                            icon = { Icon(t.icon(), contentDescription = null) }, label = { Text(t.label) },
-                            colors = NavigationBarItemDefaults.colors(indicatorColor = Palette.selected, selectedIconColor = Palette.butter,
-                                selectedTextColor = Palette.ivory, unselectedIconColor = Palette.ivoryMuted, unselectedTextColor = Palette.ivoryMuted),
-                        )
-                    }
-                }
-            },
+            bottomBar = { NavBar(model) },
         ) { pad ->
             Box(Modifier.padding(pad).fillMaxSize()) {
-                when (val s = model.stack.lastOrNull()) {
+                when (val s = top) {
                     null -> when (model.tab) {
                         Tab.HOME -> HomeScreen(model)
                         Tab.BROWSE -> BrowseScreen(model)
@@ -70,23 +85,44 @@ fun CinemaApp(model: Model) {
                 }
             }
         }
-        Toast(model, Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp))
-        model.streaming?.let { Toast(it, Modifier.align(Alignment.Center)) }
+        Toast(model, Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp))
+        model.streaming?.let { Banner(it, Modifier.align(Alignment.Center)) }
+        if (splash) Splash { splash = false }
+    }
+}
+
+/** The bottom bar: glass over the ground, the current tab marked with a small stripe pill and lit in cream. */
+@Composable
+private fun NavBar(model: Model) {
+    Column(Modifier.fillMaxWidth().background(Palette.railFill).navigationBarsPadding()) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.hairline))
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+            Tab.entries.forEach { t ->
+                val on = model.tab == t && model.stack.isEmpty()
+                Column(Modifier.weight(1f).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { model.selectTab(t) }.padding(vertical = 2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (on) StripeMark(Modifier.size(22.dp, 4.dp), radius = 2.dp) else Box(Modifier.size(22.dp, 4.dp))
+                    Icon(painterResource(t.icon()), null, Modifier.padding(top = 5.dp).size(24.dp), tint = if (on) Palette.ivory else Color(0xFFA99B89))
+                    Text(t.label, fontSize = 11.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) Palette.ivory else Color(0xFFA99B89), modifier = Modifier.padding(top = 2.dp))
+                }
+            }
+        }
     }
 }
 
 private fun Tab.icon() = when (this) {
-    Tab.HOME -> Icons.Filled.Home; Tab.BROWSE -> Icons.Filled.Explore; Tab.SEARCH -> Icons.Filled.Search
-    Tab.LIBRARY -> Icons.Filled.VideoLibrary; Tab.MORE -> Icons.Filled.MoreHoriz
+    Tab.HOME -> R.drawable.ic_cin_home; Tab.BROWSE -> R.drawable.ic_cin_film; Tab.SEARCH -> R.drawable.ic_cin_search
+    Tab.LIBRARY -> R.drawable.ic_cin_lib; Tab.MORE -> R.drawable.ic_gear
 }
 
 @Composable
 private fun Toast(model: Model, modifier: Modifier) {
-    AnimatedVisibility(model.toast != null, modifier, enter = fadeIn(), exit = fadeOut()) { Toast(model.toast.orEmpty(), Modifier) }
+    AnimatedVisibility(model.toast != null, modifier, enter = fadeIn(), exit = fadeOut()) { Banner(model.toast.orEmpty(), Modifier) }
 }
 
 @Composable
-private fun Toast(text: String, modifier: Modifier) {
-    Text(text, color = Palette.ivory, style = MaterialTheme.typography.bodyMedium,
-        modifier = modifier.padding(horizontal = 24.dp).clip(RoundedCornerShape(12.dp)).background(Palette.selected).padding(horizontal = 16.dp, vertical = 12.dp))
+private fun Banner(text: String, modifier: Modifier) {
+    Text(text, color = Palette.ivory, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+        modifier = modifier.padding(horizontal = 24.dp).background(Color(0xF0241A13), androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+            .drawBehind { }.padding(horizontal = 18.dp, vertical = 12.dp))
 }

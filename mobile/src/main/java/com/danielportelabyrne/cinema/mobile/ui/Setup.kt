@@ -2,7 +2,9 @@ package com.danielportelabyrne.cinema.mobile.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -57,10 +60,14 @@ fun SetupScreen(model: Model) {
     var jfUser by rememberSaveable { mutableStateOf("") }
     var jfPass by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars).imePadding().verticalScroll(rememberScrollState()).padding(24.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(painterResource(R.drawable.cinema_mark), null, tint = androidx.compose.ui.graphics.Color.Unspecified, modifier = Modifier.size(40.dp))
-            Text("Cinema", style = MaterialTheme.typography.displaySmall, color = Palette.ivory, modifier = Modifier.padding(start = 12.dp))
+        Box(Modifier.fillMaxWidth().height(140.dp)) {
+            Ribbon(RibbonShape.LOOP, Modifier.fillMaxSize(), strokeWidth = 30.dp)
+            Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
+                CinemaMark(46.dp)
+                Text("Cinema", style = MaterialTheme.typography.displaySmall, color = Palette.ivory, modifier = Modifier.padding(start = 12.dp))
+            }
         }
+        Eyebrow(listOf("Welcome", when (step) { Step.SERVER -> "Your server"; Step.SIGN_IN -> "Sign in"; Step.SEERR -> "Requests"; Step.COUNTRY -> "Country" }), Modifier.padding(top = 12.dp))
         Gap(24.dp)
         when (step) {
             Step.SERVER -> ServerStep(model) { step = Step.SIGN_IN }
@@ -73,7 +80,7 @@ fun SetupScreen(model: Model) {
 
 @Composable
 private fun Heading(title: String, body: String) {
-    Text(title, style = MaterialTheme.typography.headlineSmall, color = Palette.ivory)
+    Text(title, style = MaterialTheme.typography.headlineMedium, color = Palette.ivory, modifier = Modifier.padding(top = 4.dp))
     Text(body, style = MaterialTheme.typography.bodyMedium, color = Palette.ivoryMuted, modifier = Modifier.padding(top = 6.dp, bottom = 16.dp))
 }
 
@@ -99,7 +106,7 @@ private fun ServerStep(model: Model, next: () -> Unit) {
 
     Heading("Your Jellyfin server", "Cinema plays your Jellyfin library. Pick the server on this Wi-Fi, or type its address. Nothing about your server is built in.")
     when (val f = found) {
-        null -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Looking on this network…", color = Palette.ivoryMuted) }
+        null -> Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.width(120.dp)) { WaveLoader(thickness = 6.dp, amplitude = 4.dp, wavelength = 40.dp) }; Text("Looking on this network…", color = Palette.ivoryMuted) }
         else -> f.forEach { s ->
             Row(Modifier.fillMaxWidth().clickable { connect(s.address) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.Dns, null, tint = Palette.butter)

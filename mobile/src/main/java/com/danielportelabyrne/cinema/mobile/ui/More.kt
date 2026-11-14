@@ -57,7 +57,7 @@ fun MoreScreen(model: Model) {
     var update by remember { mutableStateOf<AvailableUpdate?>(null) }
     var checking by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
-        TabHeader("More")
+        TabHeader("More", listOf("Cinema", "Build ${model.updater.currentBuild}"))
         LazyColumn {
             item { Entry(Icons.Filled.SettingsRemote, "TV remote", model.remote.current?.let { "Paired with ${it.name}" } ?: "Control Cinema on a TV") { model.push(Screen.Remote) } }
             item { Entry(Icons.Filled.PhoneAndroid, "On this phone", "${model.offline.copies.size} offline ${if (model.offline.copies.size == 1) "copy" else "copies"}") { model.push(Screen.Offline) } }
@@ -97,7 +97,7 @@ private fun Entry(icon: ImageVector, title: String, sub: String, onClick: () -> 
 fun OfflineScreen(model: Model) {
     LaunchedEffect(Unit) { while (true) { model.offline.poll(); delay(2000) } }
     Column(Modifier.fillMaxSize()) {
-        PageHeader(model, "On this phone")
+        TabHeader("On this phone", listOf("Offline"), RibbonShape.LOOP)
         val copies = model.offline.copies
         if (copies.isEmpty()) { Empty("Nothing kept on this phone yet. Use Download on a film or an episode; it downloads over Wi-Fi."); return }
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -109,7 +109,7 @@ fun OfflineScreen(model: Model) {
                         c.subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted) }
                         when {
                             c.failed -> Text("Download failed. Delete it and try again.", style = MaterialTheme.typography.bodySmall, color = Palette.terracotta)
-                            !c.complete -> LinearProgressIndicator(progress = { c.progress }, color = Palette.butter, modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(3.dp))
+                            !c.complete -> WaveBar(c.progress, Modifier.padding(top = 6.dp))
                             else -> c.sizeBytes?.let { Text(ByteSize.format(it), style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted) }
                         }
                     }
@@ -132,10 +132,10 @@ fun DownloadsScreen(model: Model) {
         }
     }
     Column(Modifier.fillMaxSize()) {
-        PageHeader(model, "Downloads")
+        TabHeader("Downloads", listOf("Sonarr", "Radarr"), RibbonShape.LOOP)
         val list = items
         when {
-            list == null -> LoadingRow()
+            list == null -> LoadingLine("Asking your servers")
             failed && list.isEmpty() -> Empty("Couldn't read Sonarr or Radarr. Sign in to Seerr as an admin, or add them in Settings.")
             list.isEmpty() -> Empty("Nothing is downloading.")
             else -> LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -152,7 +152,7 @@ fun DownloadsScreen(model: Model) {
                                 model.bg({ model.queue.cancel(q) }) { ok -> model.toast(if (ok == true) "Cancelled ${q.title}" else "Couldn't cancel ${q.title}"); items = items?.filterNot { it === q } }
                             }) { Text("Cancel", color = Palette.terracotta) }
                         }
-                        q.progress()?.let { LinearProgressIndicator(progress = { it }, color = Palette.butter, modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(3.dp)) }
+                        q.progress()?.let { WaveBar(it, Modifier.padding(top = 6.dp)) }
                     }
                 }
             }
@@ -171,11 +171,11 @@ fun RequestsScreen(model: Model) {
         }
     }
     Column(Modifier.fillMaxSize()) {
-        PageHeader(model, "Requests")
+        TabHeader("Requests", listOf("Seerr"), RibbonShape.SWOOP)
         val l = list
         when {
             !model.seerr.isSignedIn -> Empty("Sign in to Seerr in Settings to see your requests.")
-            l == null -> LoadingRow()
+            l == null -> LoadingLine("Asking Seerr")
             l.isEmpty() -> Empty("No requests yet. Find a title and press Request.")
             else -> LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
                 items(l, key = { it.id }) { r ->
@@ -189,7 +189,7 @@ fun RequestsScreen(model: Model) {
                                 Stage.READY -> "Ready to watch"; Stage.DECLINED -> "Declined"; Stage.FAILED -> "Failed"
                             } + if (r.seasons.isNotEmpty()) " · Seasons ${r.seasons.joinToString(", ")}" else "", style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted)
                             r.progress()?.takeIf { r.stage == Stage.DOWNLOADING }?.let {
-                                LinearProgressIndicator(progress = { it }, color = Palette.butter, modifier = Modifier.fillMaxWidth().padding(top = 6.dp).height(3.dp))
+                                WaveBar(it, Modifier.padding(top = 6.dp))
                             }
                         }
                         if (r.canCancel) TextButton(onClick = {
@@ -200,9 +200,4 @@ fun RequestsScreen(model: Model) {
             }
         }
     }
-}
-
-@Composable
-fun Card(content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).clip(RoundedCornerShape(14.dp)).background(Palette.surface).padding(16.dp)) { content() }
 }

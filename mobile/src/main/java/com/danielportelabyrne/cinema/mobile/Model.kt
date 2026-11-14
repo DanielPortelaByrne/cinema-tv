@@ -84,6 +84,8 @@ class Model(val context: Context) {
 
     var needsSetup by mutableStateOf(!client.isConnected && !settings.setupDone)
     var tab by mutableStateOf(Tab.HOME)
+    /** Browse's Films / Series switch, kept here so the page's colours can follow it. */
+    var browseSeries by mutableStateOf(false)
     val stack = mutableStateListOf<Screen>()
 
     var shelves by mutableStateOf<HomeShelves?>(null)

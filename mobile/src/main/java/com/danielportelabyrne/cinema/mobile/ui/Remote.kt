@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -61,7 +62,7 @@ import com.danielportelabyrne.cinema.mobile.remote.Tv
 fun RemoteScreen(model: Model) {
     var tv by remember { mutableStateOf(model.remote.current?.takeIf { model.remote.isPaired(it) }) }
     Column(Modifier.fillMaxSize().imePadding()) {
-        PageHeader(model, tv?.name ?: "TV remote") {
+        TabHeader(tv?.name ?: "TV remote", listOf("Remote"), RibbonShape.LOOP) {
             if (tv != null) TextButton(onClick = { tv = null }) { Text("Change TV") }
         }
         val t = tv
@@ -94,7 +95,7 @@ private fun PickTv(model: Model, paired: (Tv) -> Unit) {
         Text("Open Cinema on the TV, then choose it here. The TV shows a code to type in.", color = Palette.ivoryMuted)
         Gap()
         val list = tvs
-        if (list == null) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Looking for TVs…", color = Palette.ivoryMuted) }
+        if (list == null) Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.width(120.dp)) { WaveLoader(thickness = 6.dp, amplitude = 4.dp, wavelength = 40.dp) }; Text("Looking for TVs…", color = Palette.ivoryMuted) }
         else if (list.isEmpty()) Text("No TV running Cinema answered. Is Cinema open on it, and is it a recent build?", color = Palette.ivoryMuted)
         list.orEmpty().forEach { tv ->
             Row(Modifier.fillMaxWidth().clickable {
