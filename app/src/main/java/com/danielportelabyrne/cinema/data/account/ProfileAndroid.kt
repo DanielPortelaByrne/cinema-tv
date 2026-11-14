@@ -55,6 +55,9 @@ class ProfileSyncer(private val context: Context, private val jellyfin: Jellyfin
 
     /** Blocking: takes the person's saved copy when it is newer than this TV's. */
     fun pull() {
+        // Jellyfin keeps one saved profile per Jellyfin user: signed in as someone else, it would be theirs, laid over this
+        // person's (as push, only ever for the person Jellyfin is signed in as).
+        if (jellyfin.currentUserId != userId) { android.util.Log.w("Accounts", "not taking a saved profile: Jellyfin is signed in as someone else"); return }
         val saved = jellyfin.profileData()?.let { ProfileSync.fromPrefs(it) } ?: return
         val (snapshot, at) = saved
         if (at <= syncedAt) return
