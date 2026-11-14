@@ -30,7 +30,7 @@ import kotlin.math.pow
  * The branded opening, "the velvet skip". The mark is built like a cut-paper print being registered: its five discs
  * fall onto the screen as a slipped stack, each landing making its own note (big discs play low, small ones high).
  * The three outer discs land together on the bass pluck; the orange disc lands on the first piano note and the saffron
- * one on the second, skidding a little further out. Then the stack hangs there, off register and slowly slipping, through
+ * one on the second, landing a little high and sliding back down to rest. Then the stack hangs there, off register and slowly slipping, through
  * the silence, until on the late landing it snaps into register: the discs become the flat Cinema mark, a ripple runs
  * out through the rings, the play triangle prints with the chord's top note, and the wordmark slides out from behind.
  *
@@ -121,6 +121,17 @@ class SplashView(context: Context) : View(context) {
     }
 
     private var began = false
+    private var playedNs = 0L
+    private val debuggable = context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+
+    /** Debug builds: how the picture is keeping time with the sound, one line per beat, to check sync on a real TV. */
+    private fun trace(before: Float, heard: Double?) {
+        if (before == 0f && clockMs > 0f) android.util.Log.d(TAG, "picture starts after waiting %.0f ms for the sound to be heard (%s)"
+            .format((System.nanoTime() - playedNs) / 1e6, if (clock.freeRunning) "no sound: running alone" else "following the sound"))
+        for ((name, beat) in BEATS) if (before < beat && clockMs >= beat) android.util.Log.d(TAG,
+            "%-4s picture at %.1f ms, sound heard at %s, wall %.1f ms since play".format(name, clockMs,
+                heard?.let { "%.1f ms".format(it) } ?: "(ended)", (System.nanoTime() - playedNs) / 1e6))
+    }
 
     /** Skips ahead: the sound stops (without a click) and the picture fades out quickly. */
     fun skip() {
@@ -188,11 +199,15 @@ class SplashView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         if (!began && !finishing) {
             began = true
-            // Started from the draw pass: from the next frame the clock waits for the sound to be heard, then follows it.
-            post { if (!finishing && !leaving) { voice?.play(); running = true; invalidate() } }
+            // Started a beat after the first frame, so a window still fading in over the launcher does not swallow the
+            // first gesture; from then the clock waits for the sound to be heard, then follows it.
+            postDelayed({ if (!finishing && !leaving) { voice?.play(); playedNs = System.nanoTime(); running = true; invalidate() } }, START_DELAY_MS)
         }
         if (running) {
-            clockMs = clock.tick(System.nanoTime(), voice?.positionMs()).toFloat()
+            val heard = voice?.positionMs()
+            val before = clockMs
+            clockMs = clock.tick(System.nanoTime(), heard).toFloat()
+            if (debuggable) trace(before, heard)
             if (clockMs >= Timeline.FADE_START) { running = false; post { cover(Timeline.FADE_LENGTH.toLong(), 150) } }
             else postInvalidateOnAnimation()
         }
@@ -215,17 +230,20 @@ class SplashView(context: Context) : View(context) {
         val q = Motion.SETTLE.getInterpolation(progress(Timeline.LOCKUP, Timeline.LOCKUP_LENGTH))
         val mx = w / 2f + q * (-lockupW / 2f + markPx / 2f)
 
-        // The landing: a low warm bloom behind the mark, and a faint wash that spreads to fill the screen and stays.
+        // The landing: a low warm bloom behind the mark, and a faint wash that spreads across the screen and ebbs away.
         val sinceDum = clockMs - Timeline.DUM
         if (sinceDum > 0) {
             val bloom = (1f - progress(Timeline.DUM, 1100)).let { it * it } * 0.30f
             glow.shader = glowShader
             glow.alpha = (bloom * 255).toInt()
             canvas.save(); canvas.translate(mx, cy); canvas.drawCircle(0f, 0f, markPx * GLOW_RADIUS, glow); canvas.restore()
+            // The wash is one pulse: it swells out with the landing, then ebbs away, so the mark ends on black (and is
+            // still before the page is built under it).
             val spread = progress(Timeline.DUM, 1100)
+            val swell = smooth(progress(Timeline.DUM, 180)) * (1f - smooth(progress(Timeline.DUM + 260, WASH_EBB)))
             val reach = markPx * 1.2f + (hypot(w, h) * 1.05f - markPx * 1.2f) * Motion.SWOOSH.getInterpolation(spread)
             wash.shader = washShader
-            wash.alpha = (min(1f, spread * 5f) * WASH_STRENGTH * 255).toInt()
+            wash.alpha = (swell * WASH_STRENGTH * 255).toInt()
             canvas.save(); canvas.translate(w / 2f, cy); canvas.scale(reach / WASH_UNIT, reach / WASH_UNIT); canvas.drawCircle(0f, 0f, WASH_UNIT, wash); canvas.restore()
         }
 
@@ -250,8 +268,8 @@ class SplashView(context: Context) : View(context) {
             val press = if (light) settle(lands, 0.06f, 110f, 34f) else settle(lands, 0.035f, 150f, 45f)
             // The ripple of the landing, from the centre out: each ring swells a little in turn and settles.
             val ripple = 1f + 0.018f * pulse(clockMs - Timeline.DUM - 22f * (radii.size - 1 - i), 42f)
-            // The saffron disc skids a little further along the slip after it lands: the crushed note slipping up.
-            val skid = if (i == 4) (smooth(progress(Timeline.DIT, 150)) - 1f) * 0.9f else 0f
+            // The saffron disc lands a little high and slides back down the slip to rest: the sigh falling to its note.
+            val skid = if (i == 4) (1f - smooth(progress(Timeline.DIT, 170))) * 0.9f else 0f
             val along = ((slip[i] + skid) - SLIP_CENTRE) * outOfRegister
             val x = along * SLIP_X
             val y = along * SLIP_Y
@@ -313,9 +331,16 @@ class SplashView(context: Context) : View(context) {
         /** The bloom behind the mark, in mark widths. Wide, because it fades out before reaching its rim. */
         private const val GLOW_RADIUS = 2.1f
 
+        /** The pause after the first frame before the opening begins (see [onDraw]). */
+        private const val START_DELAY_MS = 250L
+        private const val TAG = "Opening"
+        private val BEATS = listOf("BUP" to Timeline.BUP, "DI" to Timeline.DI, "DIT" to Timeline.DIT, "DUM" to Timeline.DUM, "END" to Timeline.END)
+
         /** The screen-filling wash: the unit its gradient is built at, and how strong it is at the centre (0..1). */
         private const val WASH_UNIT = 1000f
-        private const val WASH_STRENGTH = 0.10f
+        private const val WASH_STRENGTH = 0.13f
+        /** How long the wash takes to ebb back to black; it is gone well before [Timeline.FADE_START]. */
+        private const val WASH_EBB = 820
 
         /** The slip runs up and to the right (35 degrees), centred so the slipped stack still sits in the middle. */
         private val SLIP_X = cos(35.0 * PI / 180).toFloat()

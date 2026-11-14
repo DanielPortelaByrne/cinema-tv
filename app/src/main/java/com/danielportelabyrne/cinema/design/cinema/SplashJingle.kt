@@ -13,7 +13,7 @@ import java.nio.ByteOrder
 
 /**
  * The opening's sound, "the velvet skip": an upright-bass pluck, two quick felt-piano notes, a held breath, then a
- * late bass-and-piano landing (A2 pluck; C5 crushed into C#5; silence; D2 under a rolled F#-B-E). It is shipped as
+ * late bass-and-piano landing (A2 pluck; C4 sighing to A3; silence; a slide up to D2 under a rolled, low Dm9). Shipped as
  * `res/raw/splash_jingle.wav`, rendered ahead of time by `SplashJingleSynth` (test sources) from physical models of the
  * two instruments. [Timeline] is the one score the sound and [SplashView] share, and the picture reads its clock from
  * the sound as it actually leaves the speaker ([Voice.positionMs]), so the two cannot drift apart.
@@ -22,9 +22,9 @@ object SplashJingle {
     /** Milliseconds from the start of the sound file. Change these and the sound together: re-run `SplashJingleRender`. */
     object Timeline {
         const val BUP = 150               // the bass pluck: the three outer discs land
-        const val DI = 355                // first piano note (C5): the orange disc lands
-        const val DIT = 447               // second piano note (C#5), a hair early: the saffron disc lands
-        const val DUM = 1040              // the late landing: bass D2 and the rolled chord, the stack snaps into register
+        const val DI = 355                // first piano note (C4): the orange disc lands
+        const val DIT = 447               // second piano note (A3), a hair early: the saffron disc lands
+        const val DUM = 1040              // the late landing: bass slides to D2, the chord rolls, the stack snaps into register
         const val END = 1640              // the sound file ends (the chord has been let go)
 
         const val DROP = 130              // how long the outer discs fall before they land on BUP
@@ -57,10 +57,11 @@ object SplashJingle {
                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build()
             val track = AudioTrack.Builder().setAudioAttributes(attributes).setAudioFormat(format)
                 .setTransferMode(AudioTrack.MODE_STATIC).setBufferSizeInBytes(pcm.size * 2).build()
-            if (track.state != AudioTrack.STATE_INITIALIZED || track.write(pcm, 0, pcm.size) != pcm.size) {
+            // A static track only becomes INITIALIZED once its data is written (until then it is NO_STATIC_DATA).
+            if (track.write(pcm, 0, pcm.size) != pcm.size || track.state != AudioTrack.STATE_INITIALIZED) {
                 track.release(); null
             } else Voice(track, pcm.size / 2).also { current = it }
-        } catch (_: Exception) { null }
+        } catch (e: Exception) { android.util.Log.w("Opening", "no sound for the opening", e); null }
     }
 
     /** 16-bit stereo samples from the shipped WAV's data chunk. */

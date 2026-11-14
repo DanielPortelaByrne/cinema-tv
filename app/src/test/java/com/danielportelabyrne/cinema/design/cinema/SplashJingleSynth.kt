@@ -27,9 +27,9 @@ import kotlin.math.sqrt
  *    landing when each note is let go.
  * Then a small, dry room, a little air between the players. Everything is quiet: a -8 dBFS ceiling, about -20 LUFS at its loudest.
  *
- * The score (milliseconds from [Timeline]): the bass plucks A2 on BUP and is stopped short; the piano crushes C5 into
- * C#5 (DI, DIT: the blue note slipping onto the major third over the bass's A); then nothing; then, late, the bass
- * lands on D2 with the piano's D6/9 (F#4 B4 E5) rolled up from just after it: the A's dominant resolving home.
+ * The score (milliseconds from [Timeline]): the bass plucks A2 on BUP and is stopped short; the piano sighs C4 down to
+ * A3 (DI, DIT: a blue minor third, low and warm); then nothing; then, late, the bass slides up into D2 under a low,
+ * smoky D minor 9 (F3 C4 E4, no root) rolled up from just after it: the A resolving home, in the minor.
  */
 object SplashJingleSynth {
     const val RATE = SplashJingle.RATE
@@ -47,16 +47,16 @@ object SplashJingleSynth {
         val right = DoubleArray(frames)
         val dry = Mix(left, right)
 
-        // Bup: a round A2, plucked mid-string and stopped by the left hand after a short beat.
-        bass(dry, Timeline.BUP.toDouble(), 110.0, velocity = 0.85, holdSec = 0.13, dampTau = 0.038, seed = 11)
-        // Di-dit: the crushed note, light then a touch firmer, both lifted quickly.
-        piano(dry, Timeline.DI.toDouble(), 523.25, velocity = 0.50, holdSec = 0.052, seed = 21)
-        piano(dry, Timeline.DIT.toDouble(), 554.37, velocity = 0.66, holdSec = 0.10, seed = 22)
-        // Dum: the bassist lands first; the chord rolls up from just behind, top note last.
-        bass(dry, Timeline.DUM.toDouble(), 73.42, velocity = 0.80, holdSec = 0.40, dampTau = 0.085, seed = 12)
-        piano(dry, Timeline.DUM + 9.0, 369.99, velocity = 0.46, holdSec = 0.40, seed = 23)
-        piano(dry, Timeline.DUM + 20.0, 493.88, velocity = 0.42, holdSec = 0.39, seed = 24)
-        piano(dry, Timeline.DUM + 34.0, 659.26, velocity = 0.52, holdSec = 0.38, seed = 25)
+        // Bup: a round, soft A2, plucked mid-string and stopped by the left hand after a short beat.
+        bass(dry, Timeline.BUP.toDouble(), 110.0, velocity = 0.82, holdSec = 0.15, dampTau = 0.042, seed = 11)
+        // Di-dit: a blue sigh in the warm middle of the piano, C4 falling to A3, the second leaned on a little.
+        piano(dry, Timeline.DI.toDouble(), 261.63, velocity = 0.48, holdSec = 0.055, seed = 21)
+        piano(dry, Timeline.DIT.toDouble(), 220.0, velocity = 0.60, holdSec = 0.11, seed = 22)
+        // Dum: the bassist slides up into D2 from a semitone under; the chord rolls up from just behind, top note last.
+        bass(dry, Timeline.DUM.toDouble(), 73.42, velocity = 0.80, holdSec = 0.42, dampTau = 0.09, seed = 12, slideCents = -100.0)
+        piano(dry, Timeline.DUM + 9.0, 174.61, velocity = 0.44, holdSec = 0.41, seed = 23)
+        piano(dry, Timeline.DUM + 21.0, 261.63, velocity = 0.40, holdSec = 0.40, seed = 24)
+        piano(dry, Timeline.DUM + 36.0, 329.63, velocity = 0.47, holdSec = 0.39, seed = 25)
 
         room(left, right)
 
@@ -94,11 +94,11 @@ object SplashJingleSynth {
 
     // ---- upright bass, pizzicato --------------------------------------------------------------------------------------
 
-    private fun bass(mix: Mix, atMs: Double, hz: Double, velocity: Double, holdSec: Double, dampTau: Double, seed: Long) {
+    private fun bass(mix: Mix, atMs: Double, hz: Double, velocity: Double, holdSec: Double, dampTau: Double, seed: Long, slideCents: Double = 0.0) {
         val length = (RATE * (holdSec + dampTau * 9)).toInt()
         val string = DoubleArray(length)
         val pluckAt = 0.23                         // where the finger pulls, as a fraction of the string from the bridge
-        val finger = 650.0 + 550.0 * velocity      // a fingertip is soft: it rounds off the top of the spectrum
+        val finger = 480.0 + 420.0 * velocity      // a fingertip is soft: it rounds off the top of the spectrum
         val inharmonic = 6e-5
         var n = 1
         while (true) {
@@ -107,8 +107,8 @@ object SplashJingleSynth {
             val shape = sin(n * PI * pluckAt) / n * exp(-(f / finger).pow(2))
             val t60 = 1.3 / (1 + (f / 200).pow(1.45))
             // Two planes of vibration: the second slightly sharp, quieter and slower to die, so the tone blooms unevenly.
-            partial(string, f, shape * 0.72, t60, holdSec, dampTau, glide = true)
-            partial(string, f * 1.00035, shape * 0.28, t60 * 1.8, holdSec, dampTau, glide = true)
+            partial(string, f, shape * 0.72, t60, holdSec, dampTau, slideCents)
+            partial(string, f * 1.00035, shape * 0.28, t60 * 1.8, holdSec, dampTau, slideCents)
             n++
         }
         // The wooden body: resonances that give the pluck its hollow, woody bloom.
@@ -128,7 +128,7 @@ object SplashJingleSynth {
         for (i in 0 until min(length, RATE / 20)) {
             val t = i / RATE.toDouble()
             val noise = rnd.nextGaussian()
-            body[i] += snap.run(noise) * exp(-t / 0.0035) * 0.035 * velocity + knock.run(noise) * exp(-t / 0.009) * 0.09 * velocity
+            body[i] += snap.run(noise) * exp(-t / 0.0035) * 0.018 * velocity + knock.run(noise) * exp(-t / 0.009) * 0.09 * velocity
         }
         for (i in 0 until length) body[i] *= velocity
         mix.add(body, frame(atMs), -0.08)
@@ -141,7 +141,7 @@ object SplashJingleSynth {
         val note = DoubleArray(length)
         val rnd = Random(seed)
         val struckAt = 1 / 8.3                         // the hammer hits an eighth of the way along the string
-        val felt = 520.0 + 900.0 * velocity            // a felt-muffled hammer: soft, dark, more so when played gently
+        val felt = 400.0 + 650.0 * velocity            // a felt-muffled hammer: soft, dark, more so when played gently
         val inharmonic = 0.00042 * (hz / 440.0)
         val strings = doubleArrayOf(-0.8, 0.15, 0.95) // cents: a unison never quite in tune, so the note breathes
         val share = doubleArrayOf(0.36, 0.34, 0.30)
@@ -155,8 +155,8 @@ object SplashJingleSynth {
             val damp = 0.034 / (1 + f / 2000)
             for (k in strings.indices) {
                 val c = strings[k] + rnd.nextGaussian() * 0.15
-                partial(note, f * 2.0.pow(c / 1200), shape * share[k], t60 * life[k], holdSec, damp, glide = false,
-                    phase = rnd.nextDouble() * 2 * PI, attackSec = 0.0025 + 0.003 * (1 - velocity))
+                partial(note, f * 2.0.pow(c / 1200), shape * share[k], t60 * life[k], holdSec, damp, pluck = false,
+                    phase = rnd.nextDouble() * 2 * PI, attackSec = 0.004 + 0.004 * (1 - velocity))
             }
             n++
         }
@@ -176,17 +176,19 @@ object SplashJingleSynth {
 
     /**
      * Adds one decaying vibration at [hz] to [bus]: a soft attack, a decay to -60 dB over [t60] seconds, and after
-     * [holdSec] the extra damping of a hand or a damper (time constant [dampTau]). With [glide] the pitch starts a few
-     * cents sharp and settles, as a plucked string does when the stretch of the pluck lets go.
+     * [holdSec] the extra damping of a hand or a damper (time constant [dampTau]). A [pluck] starts a few cents sharp and
+     * settles, as a plucked string does when the stretch of the pluck lets go; [slideCents] (negative: from below) slides
+     * into the note as a finger moving up the fingerboard does.
      */
     private fun partial(bus: DoubleArray, hz: Double, amp: Double, t60: Double, holdSec: Double, dampTau: Double,
-                        glide: Boolean, phase: Double = 0.0, attackSec: Double = 0.004) {
+                        slideCents: Double = 0.0, pluck: Boolean = true, phase: Double = 0.0, attackSec: Double = 0.004) {
         if (abs(amp) < 1e-5) return
         var p = phase
         val decay = 6.9078 / t60
         for (i in bus.indices) {
             val t = i / RATE.toDouble()
-            val f = if (glide) hz * 2.0.pow(16.0 * exp(-t / 0.035) / 1200) else hz
+            val cents = (if (pluck) 16.0 * exp(-t / 0.035) else 0.0) + slideCents * exp(-(t / 0.03).pow(1.6))
+            val f = hz * 2.0.pow(cents / 1200)
             p += 2 * PI * f / RATE
             var env = exp(-decay * t)
             if (t < attackSec) env *= 0.5 - 0.5 * cos(PI * t / attackSec)
@@ -214,11 +216,11 @@ object SplashJingleSynth {
                 if (i >= dr) earlyR[i] += send[i - dr] * gains[k]
             }
         }
-        // Tail: four delay lines mixed through a Hadamard matrix, each losing what a 0.32 s decay needs, and its highs.
+        // Tail: four delay lines mixed through a Hadamard matrix, each losing what a 0.42 s decay needs, and its highs.
         val lengths = doubleArrayOf(29.7, 37.1, 41.1, 43.7).map { frame(it) }
         val lines = lengths.map { DoubleArray(it) }
         val pos = IntArray(4)
-        val g = lengths.map { 10.0.pow(-3.0 * it / RATE / 0.32) }
+        val g = lengths.map { 10.0.pow(-3.0 * it / RATE / 0.42) }
         val low = DoubleArray(4)
         val o = DoubleArray(4)
         for (i in 0 until n) {
@@ -230,8 +232,8 @@ object SplashJingleSynth {
                 lines[k][pos[k]] = send[i] * 0.22 + 0.5 * h[k] * g[k]
                 pos[k] = (pos[k] + 1) % lengths[k]
             }
-            left[i] += earlyL[i] + (o[0] + o[2]) * 0.05
-            right[i] += earlyR[i] + (o[1] + o[3]) * 0.05
+            left[i] += earlyL[i] + (o[0] + o[2]) * 0.075
+            right[i] += earlyR[i] + (o[1] + o[3]) * 0.075
         }
     }
 
