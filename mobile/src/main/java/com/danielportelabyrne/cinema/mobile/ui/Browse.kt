@@ -127,7 +127,7 @@ fun HomeScreen(model: Model) {
 }
 
 /**
- * The landing: the featured titles turning over a full-bleed picture, the brand's hanging columns in the corner, the mark
+ * The landing: the featured titles turning over a full-bleed picture, the mark
  * and name at the top, and the title's words over a dark that falls away like weather.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -171,8 +171,7 @@ private fun Hero(model: Model, rows: List<CatalogueRow>) {
                 }
             }
         }
-        // The brand's corner: hanging columns, with the mark and name over them.
-        HangingColumns(Modifier.align(Alignment.TopEnd).width(260.dp).height(170.dp))
+        // The brand's corner: the mark and name.
         Row(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 18.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             CinemaMark(30.dp)
             Text("Cinema", style = TextStyle(fontFamily = fraunces(500, 28f), fontSize = 24.sp, letterSpacing = (-0.5).sp, shadow = androidx.compose.ui.graphics.Shadow(Color(0xAA000000), blurRadius = 16f)),

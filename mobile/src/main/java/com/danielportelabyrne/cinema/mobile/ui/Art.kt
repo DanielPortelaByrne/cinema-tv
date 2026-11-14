@@ -310,27 +310,6 @@ fun DrawScope.drawMark(topLeft: Offset, side: Float, alpha: Float = 1f) {
 @Composable
 fun CinemaMark(size: Dp, modifier: Modifier = Modifier) = Canvas(modifier.size(size)) { drawMark(Offset.Zero, this.size.minDimension) }
 
-/**
- * The corner of Home that makes it a branded poster: tall rounded columns in the stripe colours hanging from the top edge,
- * their lower ends rising and falling in a slow wave, thinning out toward the left. The TV's LandingBadge.
- */
-@Composable
-fun HangingColumns(modifier: Modifier = Modifier) {
-    val phase by rememberInfiniteTransition(label = "cols").animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(14_000, easing = LinearEasing), RepeatMode.Restart), label = "p")
-    Canvas(modifier) {
-        val w = 14.dp.toPx(); val gap = 6.dp.toPx()
-        val count = ((size.width + gap) / (w + gap)).toInt().coerceAtLeast(1)
-        val x0 = size.width - count * (w + gap) + gap
-        for (i in 0 until count) {
-            val t = i / (count - 1f).coerceAtLeast(1f)
-            val wave = 0.5f + 0.5f * sin(phase + i * 0.62f) * (0.6f + 0.4f * sin(phase * 0.5f + i * 0.21f))
-            val length = size.height * (0.46f + 0.54f * wave) * (0.55f + 0.45f * t)
-            val c = Palette.stripes[(i + (count - 1 - i) / 3) % Palette.stripes.size]
-            drawRoundRect(c.copy(alpha = 0.10f + 0.80f * t * t), Offset(x0 + i * (w + gap), -w), Size(w, length + w), CornerRadius(w / 2))
-        }
-    }
-}
-
 /** A glass pill background: cream at a few percent with a hairline edge. */
 fun Modifier.glass(radius: Dp = 16.dp, fill: Color = Palette.glass): Modifier = this
     .drawBehind {

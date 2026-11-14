@@ -19,8 +19,8 @@
         android:name=".MobileApp"
         android:allowBackup="false"
         android:usesCleartextTraffic="true"
-        android:icon="@drawable/ic_launcher"
-        android:roundIcon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="Cinema"
         android:theme="@style/Theme.CinemaMobile">
 
