@@ -13,7 +13,7 @@ import java.nio.ByteOrder
 
 /**
  * The opening's sound, "the velvet skip": an upright-bass pluck, two quick felt-piano notes, a held breath, then a
- * late bass-and-piano landing (A2 pluck; a G-C# shell slipping down to F#-C; silence; a slide up to D2 under a rolled, low Dm9). Shipped as
+ * late bass-and-piano landing (A2 pluck; C-G bending to C#-G, the blues crushed third; silence; a slide up to D2 under a rolled, low Dm9). Shipped as
  * `res/raw/splash_jingle.wav`, rendered ahead of time by `SplashJingleSynth` (test sources) from physical models of the
  * two instruments. [Timeline] is the one score the sound and [SplashView] share, and the picture reads its clock from
  * the sound as it actually leaves the speaker ([Voice.positionMs]), so the two cannot drift apart.
@@ -22,8 +22,8 @@ object SplashJingle {
     /** Milliseconds from the start of the sound file. Change these and the sound together: re-run `SplashJingleRender`. */
     object Timeline {
         const val BUP = 150               // the bass pluck: the three outer discs land
-        const val DI = 355                // the piano's first chord (G3-C#4): the orange disc lands
-        const val DIT = 447               // the same shape a semitone down (F#3-C4): the saffron disc lands
+        const val DI = 355                // the piano's first chord (C4-G4): the orange disc lands
+        const val DIT = 447               // the C bent up to C# (C#4-G4): the saffron disc lands
         const val DUM = 1040              // the late landing: bass slides to D2, the chord rolls, the stack snaps into register
         const val END = 1640              // the sound file ends (the chord has been let go)
 
