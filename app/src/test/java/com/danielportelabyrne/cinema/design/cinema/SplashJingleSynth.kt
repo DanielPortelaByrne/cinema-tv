@@ -27,8 +27,8 @@ import kotlin.math.sqrt
  *    landing when each note is let go.
  * Then a small, dry room, a little air between the players. Everything is quiet: a -8 dBFS ceiling, about -20 LUFS at its loudest.
  *
- * The score (milliseconds from [Timeline]): the bass plucks A2 on BUP and is stopped short; the piano sighs C4 down to
- * A3 (DI, DIT: a blue minor third, low and warm); then nothing; then, late, the bass slides up into D2 under a low,
+ * The score (milliseconds from [Timeline]): the bass plucks A2 on BUP and rings a moment; the piano comps two shell
+ * voicings over it, G3-C#4 (A7) slipping down a semitone to F#3-C4 (DI, DIT); then nothing; then, late, the bass slides up into D2 under a low,
  * smoky D minor 9 (F3 C4 E4, no root) rolled up from just after it: the A resolving home, in the minor.
  */
 object SplashJingleSynth {
@@ -47,11 +47,14 @@ object SplashJingleSynth {
         val right = DoubleArray(frames)
         val dry = Mix(left, right)
 
-        // Bup: a round, soft A2, plucked mid-string and stopped by the left hand after a short beat.
-        bass(dry, Timeline.BUP.toDouble(), 110.0, velocity = 0.82, holdSec = 0.15, dampTau = 0.042, seed = 11)
-        // Di-dit: a blue sigh in the warm middle of the piano, C4 falling to A3, the second leaned on a little.
-        piano(dry, Timeline.DI.toDouble(), 261.63, velocity = 0.48, holdSec = 0.055, seed = 21)
-        piano(dry, Timeline.DIT.toDouble(), 220.0, velocity = 0.60, holdSec = 0.11, seed = 22)
+        // Bup: a round, soft A2, left to ring under the piano's first chord before the hand stops it.
+        bass(dry, Timeline.BUP.toDouble(), 110.0, velocity = 0.80, holdSec = 0.24, dampTau = 0.05, seed = 11)
+        // Di-dit: two shell voicings, each rolled up by a hair. G3-C#4 (the A7's tritone, over the bass's A), then the same
+        // shape slipped down a semitone, F#3-C4: the smoky chromatic slide that the landing then finishes (F# to F, C held).
+        piano(dry, Timeline.DI.toDouble(), 196.0, velocity = 0.44, holdSec = 0.058, seed = 21)
+        piano(dry, Timeline.DI + 7.0, 277.18, velocity = 0.40, holdSec = 0.052, seed = 26)
+        piano(dry, Timeline.DIT.toDouble(), 185.0, velocity = 0.52, holdSec = 0.115, seed = 22)
+        piano(dry, Timeline.DIT + 6.0, 261.63, velocity = 0.48, holdSec = 0.11, seed = 27)
         // Dum: the bassist slides up into D2 from a semitone under; the chord rolls up from just behind, top note last.
         bass(dry, Timeline.DUM.toDouble(), 73.42, velocity = 0.80, holdSec = 0.42, dampTau = 0.09, seed = 12, slideCents = -100.0)
         piano(dry, Timeline.DUM + 9.0, 174.61, velocity = 0.44, holdSec = 0.41, seed = 23)
