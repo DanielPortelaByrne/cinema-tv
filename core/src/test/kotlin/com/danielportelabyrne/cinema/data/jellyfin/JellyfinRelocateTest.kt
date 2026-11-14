@@ -67,6 +67,14 @@ class JellyfinRelocateTest {
         assertEquals(first, client.server)
     }
 
+    @Test fun tells_a_thrown_away_token_from_a_working_one_without_signing_out() {
+        val client = signedInAt(jellyfin("secret-token"))
+        assertEquals(true, client.tokenWorks("secret-token", "u1"))
+        assertEquals(false, client.tokenWorks("token-jellyfin-forgot", "u1"))   // a person's stale saved copy
+        assertTrue(client.isConnected)                                          // asking never signs the TV out
+        assertEquals(null, signedInAt(gone()).tokenWorks("secret-token", "u1")) // can't tell while unreachable
+    }
+
     @Test fun choosing_another_server_by_hand_starts_its_lists_afresh() {
         val client = signedInAt(gone())
         assertTrue(client.relocate(listOf(FoundServer("steamdeck", jellyfin("secret-token"), "abc"))))

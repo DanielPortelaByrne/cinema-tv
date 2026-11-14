@@ -307,16 +307,21 @@ class MoviesPanel(
     private var topBuilt = false
     private var searchPending: Runnable? = null
 
+    /** Cancelled by [close]: Cinema can be closed and opened again (following the launcher's person) before it runs. */
+    private val prewarm = Runnable {
+        if (shelfPool.isShutdown || worker.isShutdown) return@Runnable
+        shelfPool.execute { Catalog.homePage().take(PREWARM_SHELVES).forEach { catalog.shelf(it) }; titleFacts.all() }
+        if (jellyfin.isConnected) worker.execute { jellyfin.library() }
+    }
+
     init {
         jellyfin.onLibraryChanged = { ui.post { rebadge(generation); refreshPersonal(generation) } }
         jellyfin.startLibraryPolling()
         // A few seconds after the app starts, read Home's first shelves into memory (from disk; the network only
         // when there is no copy yet), so the first open of Movies does not pay for reading and parsing them.
-        ui.postDelayed({
-            shelfPool.execute { Catalog.homePage().take(PREWARM_SHELVES).forEach { catalog.shelf(it) }; titleFacts.all() }
-            if (jellyfin.isConnected) worker.execute { jellyfin.library() }
-        }, PREWARM_DELAY_MS)
+        ui.postDelayed(prewarm, PREWARM_DELAY_MS)
     }
+
 
     private lateinit var storageView: TextView
     private lateinit var heroTitle: TextView
@@ -431,6 +436,7 @@ class MoviesPanel(
     }
     fun close() {
         PlayerActivity.onUpcomingEpisode = null
+        ui.removeCallbacks(prewarm)
         jellyfin.stopLibraryPolling()
         navigationFocusListener?.let { if (top.viewTreeObserver.isAlive) top.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
         cancelDwellStart(); aheadStreams.clear(); preStartPool.shutdownNow()

@@ -542,6 +542,18 @@ class JellyfinClient(private val platform: Platform) {
         if (debugServer == null && server.isNotBlank()) com.danielportelabyrne.cinema.data.settings.ServerMove.follow(platform, first, server)
     }
 
+    /**
+     * Whether [token] still signs [userId] in here: true, false when the server refuses it (Jellyfin forgets a device's
+     * old token when that user signs in on it again), or null when the server could not say (unreachable). Never signs out.
+     */
+    fun tokenWorks(token: String, userId: String): Boolean? = try {
+        val connection = URL("${JellyfinApi.cleanBase(server)}/Users/$userId").openConnection() as HttpURLConnection
+        connection.connectTimeout = 4000
+        connection.readTimeout = 6000
+        connection.setRequestProperty("Authorization", JellyfinApi.authHeader(deviceId, deviceName, token))
+        connection.exchange { when (connection.responseCode) { 200 -> true; 401, 403 -> false; else -> null } }
+    } catch (_: Exception) { null }
+
     /** True when the server at [base] knows this TV's sign-in for [user]. Never signs out, whatever it answers. */
     private fun acceptsSignIn(base: String, user: String): Boolean = try {
         val connection = URL("$base/Users/$user").openConnection() as HttpURLConnection
