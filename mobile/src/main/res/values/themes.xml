@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- AppCompat so the Cast button (a MediaRouteButton) can be drawn; Compose draws everything else. -->
+    <style name="Theme.CinemaMobile" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/espresso</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="colorPrimary">@color/butter</item>
+        <item name="colorAccent">@color/butter</item>
+    </style>
+
+    <style name="Theme.CinemaMobile.Player">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+
+    <color name="espresso">#FF1E1610</color>
+    <color name="butter">#FFDDBB57</color>
+</resources>

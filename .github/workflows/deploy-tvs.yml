@@ -41,11 +41,17 @@ jobs:
             "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
       - name: Build the release APK
         # The run number is the build number: TVs compare it with their own to know a release is newer.
-        run: ./gradlew --no-daemon :app:assembleRelease -Pcinema.versionCode=${{ github.run_number }}
+        run: ./gradlew --no-daemon :app:assembleRelease :mobile:assembleRelease -Pcinema.versionCode=${{ github.run_number }}
       - uses: actions/upload-artifact@v4
         with:
           name: cinema-tv-release-apk
           path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 7
+      # Cinema for phones: its own asset on the same release, so a TV never installs it (and the other way round).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cinema-mobile-release-apk
+          path: mobile/build/outputs/apk/release/mobile-release.apk
           retention-days: 7
 
   # Each build pushed to main becomes a GitHub release (build-<n>), which Cinema finds and offers to install itself.
@@ -60,6 +66,10 @@ jobs:
         with:
           name: cinema-tv-release-apk
           path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: cinema-mobile-release-apk
+          path: artifacts
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,7 +77,8 @@ jobs:
         run: |
           mv artifacts/app-release.apk cinema-tv.apk
           echo "${MESSAGE:-Build ${{ github.run_number }}}" | grep -v '^Co-Authored-By:' > notes.md
-          gh release create "build-${{ github.run_number }}" cinema-tv.apk --repo "${{ github.repository }}" \
+          mv artifacts/mobile-release.apk cinema-mobile.apk
+          gh release create "build-${{ github.run_number }}" cinema-tv.apk cinema-mobile.apk --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" --title "Cinema build ${{ github.run_number }}" --notes-file notes.md --latest
 
   # The Steam Deck's Flatpak, with the same build number, attached to the same release: Cinema for Linux finds it there

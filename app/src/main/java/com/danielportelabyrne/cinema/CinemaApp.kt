@@ -37,6 +37,8 @@ class CinemaApp : Application() {
         Perf.clock = SystemClock::elapsedRealtime
         com.danielportelabyrne.cinema.design.cinema.OpeningState.watchScreen(this)
         watchForBackground()
+        // Phones running Cinema can pair as a remote (see RemoteServer).
+        com.danielportelabyrne.cinema.remote.RemoteServer.start(this)
         Log.sink = Log.Sink { level, tag, message, error ->
             when (level) {
                 'D' -> AndroidLog.d(tag, message, error)
