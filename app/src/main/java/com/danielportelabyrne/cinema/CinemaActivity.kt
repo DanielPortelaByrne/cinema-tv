@@ -182,6 +182,7 @@ class CinemaActivity : AppCompatActivity() {
         Catalog.followed = settings.followedServices
         Catalog.followedChannels = settings.followedChannels
         jellyfin = JellyfinClient(AndroidPlatform(this))
+        jellyfin.followEarlierMove()   // the home server moved before this TV knew to move Seerr and the rest with it
         jellyfin.onReachabilityChanged = { reachable -> runOnUiThread {
             if (!isFinishing && !isDestroyed) CinemaToast.show(
                 this,

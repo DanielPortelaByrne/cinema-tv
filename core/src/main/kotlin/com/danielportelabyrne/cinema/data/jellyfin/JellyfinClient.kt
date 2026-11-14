@@ -28,7 +28,7 @@ data class JellyfinSession(val server: String, val token: String, val userId: St
  * kept, in private storage, never the password.
  * Every call here blocks, so callers run it off the main thread, and none of them throw.
  */
-class JellyfinClient(platform: Platform) {
+class JellyfinClient(private val platform: Platform) {
     private val prefs = platform.preferences("jellyfin")
 
     private val deviceId: String = prefs.getString("deviceId", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("deviceId", it).apply() }
@@ -525,11 +525,21 @@ class JellyfinClient(platform: Platform) {
             prefs.edit().putString(SCOPE_SERVER, prefs.getString(SCOPE_SERVER, null) ?: old).putString("server", base)
                 .apply { if (candidate.id.isNotBlank()) putString(SERVER_ID, candidate.id) }.apply()
             Log.i(TAG, "Jellyfin has moved from $old to $base; following it")
+            com.danielportelabyrne.cinema.data.settings.ServerMove.follow(platform, old, base)
             invalidateLibrary()
             reached()
             return true
         }
         return false
+    }
+
+    /**
+     * Catches up the other services after a move this TV made before it knew to move them too: anything still on the
+     * address the server first had is moved to where it is now. Does nothing once they have caught up.
+     */
+    fun followEarlierMove() {
+        val first = prefs.getString(SCOPE_SERVER, null) ?: return
+        if (debugServer == null && server.isNotBlank()) com.danielportelabyrne.cinema.data.settings.ServerMove.follow(platform, first, server)
     }
 
     /** True when the server at [base] knows this TV's sign-in for [user]. Never signs out, whatever it answers. */
