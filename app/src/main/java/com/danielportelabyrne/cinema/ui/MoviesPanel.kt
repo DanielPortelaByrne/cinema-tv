@@ -5410,20 +5410,31 @@ class MoviesPanel(
         detail.addView(reminder, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = Cinema.px(activity, 96); topMargin = Cinema.px(activity, 44) })
         val hints = Cinema.keyHints(activity, listOf("◀ ▶" to "Browse", "OK" to "Open", "▲" to "Back to details")).apply { alpha = 0f }
         detail.addView(hints, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin = Cinema.px(activity, 96); bottomMargin = Cinema.px(activity, 48) })
-        var down = false
+        // Where focus is: 0 the details (and seasons) above, 1 the "More like this" row, 2 anything below it (the reviews).
+        var place = 0
         detailFocusListener?.let { if (detail.viewTreeObserver.isAlive) detail.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
         detailFocusListener = android.view.ViewTreeObserver.OnGlobalFocusChangeListener { _, focused ->
             if (!detailOpen || focused == null || !isWithin(focused, detail)) return@OnGlobalFocusChangeListener
             val inRow = isWithin(focused, rowScroller)
-            if (inRow == down) return@OnGlobalFocusChangeListener
-            down = inRow
+            // Below the row (the reviews): the page follows the card itself; it is never sent back up.
+            val below = !inRow && run {
+                val f = android.graphics.Rect(0, 0, focused.width, focused.height); scroll.offsetDescendantRectToMyCoords(focused, f)
+                val r = android.graphics.Rect(0, 0, rowScroller.width, rowScroller.height); scroll.offsetDescendantRectToMyCoords(rowScroller, r)
+                f.top >= r.bottom - Cinema.px(activity, 20)
+            }
+            val now = when { inRow -> 1; below -> 2; else -> 0 }
+            if (now == place) return@OnGlobalFocusChangeListener
+            place = now
+            val lowered = now != 0
             // After the card's own glide, so this scroll wins.
             // Up out of the row into a series' episodes leaves the page where they are; anywhere else above goes to the top.
-            val toSeasons = !inRow && seasons != null && isWithin(focused, seasons)
-            if (!toSeasons) scroll.post { scroll.post { scroll.smoothScrollTo(0, if (inRow) (heading.top - Cinema.px(activity, 200)).coerceAtLeast(0) else 0) } }
-            reminder.animate().alpha(if (inRow) 0.55f else 0f).setDuration(220).start()
-            details.animate().alpha(if (inRow) 0f else 1f).setDuration(220).start()   // the faded reminder stands in for them
-            hints.animate().alpha(if (inRow) 1f else 0f).setDuration(220).start()
+            val toSeasons = now == 0 && seasons != null && isWithin(focused, seasons)
+            if (now == 1) scroll.post { scroll.post { scroll.smoothScrollTo(0, (heading.top - Cinema.px(activity, 200)).coerceAtLeast(0)) } }
+            else if (now == 0 && !toSeasons) scroll.post { scroll.post { scroll.smoothScrollTo(0, 0) } }
+            // The reminder of the title is for the row; down in the reviews the page has gone past it and it would sit on a heading.
+            reminder.animate().alpha(if (now == 1) 0.55f else 0f).setDuration(220).start()
+            details.animate().alpha(if (lowered) 0f else 1f).setDuration(220).start()   // the faded reminder stands in for them
+            hints.animate().alpha(if (lowered) 1f else 0f).setDuration(220).start()
         }.also { detail.viewTreeObserver.addOnGlobalFocusChangeListener(it) }
     }
 
