@@ -65,6 +65,22 @@ class AndroidPlatform(context: Context) : Platform {
     } catch (_: java.io.FileNotFoundException) { null }
 
     override fun secretStore(): SecretStore = AndroidSecretStore(preferences("secrets"))
+
+    /**
+     * This TV as [userId] would see it, whoever is in use: their own copy of each personal file (for reading their
+     * favourites on "Who's watching?"). [original] is the person whose data predates accounts.
+     */
+    fun forPerson(userId: String, original: Boolean): Platform {
+        val base = this
+        return object : Platform by base {
+            override fun preferences(name: String): Preferences {
+                val real = com.danielportelabyrne.cinema.data.account.ProfileScope.fileNameFor(name, userId)
+                val dir = File(app.applicationInfo.dataDir, "shared_prefs")
+                if (original && real != name && !File(dir, "$real.xml").exists() && File(dir, "$name.xml").exists()) return AndroidPreferences(app.getSharedPreferences(name, Context.MODE_PRIVATE))
+                return AndroidPreferences(app.getSharedPreferences(real, Context.MODE_PRIVATE))
+            }
+        }
+    }
 }
 
 private class AndroidPreferences(private val prefs: SharedPreferences) : Preferences {

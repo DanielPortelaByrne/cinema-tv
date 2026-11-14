@@ -28,18 +28,16 @@ class CharacterPicker(
     private fun p(v: Number) = Cinema.px(activity, v)
 
     private val sheet = object : FrameLayout(activity) {
-        override fun focusSearch(focused: View?, direction: Int): View? {
-            val found = super.focusSearch(focused, direction)
-            var v: Any? = found
-            while (v is View) { if (v === this) return found; v = v.parent }
-            return focused
-        }
+        // Only this grid's own characters: whatever sits behind it (the people on "Who's watching?", in the same places)
+        // is never a candidate, or Left and Right would find those and go nowhere.
+        override fun focusSearch(focused: View?, direction: Int): View? =
+            android.view.FocusFinder.getInstance().findNextFocus(this, focused, direction) ?: focused
 
         override fun dispatchKeyEvent(event: KeyEvent): Boolean {
             if (event.keyCode == KeyEvent.KEYCODE_BACK) { if (event.action == KeyEvent.ACTION_UP) close(); return true }
             return super.dispatchKeyEvent(event)
         }
-    }.apply { isClickable = true; setBackgroundColor(Cinema.alpha(Cinema.BG, 0.97f)); elevation = Cinema.pxf(activity, 120) }
+    }.apply { isClickable = true; setBackgroundColor(Cinema.BG); elevation = Cinema.pxf(activity, 120) }
 
     val isOpen: Boolean get() = sheet.parent != null
 
@@ -51,9 +49,10 @@ class CharacterPicker(
 
     fun show() {
         val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false; clipToPadding = false }
-        column.addView(Cinema.text(activity, if (name.isBlank()) "Choose your character" else "$name's character", 64, Cinema.CREAM, serif = true))
-        val caption = Cinema.text(activity, " ", 26, Cinema.MUTED)
-        column.addView(caption, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(14) })
+        column.addView(Cinema.text(activity, if (name.isBlank()) "Choose your character" else "$name's character", 64, Cinema.CREAM, serif = true).apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(-1, -2))
+        val caption = Cinema.text(activity, " ", 26, Cinema.MUTED).apply { gravity = Gravity.CENTER }
+        column.addView(caption, LinearLayout.LayoutParams(-1, -2).apply { topMargin = p(14) })
         var first: View? = null
         fun tile(id: String?, label: String, size: Int): View {
             val t = object : View(activity) {
@@ -85,9 +84,11 @@ class CharacterPicker(
             favRows.addView(Cinema.text(activity, "From your favourites", 30, Cinema.CREAM, serif = true), LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(44) })
             found.chunked(7).forEach { line -> favRows.addView(rowOf(line.map { it.first to it.second }, p(140)), LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(20) }) }
         }
+        // Centred on the screen while it fits; it scrolls once there is more than a screen of it.
+        column.gravity = Gravity.CENTER
         val scroller = android.widget.ScrollView(activity).apply {
-            isVerticalScrollBarEnabled = false; isFocusable = false; clipToPadding = false
-            setPadding(0, p(70), 0, p(120)); addView(column, FrameLayout.LayoutParams(-1, -2))
+            isVerticalScrollBarEnabled = false; isFocusable = false; clipToPadding = false; isFillViewport = true
+            setPadding(0, p(60), 0, p(60)); addView(column, FrameLayout.LayoutParams(-1, -1))
         }
         sheet.addView(scroller, FrameLayout.LayoutParams(-1, -1))
         host.addView(sheet, FrameLayout.LayoutParams(-1, -1))

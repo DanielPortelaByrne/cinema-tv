@@ -50,7 +50,8 @@ class CinemaActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_cinema)
         // A restored screen, a Continue watching launch or a debug smoke test goes straight in; otherwise the first Movies open after the app starts plays the opening.
-        quietOpen = savedInstanceState != null || intent?.action == ContinueWatchingContract.actionResume(packageName) ||
+        // Changing person reopens Cinema straight into the page, without the opening playing again.
+        quietOpen = savedInstanceState != null || intent?.hasExtra(EXTRA_ASK) == true || intent?.hasExtra(EXTRA_PERSON) == true || intent?.action == ContinueWatchingContract.actionResume(packageName) ||
             (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && intent?.extras?.keySet()?.any { it.startsWith("debug_") } == true)
         // The phone typing session lives as long as this screen does; every text field in the app shares it.
         PhoneInput.attach(this)
@@ -82,6 +83,9 @@ class CinemaActivity : AppCompatActivity() {
                 accounts.upsert(com.danielportelabyrne.cinema.data.account.CinemaAccount(s.userId, jf.userName(s) ?: "Me"), s.token)
                 accounts.activate(s.userId)
             }
+            // A one-off asked for over adb: start one person as a copy of another (see copyPerson).
+            val copyFrom = intent?.getStringExtra(EXTRA_COPY_FROM); val copyTo = intent?.getStringExtra(EXTRA_COPY_TO)
+            if (copyFrom != null && copyTo != null) { intent?.removeExtra(EXTRA_COPY_FROM); copyPerson(accounts, jf, platform, copyFrom, copyTo) }
             val launcher = com.danielportelabyrne.cinema.data.account.LauncherProfile.current(this)
             val asked = intent?.getStringExtra(EXTRA_PERSON)?.let { id -> accounts.all().firstOrNull { it.userId == id } }
             val matched = launcher?.let { accounts.forLauncher(it) }
@@ -99,6 +103,7 @@ class CinemaActivity : AppCompatActivity() {
                     else -> null
                 }
                 if (direct != null) { launcher?.takeIf { asked == null }?.let { accounts.link(direct.userId, it) }; become(accounts, jf, direct, go); return@runOnUiThread }
+                // Characters only for now: pictures from favourite titles (FavouriteCharacters) are left out of the picker.
                 whoScreen = com.danielportelabyrne.cinema.ui.account.WhoScreen(this, findViewById(R.id.cinemaRoot), accounts, jf, infoSheet, launcher) { person ->
                     // Remembered only when it is plainly the same person; otherwise Cinema asks again next time.
                     launcher?.takeIf { com.danielportelabyrne.cinema.data.account.AccountStore.sameName(it, person) }?.let { accounts.link(person.userId, it) }
@@ -111,7 +116,9 @@ class CinemaActivity : AppCompatActivity() {
     /** Signs Jellyfin in as [person], takes their saved copy from the server, then opens Cinema as them. */
     private fun become(accounts: com.danielportelabyrne.cinema.data.account.AccountStore, jf: JellyfinClient,
                        person: com.danielportelabyrne.cinema.data.account.CinemaAccount, go: () -> Unit) {
-        whoScreen?.busy("Hello, ${person.name}")
+        // No greeting and no blank screen in between: "Who's watching?" stays as it is, ignoring keys, while Cinema is
+        // built underneath, then fades away over it.
+        whoScreen?.hold()
         Thread {
             accounts.activate(person.userId)
             val token = accounts.token(person.userId)
@@ -125,10 +132,34 @@ class CinemaActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 go()
-                whoScreen?.close(); whoScreen = null
+                whoScreen?.fadeOut(); whoScreen = null
                 syncer?.start()
             }
         }.start()
+    }
+
+    /**
+     * Makes [toName] start as a copy of [fromName] (people named as on "Who's watching?"): every personal file on this
+     * TV, and their watched and part-watched state on Jellyfin. The copy reaches the other TV when [toName] is next in
+     * use here (their saved copy is then updated). Blocks.
+     */
+    private fun copyPerson(accounts: com.danielportelabyrne.cinema.data.account.AccountStore, jf: JellyfinClient, platform: AndroidPlatform, fromName: String, toName: String) {
+        val all = accounts.all()
+        val from = all.firstOrNull { it.name.equals(fromName, ignoreCase = true) }
+        val to = all.firstOrNull { it.name.equals(toName, ignoreCase = true) }
+        if (from == null || to == null || from.userId == to.userId) { android.util.Log.w("Accounts", "copy: who? from=${from?.name} to=${to?.name}"); return }
+        val original = accounts.originalUserId
+        val values = com.danielportelabyrne.cinema.data.account.ProfileCopy.copy(
+            { platform.forPerson(from.userId, from.userId == original).preferences(it) },
+            { platform.forPerson(to.userId, to.userId == original).preferences(it) },
+            if (from.userId == original) platform.preferences("cinema_settings") else null, from.userId, to.userId)
+        // Their saved copy on Jellyfin is replaced with this one the next time they are in use.
+        getSharedPreferences("accounts", MODE_PRIVATE).edit().putInt("pushed_${to.userId}", 0).apply()
+        val a = accounts.token(from.userId); val b = accounts.token(to.userId)
+        val items = if (a != null && b != null) jf.copyWatchState(
+            com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession(jf.server, a, from.userId),
+            com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession(jf.server, b, to.userId)) else -1
+        android.util.Log.w("Accounts", "copy: ${from.name} to ${to.name}: $values values, $items watched items")
     }
 
     /** Opens Cinema again from "Who's watching?", to change who is watching. */
@@ -137,6 +168,7 @@ class CinemaActivity : AppCompatActivity() {
         startActivity(android.content.Intent(this, CinemaActivity::class.java).putExtra(EXTRA_ASK, true)
             .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK))
         finish()
+        overridePendingTransition(0, 0)   // no window animation: nothing to flash between
     }
 
     /** Everything else, once the person is settled (their personal files are the ones opened from here on). */
@@ -292,7 +324,7 @@ class CinemaActivity : AppCompatActivity() {
                 val again = android.content.Intent(this, CinemaActivity::class.java)
                     .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 if (match != null) again.putExtra(EXTRA_PERSON, match.userId) else again.putExtra(EXTRA_ASK, true)
-                startActivity(again); finish()
+                startActivity(again); finish(); overridePendingTransition(0, 0)
             }
         }.start()
     }
@@ -302,6 +334,9 @@ class CinemaActivity : AppCompatActivity() {
         const val EXTRA_PERSON = "cinema_person"
         /** Open on "Who's watching?", whatever the launcher says. */
         const val EXTRA_ASK = "cinema_ask_person"
+        /** With [EXTRA_COPY_TO]: start that person as a copy of this one (names as on "Who's watching?"). */
+        const val EXTRA_COPY_FROM = "cinema_copy_person_from"
+        const val EXTRA_COPY_TO = "cinema_copy_person_to"
     }
 
     /**

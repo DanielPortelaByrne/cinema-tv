@@ -37,6 +37,8 @@ class WhoScreen(
     private val jellyfin: JellyfinClient,
     @Suppress("unused") private val infoSheet: InfoSheet,
     private val launcher: LauncherPerson?,
+    /** Finds a person's favourite-title characters off the main thread and hands them back on it (see FavouriteCharacters). */
+    private val favourites: (CinemaAccount, (List<Pair<String, String>>) -> Unit) -> Unit = { _, _ -> },
     private val onChosen: (CinemaAccount) -> Unit
 ) {
     /** What Back does from here: back to the people, or nothing (leave Cinema) when already there. */
@@ -63,6 +65,21 @@ class WhoScreen(
 
     fun close() { closed = true; (root.parent as? ViewGroup)?.removeView(root) }
 
+    /** Keeps the screen as it is but deaf to keys and clicks, while the next thing is made ready underneath. */
+    fun hold() {
+        backTo = null
+        root.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        root.requestFocus()
+        root.setOnKeyListener { _, _, _ -> true }
+        root.isFocusableInTouchMode = true
+    }
+
+    /** Fades away over what is under it, so the change is a dissolve rather than a blink. */
+    fun fadeOut() {
+        closed = true
+        root.animate().alpha(0f).setDuration(260).withEndAction { (root.parent as? ViewGroup)?.removeView(root) }.start()
+    }
+
     /** A short message alone on the screen, while something happens. */
     fun busy(text: String) {
         backTo = null
@@ -88,10 +105,11 @@ class WhoScreen(
         backTo = null
         root.removeAllViews()
         val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false; clipToPadding = false }
-        column.addView(Cinema.text(activity, "Who's watching?", 84, Cinema.CREAM, serif = true, tracking = -0.02f))
+        column.addView(Cinema.text(activity, "Who's watching?", 84, Cinema.CREAM, serif = true, tracking = -0.02f).apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(-1, -2))
         val unmet = launcher?.name?.takeIf { accounts.forLauncher(launcher) == null }
-        if (unmet != null) column.addView(Cinema.text(activity, "Who is $unmet on Cinema? Cinema will remember.", 28, Cinema.MUTED),
-            LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(18) })
+        if (unmet != null) column.addView(Cinema.text(activity, "Who is $unmet on Cinema? Cinema will remember.", 28, Cinema.MUTED).apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = p(18) })
         val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP; clipChildren = false; clipToPadding = false }
         var first: View? = null
         val active = focusUser ?: accounts.active()?.userId
@@ -103,7 +121,7 @@ class WhoScreen(
         val (addBox, add, _) = person(null)
         row.addView(addBox, LinearLayout.LayoutParams(p(300), -2))
         column.addView(row, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(90) })
-        root.addView(column, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        root.addView(column, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
         (first ?: add).let { t -> t.post { t.requestFocus() } }
     }
 
@@ -115,7 +133,8 @@ class WhoScreen(
         val box = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false; clipToPadding = false }
         val letter = a?.initial ?: "+"
         val name = a?.name ?: "Add someone"
-        val label = Cinema.text(activity, name, 30, Cinema.MUTED, weight = 500).apply { maxLines = 1 }
+        val rest = if (a == null) Cinema.DIM else Cinema.MUTED
+        val label = Cinema.text(activity, name, 30, rest, weight = 500).apply { maxLines = 1 }
         val tile = object : View(activity) {
             val paint = Paint(Paint.ANTI_ALIAS_FLAG)
             val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; typeface = Cinema.text(activity, "", 10, serif = true).typeface }
@@ -124,15 +143,13 @@ class WhoScreen(
                 val lit = isFocused
                 if (lit) { val step = Cinema.pxf(activity, 6); for (i in 4 downTo 1) { paint.color = Cinema.STRIPES[i - 1]; c.drawCircle(cx, cy, r + step * i, paint) } }
                 if (a != null) { Avatars.draw(c, a.avatar, cx, cy, r, letter, serif = text.typeface, view = this); return }
-                paint.color = if (lit) Cinema.CREAM else Cinema.alpha(Cinema.CREAM, 0.06f)
-                c.drawCircle(cx, cy, r, paint)
-                text.color = if (lit) Cinema.INK else Cinema.CREAM; text.textSize = r * 0.9f
-                val b = Rect(); text.getTextBounds(letter, 0, letter.length, b)
-                c.drawText(letter, cx, cy + b.height() / 2f, text)
+                // "+", centred on its own ink in the circle.
+                Avatars.letter(c, letter, cx, cy, r, if (lit) Cinema.CREAM else Cinema.alpha(Cinema.CREAM, 0.06f), null,
+                    ink = if (lit) Cinema.INK else Cinema.alpha(Cinema.CREAM, 0.75f), size = 0.8f)
             }
         }.apply {
             isFocusable = true; isClickable = true; contentDescription = name
-            setOnFocusChangeListener { v, f -> v.invalidate(); label.setTextColor(if (f) Cinema.CREAM else Cinema.MUTED)
+            setOnFocusChangeListener { v, f -> v.invalidate(); label.setTextColor(if (f) Cinema.CREAM else rest)
                 v.animate().scaleX(if (f) 1.06f else 1f).scaleY(if (f) 1.06f else 1f).setDuration(160).start() }
             setOnClickListener { if (a != null) onChosen(a) else nameEntry() }
         }
@@ -140,17 +157,18 @@ class WhoScreen(
         box.addView(label, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(14) })
         var pencil: View? = null
         if (a != null) {
-            // The pencil: a small glass circle under the name, cream when focused.
-            val idle = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Cinema.alpha(Cinema.CREAM, 0.08f)); setStroke(p(2), Cinema.alpha(Cinema.CREAM, 0.25f)) }
-            val lit = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Cinema.CREAM) }
-            val icon = Cinema.icon(activity, R.drawable.ic_cin_pencil, Cinema.CREAM)
+            // The pencil: just its outline under the name, dim at rest; focused, saffron and a little larger.
+            val icon = Cinema.icon(activity, R.drawable.ic_cin_pencil, Cinema.alpha(Cinema.CREAM, 0.6f))
             val pen = FrameLayout(activity).apply {
-                isFocusable = true; isClickable = true; background = idle; contentDescription = "Choose ${a.name}'s character"
-                addView(icon, FrameLayout.LayoutParams(p(34), p(34), Gravity.CENTER))
-                setOnFocusChangeListener { _, f -> background = if (f) lit else idle; icon.setColorFilter(if (f) Cinema.INK else Cinema.CREAM) }
+                isFocusable = true; isClickable = true; contentDescription = "Choose ${a.name}'s character"
+                addView(icon, FrameLayout.LayoutParams(p(28), p(28), Gravity.CENTER))
+                setOnFocusChangeListener { v, f ->
+                    icon.setColorFilter(if (f) Cinema.SAFFRON else Cinema.alpha(Cinema.CREAM, 0.6f))
+                    v.animate().scaleX(if (f) 1.3f else 1f).scaleY(if (f) 1.3f else 1f).setDuration(140).start()
+                }
                 setOnClickListener { chooseCharacter(a) }
             }
-            box.addView(pen, LinearLayout.LayoutParams(p(72), p(72)).apply { topMargin = p(16) })
+            box.addView(pen, LinearLayout.LayoutParams(p(52), p(52)).apply { topMargin = p(12) })
             pencil = pen
         }
         return Triple(box, tile, pencil)
@@ -158,7 +176,7 @@ class WhoScreen(
 
     /** The character picker for [a]; their pick is kept with them (and with their own things, so their other TVs show it). */
     private fun chooseCharacter(a: CinemaAccount) {
-        picker = CharacterPicker(activity, root, a.name, a.avatar, onPick = { id ->
+        picker = CharacterPicker(activity, root, a.name, a.avatar, favourites = { give -> favourites(a, give) }, onPick = { id ->
             accounts.setAvatar(a.userId, id)
             activity.getSharedPreferences(ProfileScope.fileNameFor("cinema_personal", a.userId), android.content.Context.MODE_PRIVATE)
                 .edit().putString("avatar", id ?: "").apply()

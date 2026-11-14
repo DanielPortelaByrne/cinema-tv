@@ -483,14 +483,14 @@ class MoviesPanel(
         if (streamLoading != null) { closeStreamLoading(); return true }
         seasonMenuClose?.let { it(); return true }
         if (detailOpen) { closeDetail(restoreFocus = true); return true }
-        if (top.hasFocus()) { focusContent(); return true }
-        // Partway along a row (it has scrolled): Back opens the rail at this page's item, instead of the long way back with
-        // Left. Back again returns to the same card (focusContent).
-        activity.currentFocus?.takeIf { isWithin(it, page) && scrolledRowOf(it) }?.let {
+        // Anywhere on a page: Back opens the rail first, at this page's item.
+        if (!top.hasFocus()) activity.currentFocus?.takeIf { isWithin(it, page) }?.let {
             tabs.entries.firstOrNull { e -> e.value === railOf(current) }?.key?.takeIf { t -> t.isShown }?.let { tab -> tab.requestFocus(); return true }
         }
+        // From the rail: back to the page before, then Home; from Home's rail, Back leaves Cinema.
         if (trail.isNotEmpty()) { current = trail.removeLast(); styleTabs(); build(); return true }
         if (current != Dest.Home) { current = Dest.Home; styleTabs(); build(); return true }
+        if (top.hasFocus()) return false
         // Home, somewhere down the page: back to its featured title first, so one Back too many never leaves Cinema.
         val first = if (heroSet && ::heroButtons.isInitialized) heroButtons.getChildAt(0) else null
         if (first != null && first.isShown && !first.hasFocus()) { pageGlideTo(0); first.requestFocus(); return true }
@@ -518,43 +518,11 @@ class MoviesPanel(
         }.apply {
             isFocusable = true; isClickable = true; contentDescription = "$name. Change who is watching"
             setOnFocusChangeListener { v, f -> v.invalidate() }
-            setOnClickListener {
-                infoSheet.show("YOU", name, null, listOf("Pick a character to be on Cinema, or change who is watching."), null, listOf(
-                    SheetAction("Choose your character", "Popcorn, a ghost, a robot…", primary = true) { openCharacterPicker() },
-                    SheetAction("Switch person", "Back to Who's watching?") { onSwitchPerson() }))
-            }
+            // To "Who's watching?": change person there, or their character with the pencil under their name.
+            setOnClickListener { onSwitchPerson() }
         }
         profileCorner = corner
         return corner
-    }
-
-    /**
-     * Every character in a grid over the page; OK picks one (or "Your initial" for none) and it shows in the corner at
-     * once. Back closes it. Focus never leaves the grid while it is open.
-     */
-    private fun openCharacterPicker() {
-        seasonMenuClose?.invoke()
-        val name = personName() ?: return
-        val Avatars = com.danielportelabyrne.cinema.ui.account.Avatars
-        var picker: com.danielportelabyrne.cinema.ui.account.CharacterPicker? = null
-        picker = com.danielportelabyrne.cinema.ui.account.CharacterPicker(activity, overlay as ViewGroup, name, personAvatar(),
-            favourites = { give ->
-                // The main characters of the films and series starred here, as their actors' photos.
-                val favs = favSnapshot.filter { it.tmdbId?.toLongOrNull() != null }.take(5)
-                if (favs.isNotEmpty() && seerr.isSignedIn) worker.execute {
-                    val found = favs.flatMap { f -> runCatching { seerr.cast(f.kind, f.tmdbId!!.toLong()) }.getOrNull().orEmpty().take(4).map { it to f.name } }
-                        .distinctBy { it.first.profilePath }.take(14).map { (m, title) -> Avatars.castId(m.profilePath, m.character) to "${m.character} · $title" }
-                    activity.runOnUiThread { give(found) }
-                }
-            },
-            onPick = { id ->
-                onAvatar(id)
-                CinemaToast.show(activity, when { id == null -> "Back to your initial"; Avatars.isCast(id) -> "You're ${Avatars.castName(id)} now"
-                    else -> "You're the ${Avatars.byId(id)?.name?.lowercase() ?: "character"} now" })
-            },
-            onClose = { seasonMenuClose = null; profileCorner?.let { it.invalidate(); it.requestFocus() } })
-        seasonMenuClose = { picker?.close() }
-        picker.show()
     }
 
     /** Popular or trending, for the whole-category grids; kept while Cinema runs. */
@@ -5002,7 +4970,7 @@ class MoviesPanel(
             setPadding(if (home) Cinema.px(activity, HOME_HERO_START) else pageStart, Cinema.px(activity, if (home) 160 else 140), pageEnd, 0)
         }
         heroEyebrow = FrameLayout(activity)
-        heroTitle = Cinema.title(activity, "", if (home) 116 else 128)
+        heroTitle = Cinema.title(activity, "", if (home) 116 else 128, maxLines = 3)
         heroMeta = FrameLayout(activity)
         heroBody = Cinema.synopsis(activity, "", if (home) 24 else 26, maxLines = 3)
         heroProvider = FrameLayout(activity)
@@ -5131,8 +5099,8 @@ class MoviesPanel(
         val t = e.title
         heroEyebrow.removeAllViews()
         heroEyebrow.addView(Cinema.eyebrow(activity, listOfNotNull("Featured", heroLabels.getOrNull(index))))
-        heroTitle.text = t.name
-        Cinema.style(heroTitle, heroTitleSize(t.name) * (if (heroCompact) 0.9 else 1.0), Cinema.CREAM, serif = true, tracking = -0.02f)
+        Cinema.style(heroTitle, heroTitleSize(titleParts(t.name).first) * (if (heroCompact) 0.9 else 1.0), Cinema.CREAM, serif = true, tracking = -0.02f)
+        heroTitle.text = splitTitle(t.name)
         heroMeta.removeAllViews(); heroMeta.addView(if (heroCompact) meta(t, 21) else meta(t))
         heroBody.text = t.overview.orEmpty(); heroBody.visibility = if (t.overview.isNullOrBlank()) View.GONE else View.VISIBLE
         heroProvider.removeAllViews(); Cinema.provider(activity, t.services)?.let { heroProvider.addView(it) }
@@ -5176,6 +5144,25 @@ class MoviesPanel(
     /** Long names step down from the mockup's 128px so they still fit on two lines. */
     private fun heroTitleSize(name: String) = when { name.length > 30 -> 76; name.length > 18 -> 96; else -> 128 }
 
+    /** A title and its subtitle, split at the first ": " or " - " ("The Hunger Games" and "Mockingjay – Part 1"). */
+    private fun titleParts(name: String): Pair<String, String?> {
+        val at = Regex(""":\s+|\s+[-–—]\s+""").find(name)?.takeIf { it.range.first in 3 until name.length - 3 } ?: return name to null
+        return name.substring(0, at.range.first).trim() to name.substring(at.range.last + 1).trim().replace(" - ", " – ")
+    }
+
+    /**
+     * The title as a heading: a subtitle goes on a line of its own, smaller, so a long name never runs across the
+     * picture ("The Hunger Games:" then "Mockingjay – Part 1").
+     */
+    private fun splitTitle(name: String): CharSequence {
+        val (main, sub) = titleParts(name)
+        if (sub == null) return name
+        val head = if (name.contains(':')) "$main:" else main
+        return android.text.SpannableString("$head\n$sub").apply {
+            setSpan(android.text.style.RelativeSizeSpan(0.56f), head.length + 1, length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+    }
+
     /** The meta line for a title: certificate, year, running time, genres, IMDb score; only what is known. */
     private fun meta(t: Title, sizePx: Int = 23): View = Cinema.meta(activity, t.age?.substringAfter("GB-"),
         listOfNotNull(t.year?.toString(), t.runtimeMin?.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "$it min" }, t.genres.take(3).joinToString(" · ").ifBlank { null }),
@@ -5207,9 +5194,16 @@ class MoviesPanel(
 
         // Ground, then the backdrop on the right faded in from the left (`10/12-detail`), then the page's two fades.
         detail.setBackgroundColor(Cinema.BG)
-        val backdrop = HeroBackdrop(activity, focusX = 1f, fadeTo = 0.38f)
-        detail.addView(backdrop, FrameLayout.LayoutParams(Cinema.px(activity, if (e.library != null) 1060 else 1230), -1, Gravity.END))
-        detail.addView(View(activity).apply { background = Scrim.detail() }, FrameLayout.LayoutParams(-1, -1))
+        // A series opens like Home's featured title: its picture across the whole screen under a lighter fade, the
+        // words shadowed instead, and the picture dimming as the page scrolls down to the seasons. A film keeps its page.
+        val airy = t.kind == Kind.SHOW
+        val backdrop = HeroBackdrop(activity, focusX = if (airy) 0.6f else 1f, fadeTo = 0.38f)
+        detail.addView(backdrop, if (airy) FrameLayout.LayoutParams(-1, -1)
+            else FrameLayout.LayoutParams(Cinema.px(activity, if (e.library != null) 1060 else 1230), -1, Gravity.END))
+        detail.addView(View(activity).apply { background = if (airy) Scrim(listOf(0f to 0.86f, 0.32f to 0.6f, 0.6f to 0.12f, 1f to 0f),
+            listOf(0f to 0.3f, 0.18f to 0f, 0.62f to 0f, 1f to 0.9f)) else Scrim.detail() }, FrameLayout.LayoutParams(-1, -1))
+        val dimmer = View(activity).apply { setBackgroundColor(Cinema.BG); alpha = 0f }
+        if (airy) detail.addView(dimmer, FrameLayout.LayoutParams(-1, -1))
         // From memory this arrives before the page is on screen, and shows at once; otherwise it fades in when ready.
         backdropFor(e)?.let { u -> images.loadBackdrop(u, maxWidth = HERO_BACKDROP_PX) { b -> backdrop.show(b) } }
 
@@ -5218,11 +5212,18 @@ class MoviesPanel(
         val topRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
         val text = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         text.addView(Cinema.eyebrow(activity, listOfNotNull(if (t.kind == Kind.SHOW) "Series" else "Film", if (e.library != null) "In your library" else null)))
-        text.addView(Cinema.title(activity, t.name, when { t.name.length > 30 -> 68; t.name.length > 18 -> 84; else -> 104 }), LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 20) })
-        text.addView(meta(t), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 24) })
+        val mainName = titleParts(t.name).first
+        val heading = Cinema.title(activity, t.name, if (airy) when { mainName.length > 22 -> 64; mainName.length > 14 -> 80; else -> 96 }
+            else when { t.name.length > 30 -> 68; t.name.length > 18 -> 84; else -> 104 }, maxLines = 3).apply { setText(splitTitle(t.name)) }
+        text.addView(heading, LinearLayout.LayoutParams(if (airy) Cinema.px(activity, 1000) else -1, -2).apply { topMargin = Cinema.px(activity, 20) })
+        text.addView(if (airy) meta(t, 21) else meta(t), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 24) })
         Cinema.provider(activity, t.services)?.let { text.addView(it, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 22) }) }
-        text.addView(Cinema.synopsis(activity, t.overview ?: e.library?.overview ?: "No description yet.", 26, maxLines = if (t.kind == Kind.SHOW) 5 else 3),
-            LinearLayout.LayoutParams(Cinema.px(activity, 1040), -2).apply { topMargin = Cinema.px(activity, if (t.kind == Kind.SHOW) 30 else 22) })
+        val about = Cinema.synopsis(activity, t.overview ?: e.library?.overview ?: "No description yet.", if (airy) 23 else 26, maxLines = if (airy) 4 else 3)
+        text.addView(about, LinearLayout.LayoutParams(Cinema.px(activity, if (airy) 760 else 1040), -2).apply { topMargin = Cinema.px(activity, if (airy) 26 else 22) })
+        if (airy) {
+            heading.setShadowLayer(Cinema.pxf(activity, 22), 0f, Cinema.pxf(activity, 3), 0xAA000000.toInt())
+            about.setShadowLayer(Cinema.pxf(activity, 12), 0f, Cinema.pxf(activity, 2), 0xAA000000.toInt())
+        }
 
         // No Back button: the remote's Back closes the page. Watch now / Delete for what is on disk, Queue download /
         // Stream now for the rest.
@@ -5308,9 +5309,12 @@ class MoviesPanel(
         text.addView(buttons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
         topRow.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
 
-        val posterBox = StripePoster(activity)
-        t.posterUrl?.let { u -> images.load(u, e.posterHeaders) { b -> posterBox.image.setImageBitmap(b) } }
-        topRow.addView(posterBox, LinearLayout.LayoutParams(Cinema.px(activity, 300), Cinema.px(activity, 450)).apply { marginStart = Cinema.px(activity, 48); topMargin = -Cinema.px(activity, 12) })
+        // A film's poster beside its details; a series lets its picture fill the screen instead.
+        if (!airy) {
+            val posterBox = StripePoster(activity)
+            t.posterUrl?.let { u -> images.load(u, e.posterHeaders) { b -> posterBox.image.setImageBitmap(b) } }
+            topRow.addView(posterBox, LinearLayout.LayoutParams(Cinema.px(activity, 300), Cinema.px(activity, 450)).apply { marginStart = Cinema.px(activity, 48); topMargin = -Cinema.px(activity, 12) })
+        }
         column.addView(topRow, LinearLayout.LayoutParams(-1, -2))
 
         // A series opens on its details alone, a whole screen with room to breathe; its seasons and episodes wait below,
@@ -5352,6 +5356,8 @@ class MoviesPanel(
         // Else focus parks here, stuck.
         val scroll = android.widget.ScrollView(activity).apply { isFocusable = false; isVerticalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; addView(column, FrameLayout.LayoutParams(-1, -2)) }
         detail.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        // The picture dims as the page goes down to the seasons, so the episodes never sit on a bright picture.
+        if (airy) scroll.setOnScrollChangeListener { _, _, y, _, _ -> dimmer.alpha = (y / (detail.height * 0.6f).coerceAtLeast(1f)).coerceIn(0f, 0.92f) }
         // The title's own buttons sit at the top of the page: focusing one scrolls all the way up, so the title and
         // eyebrow come back, instead of stopping at the point where the button just becomes visible.
         (0 until buttons.childCount).forEach { i -> buttons.getChildAt(i).setOnFocusChangeListener { _, f -> if (f) scroll.post { scroll.smoothScrollTo(0, 0) } } }
@@ -5417,10 +5423,9 @@ class MoviesPanel(
     private fun openSeasonMenu(anchor: View, seasons: List<SeasonState>, shown: () -> SeasonState, pick: (SeasonState) -> Unit) {
         seasonMenuClose?.invoke()
         val menu = object : FrameLayout(activity) {
-            override fun focusSearch(focused: View?, direction: Int): View? {
-                val found = super.focusSearch(focused, direction)
-                return if (found != null && isWithin(found, this)) found else focused
-            }
+            // Only the list's own seasons: the page behind it is never a candidate.
+            override fun focusSearch(focused: View?, direction: Int): View? =
+                android.view.FocusFinder.getInstance().findNextFocus(this, focused, direction) ?: focused
         }.apply { isClickable = true; setBackgroundColor(Cinema.alpha(Cinema.BG, 0.55f)); elevation = Cinema.pxf(activity, 40) }
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(0, Cinema.px(activity, 12), 0, Cinema.px(activity, 12)) }
         val panel = android.widget.ScrollView(activity).apply {

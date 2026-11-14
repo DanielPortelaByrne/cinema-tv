@@ -226,6 +226,10 @@ class SeerrClient(platform: Platform) {
     /** The main characters of a title and who plays them, with a photo (TMDB's cast list). Blocks; empty when unknown. */
     fun cast(kind: Kind, tmdbId: Long): List<CastMember> = if (!isSignedIn) emptyList() else title(kind, tmdbId)?.let { CastMember.parse(it) }.orEmpty()
 
+    /** Whether the title is an animation, and its cast: for an animation the cast are voices, not faces to show. */
+    fun castOf(kind: Kind, tmdbId: Long): Pair<Boolean, List<CastMember>> =
+        if (!isSignedIn) false to emptyList() else title(kind, tmdbId)?.let { CastMember.animated(it) to CastMember.parse(it) } ?: (false to emptyList())
+
     /** A title's genres and services (see SeerrApi.facts). Blocks; null when not signed in or not found. */
     fun titleFacts(kind: Kind, tmdbId: Long): TitleFacts? =
         if (!isSignedIn) null else title(kind, tmdbId)?.let { SeerrApi.facts(it, kind, tmdbId, Catalog.country, System.currentTimeMillis()) }

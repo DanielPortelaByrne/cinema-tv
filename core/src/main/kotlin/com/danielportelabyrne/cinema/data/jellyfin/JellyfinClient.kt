@@ -176,6 +176,47 @@ class JellyfinClient(platform: Platform) {
         return (authenticate(name, "") ?: return null to "The user was made, but signing in as them failed") to null
     }
 
+    /**
+     * Gives [to] the same watched and part-watched state as [from], item by item (films and episodes): what [from] has
+     * watched is marked watched for [to], and where [from] stopped part-way is where [to] stops. Blocks; returns how
+     * many items were set.
+     */
+    fun copyWatchState(from: JellyfinSession, to: JellyfinSession): Int {
+        val base = JellyfinApi.cleanBase(from.server)
+        fun call(method: String, url: String, token: String, json: String? = null): Pair<Int, String?> = try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            c.requestMethod = method; c.connectTimeout = 8000; c.readTimeout = 30000
+            c.setRequestProperty("Authorization", JellyfinApi.authHeader(deviceId, deviceName, token))
+            c.setRequestProperty("Accept", "application/json")
+            if (json != null) { c.doOutput = true; c.setRequestProperty("Content-Type", "application/json") }
+            c.exchange {
+                if (json != null) c.outputStream.use { it.write(json.toByteArray()) }
+                val code = c.responseCode
+                code to (if (code in 200..299) c.inputStream.bufferedReader().use { it.readText() } else null)
+            }
+        } catch (_: Exception) { -1 to null }
+        val seen = LinkedHashMap<String, JSONObject>()
+        listOf("IsPlayed", "IsResumable").forEach { filter ->
+            val (_, body) = call("GET", "$base/Items?userId=${java.net.URLEncoder.encode(from.userId, "UTF-8")}&Recursive=true" +
+                "&IncludeItemTypes=Movie,Episode&Filters=$filter&Fields=UserData&Limit=10000", from.token)
+            val items = body?.let { runCatching { JSONObject(it).optJSONArray("Items") }.getOrNull() } ?: return@forEach
+            for (i in 0 until items.length()) items.optJSONObject(i)?.let { o -> o.optString("Id").takeIf { it.isNotBlank() }?.let { seen[it] = o } }
+        }
+        var done = 0
+        val uid = java.net.URLEncoder.encode(to.userId, "UTF-8")
+        seen.forEach { (id, o) ->
+            val data = o.optJSONObject("UserData") ?: return@forEach
+            val body = JSONObject().put("Played", data.optBoolean("Played")).put("PlaybackPositionTicks", data.optLong("PlaybackPositionTicks"))
+            data.optString("LastPlayedDate").takeIf { it.isNotBlank() }?.let { body.put("LastPlayedDate", it) }
+            // Jellyfin 10.9 and later, then the older address.
+            val (code, _) = call("POST", "$base/UserItems/$id/UserData?userId=$uid", to.token, body.toString())
+            val ok = code in 200..299 || call("POST", "$base/Users/$uid/Items/$id/UserData", to.token, body.toString()).first in 200..299
+            if (ok) done++
+        }
+        Log.i(TAG, "copied watch state: $done of ${seen.size} items")
+        return done
+    }
+
     private val profilePrefsUrl: String? get() = userId?.let { "${JellyfinApi.cleanBase(server)}/DisplayPreferences/cinema-profile?userId=${java.net.URLEncoder.encode(it, "UTF-8")}&client=cinema" }
 
     /** The signed-in person's saved Cinema data on the server (Jellyfin's per-user display preferences), or null. */
