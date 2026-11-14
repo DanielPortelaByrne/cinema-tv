@@ -6,11 +6,9 @@ import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.Shader
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.graphics.PathParser
@@ -31,7 +29,8 @@ import kotlin.math.pow
  * one on the second, landing a little high and sliding back down to rest. Then the stack hangs there, off register and slowly slipping, through
  * the silence, until on the late landing it snaps into register: the discs become the flat Cinema mark, the play
  * triangle prints with the chord's top note, and the coloured rings burst outwards one after another (the outer ring
- * first) and step back in (the inner ring first), on black; then the wordmark slides out from behind.
+ * first) and step back in (the inner ring first), on black; then a shadow winds half way round the rings' edges, a
+ * half spiral, and rolls off, as the wordmark slides out from behind.
  *
  * Every frame is a pure function of one clock, read from the sound as it leaves the speaker ([SplashJingle.Voice],
  * [IdentClock]), so the picture and the notes cannot drift apart. Any key skips it. The mark and wordmark are the app's
@@ -47,16 +46,11 @@ class SplashView(context: Context) : View(context) {
 
     private val disc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0xFF000000.toInt() }
-    private val sweep = Paint(Paint.ANTI_ALIAS_FLAG)
     private val triangle = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF1B0D06.toInt(); style = Paint.Style.FILL }
     private val trianglePath: Path = PathParser.createPathFromPathData("M25.2,24.2v7.6a1,1 0 0,0 1.5,0.86l6.3,-3.8a1,1 0 0,0 0,-1.72l-6.3,-3.8a1,1 0 0,0 -1.5,0.86z")
-    private val clip = Path()
     private val bounds = RectF()
 
     private val dimmer = ArgbEvaluator()
-    private val bandWidth = 26f
-    // Built once and moved with the canvas, so drawing a frame allocates nothing.
-    private val sweepShader = LinearGradient(0f, 0f, bandWidth, 0f, intArrayOf(0x00FFF3D0, 0x66FFF3D0, 0x00FFF3D0), null, Shader.TileMode.CLAMP)
     private var wordmark: android.widget.TextView? = null
     private var markPx = 0f
     private var gapPx = 0f
@@ -256,6 +250,17 @@ class SplashView(context: Context) : View(context) {
                 val off = 0.45f + 2.6f * height
                 shade.alpha = (alpha * (0.30f - 0.16f * height) * (1f - snap) * 255).toInt()
                 canvas.drawCircle(x + off * 0.55f, y + off * 0.85f, r, shade)
+                // The finish: a shadow gathers on this ring's edge and turns half way round it, a beat behind the ring
+                // outside it (so together they wind in as a half spiral), then rolls off.
+                val roll = progress(Timeline.ROLL + ROLL_STEP * (i - 1), ROLL_MS)
+                if (roll in 0.001f..0.999f) {
+                    val turn = Motion.SETTLE.getInterpolation(roll)
+                    val presence = smooth(min(1f, roll / 0.25f)) * (1f - smooth(((roll - 0.6f) / 0.4f).coerceIn(0f, 1f)))
+                    val angle = (ROLL_FROM + 180f * turn) * (PI.toFloat() / 180f)
+                    val reach = ROLL_REACH * presence
+                    shade.alpha = (ROLL_DEPTH * presence * 255).toInt()
+                    canvas.drawCircle(x + reach * cos(angle), y + reach * kotlin.math.sin(angle), r, shade)
+                }
             }
             disc.color = colors[i]
             disc.alpha = (alpha * 255).toInt()
@@ -271,18 +276,6 @@ class SplashView(context: Context) : View(context) {
             canvas.translate(-28f, -28f)
             canvas.scale(s, s, 29.6f, 28f)
             canvas.drawPath(trianglePath, triangle)
-            canvas.restore()
-        }
-        // A band of light crosses the finished mark once, clipped to its outer ring.
-        val sp = progress(Timeline.SHEEN, 560)
-        if (sp in 0.001f..0.999f) {
-            clip.reset(); clip.addCircle(0f, 0f, 27f, Path.Direction.CW)
-            canvas.save()
-            canvas.clipPath(clip)
-            canvas.rotate(-18f)
-            canvas.translate(-28f - bandWidth + (56f + bandWidth * 2) * sp, -28f)
-            sweep.shader = sweepShader
-            canvas.drawRect(0f, -20f, bandWidth, 76f, sweep)
             canvas.restore()
         }
         canvas.restore()
@@ -320,6 +313,16 @@ class SplashView(context: Context) : View(context) {
         private const val BURST_STEP_IN = 45
         private const val BURST_IN_MS = 420
         private val BURST_OUT = android.view.animation.PathInterpolator(0.1f, 0.7f, 0.25f, 1f)   // bursts, then eases to a stop
+        /**
+         * The finishing shadow: each ring's starts [ROLL_STEP] after the one outside it and takes [ROLL_MS] to turn half
+         * way round, from [ROLL_FROM] degrees (down and to the right, away from a light at the top left), reaching
+         * [ROLL_REACH] mark units off the ring at [ROLL_DEPTH] strength before it rolls off.
+         */
+        private const val ROLL_STEP = 45
+        private const val ROLL_MS = 420
+        private const val ROLL_FROM = 55f
+        private const val ROLL_REACH = 1.2f
+        private const val ROLL_DEPTH = 0.36f
         /** The narrowest a band may get, in mark units. */
         private const val MIN_BAND = 1.4f
 

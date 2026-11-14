@@ -32,7 +32,7 @@ object SplashJingle {
         const val SNAP = 110              // the stack slides into register over this, arriving exactly on DUM
         const val TRIANGLE = DUM + 34     // the play triangle prints with the chord's top note
         const val BURST_HOME = DUM + 900  // the rings' burst (out, then back in) is over by here
-        const val SHEEN = DUM + 860       // a band of light crosses the finished mark
+        const val ROLL = DUM + 860        // a shadow winds half way round the rings' edges and rolls off
         const val LOCKUP = DUM + 820      // the mark slides left and the wordmark comes out from behind it
         const val LOCKUP_LENGTH = 620
         const val FADE_START = DUM + 1800 // the picture holds, then fades over the finished page
