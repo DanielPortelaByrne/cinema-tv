@@ -74,6 +74,24 @@ class WhoScreen(
         root.isFocusableInTouchMode = true
     }
 
+    /** Listens to keys again after [hold]. */
+    private fun unhold() {
+        root.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        root.setOnKeyListener(null)
+    }
+
+    /**
+     * [person]'s saved sign-in no longer works (Jellyfin forgets it when they are signed in again on this TV): Quick
+     * Connect, approved as them, signs them back in and carries on as them.
+     */
+    fun reconnect(person: CinemaAccount) {
+        closed = false
+        root.alpha = 1f
+        if (root.parent == null) host.addView(root, FrameLayout.LayoutParams(-1, -1))
+        unhold()
+        quickConnect(person)
+    }
+
     /** Fades away over what is under it, so the change is a dissolve rather than a blink. */
     fun fadeOut() {
         closed = true
@@ -229,7 +247,7 @@ class WhoScreen(
 
     // --- Someone already on Jellyfin: Quick Connect ---------------------------------------------------------
 
-    private fun quickConnect() {
+    private fun quickConnect(forPerson: CinemaAccount? = null) {
         busy("Asking Jellyfin for a code…")
         Thread {
             var why: String? = null
@@ -240,9 +258,10 @@ class WhoScreen(
                 root.removeAllViews()
                 backTo = { people() }
                 val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-                column.addView(Cinema.text(activity, "Approve with this code", 56, Cinema.CREAM, serif = true))
+                column.addView(Cinema.text(activity, forPerson?.let { "Sign in as ${it.name} again" } ?: "Approve with this code", 56, Cinema.CREAM, serif = true))
                 column.addView(Cinema.text(activity, ticket.code, 140, Cinema.SAFFRON, weight = 600, tracking = 0.2f), LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(30) })
-                column.addView(Cinema.text(activity, "Signed in to Jellyfin as them on a phone or computer: Settings, Quick Connect, enter the code.", 26, Cinema.MUTED),
+                column.addView(Cinema.text(activity, (if (forPerson != null) "${forPerson.name}'s sign-in on this TV has run out. " else "") +
+                    "Signed in to Jellyfin as ${forPerson?.name ?: "them"} on a phone or computer: Settings, Quick Connect, enter the code.", 26, Cinema.MUTED),
                     LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(30) })
                 val cancel = CinemaButton(activity, CinemaButton.Kind.GLASS, "Cancel")
                 cancel.setOnClickListener { people() }
@@ -255,7 +274,15 @@ class WhoScreen(
                         if (jellyfin.isApproved(ticket)) {
                             val session = jellyfin.quickConnectSession(ticket)
                             val name = session?.let { jellyfin.userName(it) }
-                            activity.runOnUiThread { if (!closed) { if (session == null) problem("Couldn't sign them in", "Try Quick Connect again.") else added(session, name ?: "Someone") } }
+                            activity.runOnUiThread {
+                                if (closed) return@runOnUiThread
+                                when {
+                                    session == null -> problem("Couldn't sign them in", "Try Quick Connect again.")
+                                    forPerson != null && session.userId != forPerson.userId ->
+                                        problem("That was ${name ?: "someone else"}", "Approve the code while signed in to Jellyfin as ${forPerson.name}.")
+                                    else -> added(session, name ?: "Someone")
+                                }
+                            }
                             return@Thread
                         }
                         Thread.sleep(2500)
@@ -266,7 +293,9 @@ class WhoScreen(
     }
 
     private fun added(session: JellyfinSession, name: String) {
-        accounts.upsert(CinemaAccount(session.userId, name), session.token)
+        // Someone already on Cinema signing in again keeps their name and character; only their sign-in is new.
+        val known = accounts.all().firstOrNull { it.userId == session.userId }
+        accounts.upsert(known ?: CinemaAccount(session.userId, name), session.token)
         accounts.all().firstOrNull { it.userId == session.userId }?.let(onChosen)
     }
 }

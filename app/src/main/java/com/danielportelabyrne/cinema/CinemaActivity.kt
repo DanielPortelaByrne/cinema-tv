@@ -153,14 +153,22 @@ class CinemaActivity : AppCompatActivity() {
         // built underneath, then fades away over it.
         whoScreen?.hold()
         Thread {
-            accounts.activate(person.userId)
             val token = accounts.token(person.userId)
-            if (token != null && jf.currentUserId != person.userId) {
-                // A token Jellyfin has thrown away would be refused on the first request, and a refused token signs the
-                // whole TV out ("Restore from my phone"). Keep the TV's working sign-in instead.
-                if (jf.tokenWorks(token, person.userId) == false) android.util.Log.w("Accounts", "${person.name}'s saved sign-in has expired; keeping the TV's")
-                else jf.restoreSession(com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession(jf.server, token, person.userId))
+            // Jellyfin throws a saved sign-in away when that person is signed in again on this TV. Switching to it would be
+            // refused on the first request (and a refused token signs the whole TV out), so ask them to sign in again.
+            if (token != null && jf.currentUserId != person.userId && jf.tokenWorks(token, person.userId) == false) {
+                android.util.Log.w("Accounts", "${person.name}'s saved sign-in has expired; asking them to sign in again")
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    val who = whoScreen ?: com.danielportelabyrne.cinema.ui.account.WhoScreen(this, findViewById(R.id.cinemaRoot), accounts, jf, infoSheet, null) { p ->
+                        become(accounts, jf, p, go)
+                    }.also { whoScreen = it; it.show() }
+                    who.reconnect(person)
+                }
+                return@Thread
             }
+            accounts.activate(person.userId)
+            if (token != null && jf.currentUserId != person.userId) jf.restoreSession(com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession(jf.server, token, person.userId))
             syncer = com.danielportelabyrne.cinema.data.account.ProfileSyncer(this, jf, person.userId).also { s -> runCatching { s.pull() } }
             // The character picked on another TV comes with the person's saved things.
             AndroidPlatform.personalPrefs(this, "cinema_personal").getString("avatar", null)?.let { a ->
