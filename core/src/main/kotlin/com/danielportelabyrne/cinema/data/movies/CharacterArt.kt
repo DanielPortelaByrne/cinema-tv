@@ -24,6 +24,44 @@ object CharacterArt {
         return searched.firstOrNull { it.third && it.first.contains(first, ignoreCase = true) }?.second
     }
 
+    /** Blocking: the picture at the top of each of these articles, by the title as given; those without one are left out. */
+    fun pictures(articles: List<String>): Map<String, String> {
+        val out = HashMap<String, String>()
+        articles.distinct().chunked(50).forEach { batch ->   // Wikipedia answers for at most 50 titles at a time
+            try {
+                val c = URL("$API?action=query&titles=" + enc(batch.joinToString("|")) + "&format=json&redirects=1&prop=pageimages&piprop=thumbnail&pithumbsize=300&pilicense=any").openConnection() as HttpURLConnection
+                c.connectTimeout = 6000; c.readTimeout = 10000
+                c.setRequestProperty("User-Agent", "CinemaTV/1.0 (home TV app)")
+                c.exchange {
+                    if (c.responseCode == 200) out += parsePictures(c.inputStream.bufferedReader().use { it.readText() }, batch)
+                }
+            } catch (_: Exception) { }
+        }
+        return out
+    }
+
+    /** Wikipedia may tidy a title or send it on to another article: each asked title is followed to the page that answers. */
+    internal fun parsePictures(json: String, asked: List<String>): Map<String, String> {
+        val q = JSONObject(json).optJSONObject("query") ?: return emptyMap()
+        val moved = HashMap<String, String>()
+        for (key in listOf("normalized", "redirects")) q.optJSONArray(key)?.let { a ->
+            for (i in 0 until a.length()) a.getJSONObject(i).let { moved[it.optString("from")] = it.optString("to") }
+        }
+        val pages = q.optJSONObject("pages") ?: return emptyMap()
+        val byTitle = HashMap<String, String>()
+        pages.keys().forEach { k ->
+            val o = pages.getJSONObject(k)
+            o.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.startsWith("https://") }?.let { byTitle[o.optString("title")] = it }
+        }
+        val out = HashMap<String, String>()
+        asked.forEach { title ->
+            var t = title
+            repeat(3) { t = moved[t] ?: t }
+            byTitle[t]?.let { out[title] = it }
+        }
+        return out
+    }
+
     /** (title, picture, is a character with a picture) for each page of an answer, in search order. */
     private fun query(params: String): List<Triple<String, String, Boolean>>? = try {
         val c = URL("$API?$params&format=json&redirects=1&prop=pageimages|description&piprop=thumbnail&pithumbsize=300&pilicense=any").openConnection() as HttpURLConnection

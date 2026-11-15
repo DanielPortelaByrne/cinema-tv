@@ -65,11 +65,14 @@ object Avatars {
         val list = waiting.getOrPut(url) { java.util.Collections.synchronizedList(ArrayList()) }
         view?.let { list += java.lang.ref.WeakReference(it) }
         if (list.size > 1) return   // already on its way
-        Thread {
+        fetchers.execute {
             load(url)
             waiting.remove(url)?.forEach { ref -> ref.get()?.let { v -> v.post { v.invalidate() } } }
-        }.start()
+        }
     }
+
+    /** A few at a time: the picker can ask for dozens of pictures at once (the cartoons), which no site likes all together. */
+    private val fetchers = java.util.concurrent.Executors.newFixedThreadPool(4) { r -> Thread(r, "avatar-pictures").apply { isDaemon = true } }
 
     /** Blocking: fetches [url] into the cache, and finds the face in it when it is a cast photo. */
     private fun load(url: String): Bitmap? {

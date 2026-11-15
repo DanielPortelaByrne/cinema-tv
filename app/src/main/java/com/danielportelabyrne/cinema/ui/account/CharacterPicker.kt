@@ -84,6 +84,21 @@ class CharacterPicker(
             favRows.addView(Cinema.text(activity, "From your favourites", 30, Cinema.CREAM, serif = true), LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(44) })
             found.chunked(7).forEach { line -> favRows.addView(rowOf(line.map { it.first to it.second }, p(140)), LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(20) }) }
         }
+        // The cartoons everyone knows, a row or two for each show, under whatever came from the favourites.
+        val cartoonRows = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; clipChildren = false; clipToPadding = false }
+        column.addView(cartoonRows, LinearLayout.LayoutParams(-2, -2))
+        Thread {
+            val shows = com.danielportelabyrne.cinema.data.movies.CartoonCharacters.find()
+            sheet.post {
+                if (!isOpen) return@post
+                shows.forEach { show ->
+                    cartoonRows.addView(Cinema.text(activity, show.show, 30, Cinema.CREAM, serif = true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(44) })
+                    show.characters.chunked(7).forEach { line ->
+                        cartoonRows.addView(rowOf(line.map { (name, url) -> Avatars.artId(url, name) to "$name · ${show.show}" }, p(140)), LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(20) })
+                    }
+                }
+            }
+        }.start()
         // Centred on the screen while it fits; it scrolls once there is more than a screen of it.
         column.gravity = Gravity.CENTER
         val scroller = android.widget.ScrollView(activity).apply {
