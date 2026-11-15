@@ -20,7 +20,7 @@ data class StremioAddon(val name: String, val types: List<String>, val transport
 data class StremioFilm(val imdbId: String, val name: String, val poster: String?, val year: Int?, val watched: Boolean, val added: String)
 
 /** One episode of a series as Cinemeta lists it. [still] is its picture, when there is one. */
-data class SeriesEpisode(val season: Int, val episode: Int, val name: String, val overview: String?, val still: String?)
+data class SeriesEpisode(val season: Int, val episode: Int, val name: String, val overview: String?, val still: String?, val airDate: String? = null)
 
 /** A series as Cinemeta lists it: its name and every episode, specials (season 0) left out, in order. */
 data class SeriesListing(val name: String, val episodes: List<SeriesEpisode>)
@@ -113,15 +113,15 @@ object StremioApi {
     } catch (_: Exception) { null }
 
     /** A series' episodes from Cinemeta's answer, or null when it is not a series answer. */
-    fun series(json: String): SeriesListing? = try {
+    fun series(json: String, includeSpecials: Boolean = false): SeriesListing? = try {
         val m = JSONObject(json).optJSONObject("meta")
         val videos = m?.optJSONArray("videos")
         if (m == null || videos == null) null else SeriesListing(m.optString("name"), (0 until videos.length()).mapNotNull { i ->
             val v = videos.optJSONObject(i) ?: return@mapNotNull null
             val season = v.optInt("season", -1); val number = v.optInt("episode", v.optInt("number", -1))
-            if (season <= 0 || number <= 0) return@mapNotNull null
+            if (season < 0 || (season == 0 && !includeSpecials) || number <= 0) return@mapNotNull null
             SeriesEpisode(season, number, v.optString("name").ifBlank { v.optString("title") }.ifBlank { "Episode $number" },
-                v.optString("overview").ifBlank { v.optString("description") }.ifBlank { null }, v.optString("thumbnail").ifBlank { null })
+                v.optString("overview").ifBlank { v.optString("description") }.ifBlank { null }, v.optString("thumbnail").ifBlank { null }, v.optString("released", "").take(10).ifBlank { null })
         }.distinctBy { it.season to it.episode }.sortedWith(compareBy({ it.season }, { it.episode })))
     } catch (_: Exception) { null }
 
@@ -278,7 +278,8 @@ class StremioClient(private val send: (method: String, url: String, body: String
     }
 
     /** Every episode of the series with IMDb id [imdbId], from Cinemeta; null when it can't be read. */
-    fun series(imdbId: String): SeriesListing? = send("GET", "https://v3-cinemeta.strem.io/meta/series/$imdbId.json", null)?.let { StremioApi.series(it) }
+    fun series(imdbId: String, includeSpecials: Boolean = false): SeriesListing? =
+        send("GET", "https://v3-cinemeta.strem.io/meta/series/$imdbId.json", null)?.let { StremioApi.series(it, includeSpecials) }
 
     /** The page for a saved title that turns out to be a series (Cinemeta's film lookup finds nothing for it); null when it is not one either. */
     fun seriesPage(film: StremioFilm): Title? =

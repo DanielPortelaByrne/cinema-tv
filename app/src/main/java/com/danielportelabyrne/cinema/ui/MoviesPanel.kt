@@ -29,6 +29,12 @@ import android.view.ViewOutlineProvider
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.app.AlertDialog
+import com.danielportelabyrne.cinema.data.movies.BroadcastPlaylist
+import com.danielportelabyrne.cinema.data.movies.PlaylistEpisode
+import com.danielportelabyrne.cinema.data.movies.PlaylistPlayback
+import com.danielportelabyrne.cinema.data.movies.PlaylistSlot
+import com.danielportelabyrne.cinema.data.movies.PlaylistStore
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -221,6 +227,8 @@ class MoviesPanel(
         object Docs : Dest()
         object Library : Dest()
         object Watchlist : Dest()
+        object Playlists : Dest()
+        class Playlist(val id: String) : Dest()
         /** Everything watched, as a timeline: films and runs of episodes under their dates. */
         object History : Dest()
         object Downloads : Dest()
@@ -258,6 +266,7 @@ class MoviesPanel(
         is Dest.LbPerson, is Dest.LbListPage, Dest.LbSearch, Dest.LbFollow -> Dest.Letterboxd
         is Dest.MusicAlbum, is Dest.MusicArtist -> Dest.Music
         Dest.Watchlist -> Dest.Library
+        is Dest.Playlist -> Dest.Playlists
         else -> d
     }
 
@@ -425,6 +434,7 @@ class MoviesPanel(
     }
 
     fun hide() {
+        broadcast = null
         closePhoneTyping()
         if (voiceActive) voice?.cancel(); closeStreamLoading(); closeDetail(restoreFocus = false); overlay.visibility = View.GONE; ui.removeCallbacks(heroTick)
         underlayers(on = true)
@@ -487,7 +497,11 @@ class MoviesPanel(
         layoutEditor?.let { it.back(); return true }
         if (PhoneInput.hideQr()) return true
         if (voiceActive) { voice?.cancel(); return true }
-        if (streamLoading != null) { closeStreamLoading(); return true }
+        if (streamLoading != null) {
+            broadcast = null
+            closeStreamLoading()
+            return true
+        }
         seasonMenuClose?.let { it(); return true }
         if (detailOpen) { closeDetail(restoreFocus = true); return true }
         // Far from the rail (Left would take more than one press to reach it): Back opens the rail, at this page's item.
@@ -719,6 +733,10 @@ class MoviesPanel(
     }
 
     private fun go(dest: Dest, remember: Boolean = false) {
+        if (broadcast != null) {
+            broadcast = null
+            closeStreamLoading()
+        }
         // Leaving a page ends its phone typing: the search that asked for it is no longer on screen.
         closePhoneTyping()
         if (remember) trail.addLast(current) else trail.clear()
@@ -788,6 +806,7 @@ class MoviesPanel(
             Triple("Letterboxd", R.drawable.ic_cin_lb, Dest.Letterboxd),
             Triple("Music", R.drawable.ic_cin_music, Dest.Music),
             Triple("My library", R.drawable.ic_cin_lib, Dest.Library),
+            Triple("Playlists", R.drawable.ic_cin_tv, Dest.Playlists),
             Triple("History", R.drawable.ic_cin_history, Dest.History),
             Triple("Downloads", R.drawable.ic_cin_dl, Dest.Downloads)
         )
@@ -1294,6 +1313,8 @@ class MoviesPanel(
             Dest.Docs -> { buildHero(); layoutPage(LayoutPage.DOCS, gen) }
             Dest.Library -> if (jellyfin.isConnected) { buildHero(); layoutPage(LayoutPage.LIBRARY, gen) } else buildLibrary(gen)
             Dest.Watchlist -> buildWatchlist(gen)
+            Dest.Playlists -> buildPlaylists()
+            is Dest.Playlist -> buildPlaylists(d.id)
             Dest.History -> buildHistory(gen)
             Dest.Downloads -> buildDownloads(gen)
             Dest.Search -> buildSearch()
@@ -1324,7 +1345,7 @@ class MoviesPanel(
         Dest.Films -> AmbientBackground.FILMS
         Dest.Series -> AmbientBackground.SERIES
         Dest.Docs -> AmbientBackground.DOCS
-        Dest.Library, Dest.Watchlist, Dest.History -> AmbientBackground.LIBRARY
+        Dest.Library, Dest.Watchlist, Dest.History, Dest.Playlists, is Dest.Playlist -> AmbientBackground.LIBRARY
         Dest.Downloads -> AmbientBackground.DOWNLOADS
         Dest.Search -> AmbientBackground.SEARCH
         Dest.Settings, Dest.Person -> AmbientBackground.SETTINGS
@@ -4083,6 +4104,310 @@ class MoviesPanel(
     }
 
 
+    // --- Playlists ---------------------------------------------------------------------------------
+
+    private val playlists get() = PlaylistStore(AndroidPlatform(activity))
+
+    private fun playlistName(initial: String = "", save: (String) -> Unit) {
+        val field = EditText(activity).apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            isSingleLine = true
+            setText(initial)
+            setSelectAllOnFocus(true)
+            hint = "Playlist name"
+        }
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle(if (initial.isEmpty()) "New playlist" else "Rename playlist")
+            .setView(field)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = field.text.toString().trim()
+                if (name.isEmpty()) field.error = "Enter a name"
+                else {
+                    dialog.dismiss()
+                    save(name)
+                }
+            }
+            field.requestFocus()
+        }
+        dialog.show()
+    }
+
+    private fun choosePlaylistStart(entry: Entry) {
+        if (entry.title.kind == Kind.MOVIE) {
+            addPlaylistSlot(entry)
+            return
+        }
+        AlertDialog.Builder(activity).setTitle("Starting episode")
+            .setItems(arrayOf("First episode", "Choose season and episode…")) { _, choice ->
+                if (choice == 0) addPlaylistSlot(entry)
+                else enterPlaylistEpisode(entry)
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun enterPlaylistEpisode(entry: Entry) {
+        val fields = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), 0, dp(24), 0)
+        }
+        fun field(label: String) = EditText(activity).apply {
+            hint = label
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            isSingleLine = true
+            fields.addView(this, LinearLayout.LayoutParams(-1, -2))
+        }
+        val season = field("Season number")
+        val episode = field("Episode number")
+        val dialog = AlertDialog.Builder(activity).setTitle("Starting episode").setView(fields)
+            .setPositiveButton("Next", null).setNegativeButton("Cancel", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val s = season.text.toString().toIntOrNull()
+                val e = episode.text.toString().toIntOrNull()
+                when {
+                    s == null || s < 0 -> season.error = "Enter 0 or higher"
+                    e == null || e < 1 -> episode.error = "Enter 1 or higher"
+                    else -> {
+                        dialog.dismiss()
+                        addPlaylistSlot(entry, PlaylistEpisode(s, e))
+                    }
+                }
+            }
+            season.requestFocus()
+        }
+        dialog.show()
+    }
+
+    private fun addPlaylistSlot(entry: Entry, start: PlaylistEpisode? = null) {
+        val title = entry.title.copy(imdbId = knownImdb(entry) ?: entry.library?.imdbId)
+        val slot = PlaylistSlot(title, entry.library?.id, start)
+        fun add(playlist: BroadcastPlaylist) {
+            playlists.update(playlist.id) { it.copy(slots = it.slots + slot) }
+            CinemaToast.show(activity, "Added ${title.name} to ${playlist.name}", Toast.LENGTH_SHORT)
+        }
+        val existing = playlists.all()
+        val choices = existing.map { it.name } + "New playlist…"
+        AlertDialog.Builder(activity).setTitle("Add to playlist")
+            .setItems(choices.toTypedArray()) { _, index ->
+                val playlist = existing.getOrNull(index)
+                if (playlist == null) playlistName { add(playlists.create(it)) }
+                else add(playlist)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun buildPlaylists(id: String? = null) {
+        val all = playlists.all()
+        val playlist = all.firstOrNull { it.id == id }
+        fun card(title: String, subtitle: String, select: () -> Unit): View {
+            val view = actionCard(title, subtitle, select)
+            val params = (view.layoutParams as LinearLayout.LayoutParams).apply {
+                marginStart = pageStart
+                topMargin = Cinema.px(activity, 14)
+            }
+            content.addView(view, params)
+            return view
+        }
+        pageTitle(playlist?.name ?: "Playlists")
+        if (playlist == null) {
+            card("New playlist", "Create a schedule for films and series") {
+                playlistName { name -> go(Dest.Playlist(playlists.create(name).id), remember = true) }
+            }
+            all.forEach { list ->
+                card(list.name, "${list.slots.size} scheduled") { go(Dest.Playlist(list.id), remember = true) }
+            }
+            return
+        }
+        if (playlist.slots.isNotEmpty()) {
+            lateinit var play: View
+            play = card("Play playlist", "Play in order with one episode per series slot") {
+                if (broadcast == null) {
+                    val run = BroadcastRun(playlist.id, playlist.slots.iterator(), play)
+                    broadcast = run
+                    playNextSlot(run)
+                }
+            }
+        } else {
+            card("Find something to add", "Use + on a title or choose a starting episode from its info") {
+                go(Dest.Search, remember = true)
+            }
+        }
+        playlist.slots.forEachIndexed { index, slot ->
+            val state = when {
+                slot.filmFinished -> "Watched"
+                slot.pending != null -> "Up next ${slot.pending}"
+                slot.lastFinished != null -> "Last finished ${slot.lastFinished}"
+                slot.start != null -> "Starts at ${slot.start}"
+                slot.title.kind == Kind.SHOW -> "Starts with the first episode"
+                else -> "Film"
+            }
+            card("${index + 1}. ${slot.title.name}", state) { editPlaylistSlot(playlist, index) }
+        }
+        card("Playlist settings", "Rename or delete this playlist") {
+            AlertDialog.Builder(activity).setTitle(playlist.name)
+                .setItems(arrayOf("Rename", "Delete playlist")) { _, choice ->
+                    if (choice == 0) playlistName(playlist.name) { name ->
+                        playlists.update(playlist.id) { it.copy(name = name) }
+                        build()
+                    } else AlertDialog.Builder(activity).setTitle("Delete ${playlist.name}?")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Delete") { _, _ ->
+                            playlists.delete(playlist.id)
+                            backToPlaylists()
+                        }.show()
+                }.setNegativeButton("Cancel", null).show()
+        }
+    }
+
+    private fun backToPlaylists() {
+        if (trail.lastOrNull() == Dest.Playlists) trail.removeLast()
+        current = Dest.Playlists
+        styleTabs()
+        build()
+    }
+
+    private fun editPlaylistSlot(playlist: BroadcastPlaylist, index: Int) {
+        val slot = playlist.slots[index]
+        val choices = buildList {
+            if (index > 0) add("Move up" to -1)
+            if (index < playlist.slots.lastIndex) add("Move down" to 1)
+            add("Remove" to 0)
+        }
+        AlertDialog.Builder(activity).setTitle(slot.title.name)
+            .setItems(choices.map { it.first }.toTypedArray()) { _, choice ->
+                val offset = choices[choice].second
+                playlists.update(playlist.id) { latest ->
+                    val slots = latest.slots.toMutableList()
+                    val at = slots.indexOfFirst { it.id == slot.id }
+                    if (at < 0 || at + offset !in slots.indices) return@update latest
+                    val selected = slots.removeAt(at)
+                    if (offset != 0) slots.add(at + offset, selected)
+                    latest.copy(slots = slots)
+                }
+                build()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private class BroadcastRun(val playlistId: String, val slots: Iterator<PlaylistSlot>, val focus: View)
+    private data class ScheduledTitle(val entry: Entry, val item: JellyfinItem?, val episode: PlaylistEpisode?)
+    private var broadcast: BroadcastRun? = null
+
+    fun onHostStopped() {
+        if (broadcast != null && streamLoading != null) {
+            broadcast = null
+            closeStreamLoading()
+        }
+    }
+
+    fun onPlaylistResult(result: Int) {
+        val run = broadcast ?: return
+        if (result == Activity.RESULT_OK || result == PlayerActivity.PLAYLIST_UNAVAILABLE) {
+            ui.post { playNextSlot(run) }
+        } else {
+            broadcast = null
+            if (isVisible && current is Dest.Playlist) build()
+        }
+    }
+
+    private fun skipPlaylistTitle(label: String) {
+        val run = broadcast ?: return
+        CinemaToast.show(activity, "Skipped $label. No playable source found.", Toast.LENGTH_SHORT)
+        ui.post { playNextSlot(run) }
+    }
+
+    private fun playNextSlot(run: BroadcastRun) {
+        if (broadcast !== run || !isVisible) return
+        val slot = run.slots.asSequence().firstOrNull { !it.filmFinished }
+        if (slot == null) {
+            broadcast = null
+            build()
+            CinemaToast.show(activity, "Playlist finished", Toast.LENGTH_SHORT)
+            return
+        }
+
+        val screen = StreamLoadingView(activity, slot.title.name).apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setOnKeyListener { _, code, _ -> code != android.view.KeyEvent.KEYCODE_BACK }
+        }
+        streamReturnFocus = run.focus
+        streamLoading = screen
+        (overlay as ViewGroup).addView(screen, FrameLayout.LayoutParams(-1, -1))
+        screen.requestFocus()
+        slowPool.execute {
+            val resolved = runCatching { resolvePlaylistSlot(slot) }
+            ui.post {
+                if (broadcast !== run || streamLoading !== screen) return@post
+                closeStreamLoading()
+                val scheduled = resolved.getOrNull()
+                if (scheduled == null) {
+                    if (resolved.isFailure) skipPlaylistTitle(slot.title.name)
+                    else ui.post { playNextSlot(run) }
+                    return@post
+                }
+                val episode = scheduled.episode
+                val label = if (episode == null) slot.title.name else "${slot.title.name} · S${episode.season} E${episode.number}"
+                val playback = PlaylistPlayback(run.playlistId, slot.id, episode)
+                playlists.queue(playback)
+                val item = scheduled.item
+                if (item != null) {
+                    playbackStarted = true
+                    remember(scheduled.entry.title, streamed = false)
+                    JellyfinPlayback.play(activity, jellyfin, item, label, "jf:${item.id}",
+                        series = slot.title.imdbId to slot.title.tmdbId, playlist = playback)
+                } else {
+                    streamNow(scheduled.entry, run.focus, episode?.let { it.season to it.number }, label, playlist = playback)
+                }
+            }
+        }
+    }
+
+    private fun resolvePlaylistSlot(slot: PlaylistSlot): ScheduledTitle? {
+        val title = slot.title
+        val library = if (jellyfin.isConnected) {
+            slot.libraryId?.let { id -> jellyfin.library().firstOrNull { it.id == id && it.isSeries == (title.kind == Kind.SHOW) } }
+                ?: jellyfin.find(title.imdbId, title.tmdbId, title.kind == Kind.SHOW)
+        } else null
+        val entry = Entry(title, library, emptyMap())
+        if (title.kind == Kind.MOVIE) return ScheduledTitle(entry, library, null)
+
+        val owned = library?.let { jellyfin.episodes(it.id) }.orEmpty()
+            .filter { !it.missing && (it.season ?: -1) >= 0 && (it.episode ?: 0) > 0 }
+            .associateBy { PlaylistEpisode(it.season!!, it.episode!!) }
+        slot.queuedEpisode?.let { return ScheduledTitle(entry, owned[it], it) }
+        val finished = slot.lastFinished
+        val immediate = if (finished == null) PlaylistEpisode(1, 1)
+            else (finished.number + 1).takeIf { it > 0 }?.let { PlaylistEpisode(finished.season, it) }
+        owned[immediate]?.let { return ScheduledTitle(entry, it, immediate) }
+
+        val imdb = imdbOf(entry)
+        val listing = imdb?.let {
+            com.danielportelabyrne.cinema.data.stremio.StremioClient().series(it, includeSpecials = finished?.season == 0)
+        }
+        val today = EpisodeCards.today()
+        val listed = listing?.episodes.orEmpty().filter { it.airDate == null || !EpisodeCards.unaired(it.airDate, today) }
+            .map { PlaylistEpisode(it.season, it.episode) }
+        val tmdb = title.tmdbId?.toLongOrNull()
+        val fromSeerr = if (listing == null && tmdb != null && seerr.isSignedIn) {
+            val earliest = finished?.season ?: 1
+            val seasons = seerr.seasons(tmdb).map { it.number }
+            val candidates = if (earliest == 0) seasons + 0 else seasons
+            candidates.asSequence().distinct().sorted().filter { it >= earliest }
+                .mapNotNull { season ->
+                    val eligible = seerr.episodes(tmdb, season)
+                        .filter { it.number > 0 && !EpisodeCards.unaired(it.airDate, today) }
+                        .map { PlaylistEpisode(season, it.number) }
+                    slot.nextEpisode(eligible)
+                }.firstOrNull()
+        } else null
+        val episode = slot.nextEpisode(owned.keys + listed + listOfNotNull(fromSeerr)) ?: return null
+        return ScheduledTitle(entry, owned[episode], episode)
+    }
+
     // --- My library --------------------------------------------------------------------------------
 
     private fun buildLibrary(gen: Int) {
@@ -5267,6 +5592,14 @@ class MoviesPanel(
         buttons.addView(primary, LinearLayout.LayoutParams(-2, h))
         if (inLibrary) heroSeasonButton?.let { buttons.addView(it, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap }) }
         buttons.addView(restart, LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
+        val addToPlaylist = CinemaButton(activity, CinemaButton.Kind.GLASS, "", R.drawable.ic_cin_plus).apply {
+            setPadding(0, 0, 0, 0)
+            makeIconOnly()
+            dark = true
+            contentDescription = "Add to playlist"
+            setOnClickListener { choosePlaylistStart(e) }
+        }
+        buttons.addView(addToPlaylist, LinearLayout.LayoutParams(h, h).apply { marginStart = gap })
         // Add to the owner's watchlist (its row in My library), or take it off again. The watchlist is keyed by IMDb id, so a title
         // known only by its TMDB id (a suggestion, say) asks Seerr for it, and the button appears once it has come back.
         fun addWatchButton(id: String) {
@@ -5685,12 +6018,17 @@ class MoviesPanel(
      * found. Back cancels while it searches.
      */
     /** [episode] is (season, episode) for a TV episode; [shownTitle] is what the screens call it ("Show · S1 E7"). */
-    private fun streamNow(e: Entry, button: View, episode: Pair<Int, Int>? = null, shownTitle: String? = null) {
-        if (!seerr.hasStreamService) {
-            CinemaToast.show(activity, "Not in your library yet. Use the download button to get it.", Toast.LENGTH_LONG)
+    private fun streamNow(e: Entry, button: View, episode: Pair<Int, Int>? = null, shownTitle: String? = null,
+                          playlist: PlaylistPlayback? = null) {
+        if (!seerr.hasStreamService && (playlist == null || stremioAddons().isEmpty())) {
+            if (playlist != null) skipPlaylistTitle(e.title.name)
+            else CinemaToast.show(activity, "Not in your library yet. Use the download button to get it.", Toast.LENGTH_LONG)
             return
         }
-        if (!seerr.isSignedIn) { seerrSheet.show(seerr, jellyfin) { streamNow(e, button, episode, shownTitle) }; return }
+        if (playlist == null && !seerr.isSignedIn) {
+            seerrSheet.show(seerr, jellyfin) { streamNow(e, button, episode, shownTitle) }
+            return
+        }
         val token = ++streamToken
         lastStreamed = e
         Perf.mark("stream.press"); Perf.begin("stream.press->startReply")
@@ -5706,6 +6044,11 @@ class MoviesPanel(
         screen.requestFocus()
         backdropFor(e)?.let { u -> images.loadBackdrop(u, maxWidth = HERO_BACKDROP_PX) { b -> screen.backdrop(b) } }
         fun failed(message: String) {
+            if (playlist != null) {
+                closeStreamLoading()
+                skipPlaylistTitle(label)
+                return
+            }
             screen.message(message); screen.stats(null, null, null, null)
             ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 3500)
         }
@@ -5718,7 +6061,10 @@ class MoviesPanel(
             val ahead = aheadStreams.take(streamKey(e, episode))?.let { pending -> runCatching { pending.get(130, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull() }
                 ?.takeIf { it.links != null || it.service?.status == StreamStatus.READY }
             if (ahead != null) android.util.Log.i("StreamNow", "using the stream found ahead of time for ${e.title.name}")
-            val found = ahead ?: findStream(e, episode)
+            val found = ahead ?: runCatching { findStream(e, episode) }.getOrElse {
+                android.util.Log.w("StreamNow", "Couldn't find a stream", it)
+                Found(null, null, null)
+            }
             activity.runOnUiThread {
                 Perf.end("stream.press->startReply", if (found.links != null) "DIRECT" else found.service?.status?.name.orEmpty())
                 if (token != streamToken) return@runOnUiThread   // cancelled with Back
@@ -5729,9 +6075,9 @@ class MoviesPanel(
                         artUrl = e.title.backdropUrl ?: e.title.posterUrl,
                         meta = if (episode == null) PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview)
                             else PlayerMeta(label, e.title.year, e.title.genres, listed?.runtime ?: e.title.runtimeMin, e.title.age, e.title.imdbScore, listed?.overview), episode = episode,
-                        history = streamHistory(e, found.imdb, episode))
-                    // The player opens over this same screen; take it down once it is covered.
-                    ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
+                        history = streamHistory(e, found.imdb, episode), playlist = playlist)
+                    if (playlist != null) closeStreamLoading()
+                    else ui.postDelayed({ if (token == streamToken) closeStreamLoading() }, 1500)
                 }
                 found.links?.let { play(it); return@runOnUiThread }
                 val result = found.service ?: return@runOnUiThread failed("The stream service isn't reachable.")
@@ -5742,7 +6088,8 @@ class MoviesPanel(
                         val candidate = StreamCandidate("stream:${e.title.key}", PlayerActivity.STREAM_PROVIDER, result.label ?: e.title.name, url, null, StreamMetadata())
                         play(listOf(RankedStream(candidate, 100, 0L, false, Verdict.RECOMMENDED, null, emptyList())))
                     }
-                    StreamStatus.NOT_SIGNED_IN -> { closeStreamLoading(); seerrSheet.show(seerr, jellyfin) { streamNow(e, button, episode, shownTitle) } }
+                    StreamStatus.NOT_SIGNED_IN -> if (playlist != null) failed("Sign in to stream this title.")
+                        else { closeStreamLoading(); seerrSheet.show(seerr, jellyfin) { streamNow(e, button, episode, shownTitle) } }
                     StreamStatus.NOT_FOUND -> failed("No seeded copy of ${e.title.name} was found on your indexers.")
                     StreamStatus.CONNECTING -> failed("Still connecting to the sources. Try again in a minute.")
                     StreamStatus.UNAVAILABLE -> failed("The stream service isn't reachable.")
@@ -6187,7 +6534,12 @@ class MoviesPanel(
             card.onInfo = {
                 val about = blurb?.trim().orEmpty()
                 val facts = EpisodeCards.metaParts(runtime, resume?.second, ep.airDate).joinToString(" · ").ifBlank { null }
-                val actions = if (look.playShown) listOf(SheetAction(if (mine != null) "Play" else "Stream", label, primary = true) { card.play.performClick() }) else emptyList()
+                val actions = buildList {
+                    if (look.playShown) add(SheetAction(if (mine != null) "Play" else "Stream", label, primary = true) { card.play.performClick() })
+                    add(SheetAction("Start here in a playlist", label, icon = R.drawable.ic_cin_plus) {
+                        addPlaylistSlot(e, PlaylistEpisode(s.number, ep.number))
+                    })
+                }
                 infoSheet.show("S${s.number} · E${ep.number}", ep.name.ifBlank { "Episode ${ep.number}" }, facts,
                     listOf(about.ifBlank { "No description yet." }), card.stillBitmap(), actions, imageSizeDp = 320 to 180)
             }

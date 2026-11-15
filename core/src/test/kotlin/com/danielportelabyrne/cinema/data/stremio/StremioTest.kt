@@ -103,12 +103,15 @@ class StremioTest {
     @Test fun readsASeriesEpisodesInOrderWithoutSpecials() {
         val json = """{"meta":{"name":"Breaking Bad","videos":[
             {"season":1,"episode":2,"name":"Cat's in the Bag...","thumbnail":"https://e/1/2.jpg","overview":"Walt and Jesse"},
-            {"season":0,"episode":1,"name":"Special"},
+            {"season":0,"episode":1,"name":"Special","released":"2008-01-01T00:00:00Z"},
             {"season":1,"number":1,"name":"Pilot","description":"A teacher"},
             {"season":1,"episode":2,"name":"Duplicate"}]}}"""
         val s = StremioApi.series(json)!!
         assertEquals("Breaking Bad", s.name)
         assertEquals(listOf(1 to 1, 1 to 2), s.episodes.map { it.season to it.episode })
+        val special = StremioApi.series(json, includeSpecials = true)!!.episodes.first()
+        assertEquals(0 to 1, special.season to special.episode)
+        assertEquals("2008-01-01", special.airDate)
         assertEquals("Pilot", s.episodes[0].name); assertEquals("A teacher", s.episodes[0].overview); assertEquals(null, s.episodes[0].still)
         assertEquals("https://e/1/2.jpg", s.episodes[1].still)
         assertEquals(null, StremioApi.series("""{"meta":{"name":"A film"}}"""))

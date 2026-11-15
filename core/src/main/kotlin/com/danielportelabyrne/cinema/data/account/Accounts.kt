@@ -25,11 +25,11 @@ object ProfileScope {
     /** The key-value files that belong to a person rather than to the TV. */
     val PERSONAL: Set<String> = setOf(
         "cinema_personal", "favourites", "play_history", "picks", "continue_dismissed", "letterboxd_follow",
-        "continue_watching", "resume_positions", "watchlist_view"
+        "continue_watching", "resume_positions", "watchlist_view", "broadcast_playlists"
     )
 
-    /** Which of [PERSONAL] travel to the person's other TVs. Continue watching holds this TV's own artwork paths. */
-    val SYNCED: List<String> = PERSONAL.filter { it != "continue_watching" }.sorted()
+    /** Which of [PERSONAL] travel to the person's other TVs. Playlists and Continue watching are kept on this TV. */
+    val SYNCED: List<String> = PERSONAL.filter { it != "continue_watching" && it != "broadcast_playlists" }.sorted()
 
     fun set(userId: String?, legacyOwner: Boolean) { this.userId = userId; this.legacyOwner = legacyOwner; loaded = true }
 

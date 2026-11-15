@@ -3,6 +3,8 @@ package com.danielportelabyrne.cinema.ui
 import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.app.Activity
+import com.danielportelabyrne.cinema.data.movies.PlaylistPlayback
+import com.danielportelabyrne.cinema.data.movies.PlaylistStore
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -161,6 +163,8 @@ class PlayerActivity : AppCompatActivity() {
     private var payload: String? = null
     /** Opened from a Continue watching card: the saved links may have expired, and a fresh copy can be found instead. */
     private var fromContinue = false
+    private var playlistPlayback: PlaylistPlayback? = null
+    private val playlistStore by lazy { PlaylistStore(AndroidPlatform(this)) }
     /** Some attempt showed a picture. Until then a dead saved link means finding the title again, not giving up. */
     private var playedAny = false
     /** Restart was pressed: play from 0:00 and let neither the server's nor this TV's resume point move it. */
@@ -374,6 +378,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         Perf.mark("player.create")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        playlistPlayback = PlaylistPlayback.decode(intent.getStringExtra(EXTRA_PLAYLIST))
         items = parse(intent.getStringExtra(EXTRA_ITEMS))
         imdbId = intent.getStringExtra(EXTRA_IMDB)
         streamEpisode = intent.getStringExtra(EXTRA_EPISODE)?.split(":")?.takeIf { it.size == 2 }?.let { p -> p[0].toIntOrNull()?.let { s -> p[1].toIntOrNull()?.let { e -> s to e } } }
@@ -643,6 +648,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun prefetchNextEpisode(current: JellyfinItem?) {
+        if (playlistPlayback != null) return
         val report = jf ?: return
         if (live || current?.isEpisode != true || current.seriesId == null ||
             com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.cleanBase(jellyfin.server) != report.base) return
@@ -758,6 +764,7 @@ class PlayerActivity : AppCompatActivity() {
 
     /** Reads the series' episodes for the paused screen, once the item playing is known to be an episode. */
     private fun loadEpisodes(current: JellyfinItem?) {
+        if (playlistPlayback != null) return
         val c = chrome ?: return
         if (live) return
         val seriesId = current?.seriesId
@@ -925,6 +932,13 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun fallBackToStremio(reason: String) {
+        if (playlistPlayback != null) {
+            Log.w(TAG, "Playlist playback failed: $reason")
+            CinemaToast.show(this, "Couldn't play $title", Toast.LENGTH_LONG)
+            setResult(PLAYLIST_UNAVAILABLE)
+            finish()
+            return
+        }
         if (canStreamAgain()) { streamAgain(reason); return }
         if (streamOnly()) {
             Log.w(TAG, "Stream failed: $reason")
@@ -995,6 +1009,12 @@ class PlayerActivity : AppCompatActivity() {
                 Player.STATE_ENDED -> if (!ended) {
                     closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); recordStreamProgress(atEnd = true); recordHistory(ended = true); resumePrefs.edit().remove(resumeKey() ?: "").apply()
                     continueStore.save(ResumeItem(title, null, packageName, null, player.duration, player.duration, null, System.currentTimeMillis()), null)
+                    playlistPlayback?.let { playback ->
+                        playlistStore.finish(playback)
+                        if (foreground) setResult(Activity.RESULT_OK)
+                        finish()
+                        return
+                    }
                     if (!foreground) autoplay.cancel()
                     autoplay.end(SystemClock.elapsedRealtime())
                     showNextEpisode()
@@ -1612,6 +1632,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val EXTRA_PLAYLIST = "broadcast_playlist"
+        const val PLAYLIST_REQUEST = 801
+        const val PLAYLIST_UNAVAILABLE = Activity.RESULT_FIRST_USER
+
         /** Provider name for films from the home stream service. */
         const val STREAM_PROVIDER = "Stream"
         /** How long the next-episode card counts down when it comes up with the credits. */
@@ -1669,9 +1693,11 @@ class PlayerActivity : AppCompatActivity() {
         fun takeStreamAgain(): StreamAgainRequest? = pendingStreamAgain.also { pendingStreamAgain = null }
             ?.takeIf { SystemClock.elapsedRealtime() - pendingStreamAgainAt < 60_000L }
 
-        fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false, episode: Pair<Int, Int>? = null, history: HistoryTarget? = null) {
-            context.startActivity(playbackIntent(context, ranked, title, imdbId, report, episode, history).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
-                .putExtra(EXTRA_FROM_START, fromStart).putExtra(EXTRA_EPISODE, episode?.let { "${it.first}:${it.second}" }))
+        fun launch(context: Activity, ranked: List<RankedStream>, title: String, imdbId: String?, report: com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport? = null, artUrl: String? = null, meta: PlayerMeta? = null, fromStart: Boolean = false, episode: Pair<Int, Int>? = null, history: HistoryTarget? = null, playlist: PlaylistPlayback? = null) {
+            val playback = playbackIntent(context, ranked, title, imdbId, report, episode, history).putExtra(EXTRA_ART, artUrl).putExtra(EXTRA_META, meta?.let { metaJson(it) })
+                .putExtra(EXTRA_FROM_START, fromStart).putExtra(EXTRA_EPISODE, episode?.let { "${it.first}:${it.second}" })
+            if (playlist == null) context.startActivity(playback)
+            else context.startActivityForResult(playback.putExtra(EXTRA_PLAYLIST, playlist.encode()), PLAYLIST_REQUEST)
         }
 
         private fun metaJson(m: PlayerMeta): String = JSONObject().put("title", m.title).put("year", m.year ?: 0)

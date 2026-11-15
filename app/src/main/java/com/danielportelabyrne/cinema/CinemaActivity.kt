@@ -4,6 +4,7 @@ import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import com.danielportelabyrne.cinema.design.cinema.OpeningState
 import com.danielportelabyrne.cinema.design.cinema.SplashView
 import com.danielportelabyrne.cinema.device.AndroidPlatform
+import android.content.Intent
 import android.os.Bundle
 import android.view.FocusFinder
 import android.view.KeyEvent
@@ -488,6 +489,13 @@ class CinemaActivity : AppCompatActivity() {
         intent?.getStringExtra("debug_cinema_dest")?.let { moviesPanel.debugGo(it) }
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PlayerActivity.PLAYLIST_REQUEST && ::moviesPanel.isInitialized) {
+            moviesPanel.onPlaylistResult(resultCode)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         if (::moviesPanel.isInitialized) moviesPanel.onResume()
@@ -502,6 +510,7 @@ class CinemaActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (::moviesPanel.isInitialized) moviesPanel.onHostStopped()
         syncer?.pushNow()
     }
 
