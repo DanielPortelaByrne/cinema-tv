@@ -16,6 +16,8 @@ enum class SectionType(val catalogue: Boolean) {
     TOP10(true), TRENDING(true), GENRE(true), DOCS(true), POPULAR_ON(true), DOCS_ON_FOLLOWED(true),
     /** A row built from parts (see [Mix]): order, kind, category, subcategory, service, where it was made. */
     MIX(true),
+    /** The viewer's own playlists, as TV channels to tune in to. */
+    BROADCASTS(false),
     CONTINUE(false), FAVOURITES(false), RECENT(false), PICKS(false), SERVICES(false), CHANNELS(false), GENRE_TILES(false),
     MY_LIBRARY(false), WATCHLIST(false), LIBRARY_LATEST(false), LIBRARY_FILMS(false), LIBRARY_SERIES(false), LIBRARY_DOCS(false), LIBRARY_GENRES(false)
 }
@@ -49,7 +51,7 @@ object PageLayouts {
 
     /** Each page as the app lays it out until the owner changes it. */
     fun defaults(page: LayoutPage): List<Section> = when (page) {
-        LayoutPage.HOME -> listOf(Section(SectionType.TOP10, "all")) + PERSONAL + listOf(
+        LayoutPage.HOME -> listOf(Section(SectionType.TOP10, "all"), Section(SectionType.BROADCASTS)) + PERSONAL + listOf(
             Section(SectionType.TRENDING, "films"), Section(SectionType.PICKS), Section(SectionType.TRENDING, "series"),
             Section(SectionType.SERVICES), Section(SectionType.CHANNELS), Section(SectionType.DOCS, "all"),
             Section(SectionType.MY_LIBRARY), Section(SectionType.GENRE_TILES), Section(SectionType.POPULAR_ON, "followed"))
@@ -91,6 +93,7 @@ object PageLayouts {
 
     /** What a section is called in the editor. */
     fun label(s: Section): String = when (s.type) {
+        SectionType.BROADCASTS -> "Your channels"
         SectionType.CONTINUE -> "Continue watching"
         SectionType.FAVOURITES -> "Your favourites"
         SectionType.RECENT -> "Recently watched"
@@ -153,7 +156,7 @@ object PageLayouts {
         (Catalog.followed + Catalog.KNOWN).distinctBy { it.code }.forEach { list += Section(SectionType.TOP10, "svc:${it.code}") }
         Catalog.GENRES.forEach { list += Section(SectionType.TOP10, "genre:${it.code}") }
         listOf("all", "films", "series").forEach { list += Section(SectionType.TRENDING, it) }
-        listOf(SectionType.CONTINUE, SectionType.FAVOURITES, SectionType.RECENT, SectionType.PICKS, SectionType.MY_LIBRARY, SectionType.WATCHLIST,
+        listOf(SectionType.BROADCASTS, SectionType.CONTINUE, SectionType.FAVOURITES, SectionType.RECENT, SectionType.PICKS, SectionType.MY_LIBRARY, SectionType.WATCHLIST,
             SectionType.LIBRARY_LATEST, SectionType.LIBRARY_FILMS, SectionType.LIBRARY_SERIES, SectionType.LIBRARY_DOCS, SectionType.LIBRARY_GENRES,
             SectionType.SERVICES, SectionType.CHANNELS, SectionType.GENRE_TILES).forEach { list += Section(it) }
         list += Section(SectionType.WATCHLIST, "films"); list += Section(SectionType.WATCHLIST, "series")
@@ -185,16 +188,22 @@ object PageLayouts {
 
     // --- Kept as one JSON object: page key to its list of section ids ---------------------------------------------
 
+    /** The layouts' format. 2 added the channels row to Home: a Home saved before it gets the row once, so it is not lost. */
+    private const val VERSION = 2
+
     fun parse(json: String?): Map<LayoutPage, List<Section>> = try {
         val o = JSONObject(json ?: "{}")
+        val version = o.optInt("_v", 1)
         LayoutPage.values().mapNotNull { p ->
             val a = o.optJSONArray(p.key) ?: return@mapNotNull null
-            p to (0 until a.length()).mapNotNull { Section.fromId(a.optString(it)) }.distinctBy { it.id }
+            val list = (0 until a.length()).mapNotNull { Section.fromId(a.optString(it)) }.distinctBy { it.id }
+            val channels = Section(SectionType.BROADCASTS)
+            p to if (p == LayoutPage.HOME && version < 2 && channels !in list) list.toMutableList().apply { add(minOf(1, size), channels) } else list
         }.toMap()
     } catch (_: Exception) { emptyMap() }
 
     fun encode(layouts: Map<LayoutPage, List<Section>>): String {
-        val o = JSONObject()
+        val o = JSONObject().put("_v", VERSION)
         layouts.forEach { (p, list) -> o.put(p.key, JSONArray(list.map { it.id })) }
         return o.toString()
     }

@@ -31,6 +31,8 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.app.AlertDialog
 import com.danielportelabyrne.cinema.data.movies.BroadcastPlaylist
+import com.danielportelabyrne.cinema.data.movies.ChannelGuide
+import com.danielportelabyrne.cinema.data.movies.ChannelSummary
 import com.danielportelabyrne.cinema.data.movies.PlaylistEpisode
 import com.danielportelabyrne.cinema.data.movies.BroadcastQueue
 import com.danielportelabyrne.cinema.data.movies.PlaylistPlayback
@@ -139,6 +141,7 @@ import com.danielportelabyrne.cinema.design.cinema.HeroBackdrop
 import com.danielportelabyrne.cinema.design.cinema.PosterCard
 import com.danielportelabyrne.cinema.design.cinema.Scrim
 import com.danielportelabyrne.cinema.design.cinema.StripePoster
+import com.danielportelabyrne.cinema.design.cinema.ChannelViews
 import com.danielportelabyrne.cinema.design.cinema.StreamLoadingView
 import com.danielportelabyrne.cinema.design.cinema.CinemaBar
 import com.danielportelabyrne.cinema.design.cinema.GlowCard
@@ -267,7 +270,7 @@ class MoviesPanel(
         is Dest.LbPerson, is Dest.LbListPage, Dest.LbSearch, Dest.LbFollow -> Dest.Letterboxd
         is Dest.MusicAlbum, is Dest.MusicArtist -> Dest.Music
         Dest.Watchlist -> Dest.Library
-        is Dest.Playlist -> Dest.Playlists
+        Dest.Playlists, is Dest.Playlist -> Dest.Home
         else -> d
     }
 
@@ -659,6 +662,20 @@ class MoviesPanel(
                 SheetAction("Cancel download", "Stop it and remove its partial files") { }))
             return
         }
+        // "ident": the channel ident shown on tuning in; OK or Back closes it.
+        if (name == "ident") {
+            val ident = ChannelViews.ident(activity, 1, "Evening Cinema", "The Last Light")
+            ident.setOnClickListener { (overlay as ViewGroup).removeView(ident) }
+            (overlay as ViewGroup).addView(ident, FrameLayout.LayoutParams(-1, -1))
+            return
+        }
+        // "channel-sample": a public sample video as the first programme of channel 1, to see the tune-in ident and the station label.
+        if (name == "channel-sample") {
+            val candidate = StreamCandidate("sample", "Sample", "Sample", "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_30MB.mp4", null, StreamMetadata())
+            PlayerActivity.launch(activity, listOf(RankedStream(candidate, 100, 0L, false, Verdict.RECOMMENDED, null, emptyList())), "The Last Light", null,
+                meta = PlayerMeta("Sample"), playlist = PlaylistPlayback("debug", "debug", null, "Evening Cinema", "Coastline · S2 E3", 1, true))
+            return
+        }
         // "sample:<imdb>:<season>:<episode>": a public sample video in the player as that episode, to see its paused screen.
         if (name.startsWith("sample:")) {
             val p = name.removePrefix("sample:").split(":")
@@ -814,7 +831,6 @@ class MoviesPanel(
             Triple("Letterboxd", R.drawable.ic_cin_lb, Dest.Letterboxd),
             Triple("Music", R.drawable.ic_cin_music, Dest.Music),
             Triple("My library", R.drawable.ic_cin_lib, Dest.Library),
-            Triple("Playlists", R.drawable.ic_cin_tv, Dest.Playlists),
             Triple("History", R.drawable.ic_cin_history, Dest.History),
             Triple("Downloads", R.drawable.ic_cin_dl, Dest.Downloads)
         )
@@ -4040,6 +4056,7 @@ class MoviesPanel(
             SectionType.PICKS -> picksRow(gen)
             SectionType.SERVICES -> serviceTiles(gen)
             SectionType.CHANNELS -> channelTiles(gen)
+            SectionType.BROADCASTS -> channelsRow()
             SectionType.GENRE_TILES -> genreTiles()
             SectionType.MY_LIBRARY -> libraryRow(gen, "My library", 18)
             SectionType.WATCHLIST -> watchlistRow(when (s.arg) { "films" -> false; "series" -> true; else -> null })
@@ -4123,10 +4140,10 @@ class MoviesPanel(
             isSingleLine = true
             setText(initial)
             setSelectAllOnFocus(true)
-            hint = "Playlist name"
+            hint = "Channel name"
         }
         val dialog = AlertDialog.Builder(activity)
-            .setTitle(if (initial.isEmpty()) "New playlist" else "Rename playlist")
+            .setTitle(if (initial.isEmpty()) "New channel" else "Rename channel")
             .setView(field)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save", null)
@@ -4198,8 +4215,8 @@ class MoviesPanel(
             CinemaToast.show(activity, "Added ${title.name} to ${playlist.name}", Toast.LENGTH_SHORT)
         }
         val existing = playlists.all()
-        val choices = existing.map { it.name } + "New playlist…"
-        AlertDialog.Builder(activity).setTitle("Add to playlist")
+        val choices = existing.map { it.name } + "New channel…"
+        AlertDialog.Builder(activity).setTitle("Add to channel")
             .setItems(choices.toTypedArray()) { _, index ->
                 val playlist = existing.getOrNull(index)
                 if (playlist == null) playlistName { add(playlists.create(it)) }
@@ -4210,8 +4227,8 @@ class MoviesPanel(
     }
 
     private fun buildPlaylists(id: String? = null, channelEnded: Boolean = false) {
-        val all = playlists.all()
-        val playlist = all.firstOrNull { it.id == id }
+        val playlist = playlists.all().firstOrNull { it.id == id }
+        if (playlist == null) { buildChannels(); return }
         fun card(title: String, subtitle: String, select: () -> Unit): View {
             val view = actionCard(title, subtitle, select)
             val params = (view.layoutParams as LinearLayout.LayoutParams).apply {
@@ -4221,16 +4238,7 @@ class MoviesPanel(
             content.addView(view, params)
             return view
         }
-        pageTitle(playlist?.name ?: "Playlists")
-        if (playlist == null) {
-            card("New playlist", "Create a schedule for films and series") {
-                playlistName { name -> go(Dest.Playlist(playlists.create(name).id), remember = true) }
-            }
-            all.forEach { list ->
-                card(list.name, "${list.slots.size} scheduled") { go(Dest.Playlist(list.id), remember = true) }
-            }
-            return
-        }
+        pageTitle(playlist.name)
         if (channelEnded) {
             content.addView(note("Off air · No playable programmes remain in this session.").apply {
                 setPadding(pageStart, Cinema.px(activity, 12), 0, 0)
@@ -4238,16 +4246,10 @@ class MoviesPanel(
         }
         if (playlist.slots.isNotEmpty()) {
             lateinit var channel: View
-            channel = card("Watch as channel", "Fresh shuffle · Each show keeps its place") {
-                if (broadcast == null) {
-                    val run = BroadcastRun(playlist.id, emptyList<PlaylistSlot>().iterator(), channel, BroadcastQueue())
-                    broadcast = run
-                    playNextSlot(run)
-                }
-            }
+            channel = card("Tune in", "Fresh shuffle · Each show keeps its place") { startChannel(playlist.id, channel) }
             if (channelEnded) channel.requestFocus()
             lateinit var play: View
-            play = card("Play playlist", "Play in order with one episode per series slot") {
+            play = card("Play in order", "One episode per series slot, in the order listed") {
                 if (broadcast == null) {
                     val run = BroadcastRun(playlist.id, playlist.slots.iterator(), play)
                     broadcast = run
@@ -4270,9 +4272,9 @@ class MoviesPanel(
             }
             card("${index + 1}. ${slot.title.name}", state) { editPlaylistSlot(playlist, index) }
         }
-        card("Playlist settings", "Rename, reset progress or delete") {
+        card("Channel settings", "Rename, reset progress or delete") {
             AlertDialog.Builder(activity).setTitle(playlist.name)
-                .setItems(arrayOf("Rename", "Reset progress", "Delete playlist")) { _, choice ->
+                .setItems(arrayOf("Rename", "Reset progress", "Delete channel")) { _, choice ->
                     if (choice == 0) playlistName(playlist.name) { name ->
                         playlists.update(playlist.id) { it.copy(name = name) }
                         build()
@@ -4280,15 +4282,114 @@ class MoviesPanel(
                         CinemaConfirm.show(infoSheet, activity, "RESET PROGRESS", playlist.name,
                             "All programmes will return to their original starting points.", "Reset progress") {
                             playlists.resetProgress(playlist.id)
+                            channelQueues.remove(playlist.id)
                             build()
                         }
                     } else AlertDialog.Builder(activity).setTitle("Delete ${playlist.name}?")
                         .setNegativeButton("Cancel", null)
                         .setPositiveButton("Delete") { _, _ ->
                             playlists.delete(playlist.id)
+                            channelQueues.remove(playlist.id)
                             backToPlaylists()
                         }.show()
                 }.setNegativeButton("Cancel", null).show()
+        }
+    }
+
+    // --- Channels: playlists as TV channels --------------------------------------------------------
+
+    /** Each channel's shuffled round, drawn when it is first shown and kept until the session ends, so "Up next" is what plays. */
+    private val channelQueues = HashMap<String, BroadcastQueue>()
+    private fun queueFor(id: String) = channelQueues.getOrPut(id) { BroadcastQueue() }
+
+    /** A channel to put focus on after the page is built again on the way back from watching. */
+    private var channelFocusAfterBuild: String? = null
+
+    /** What a channel shows as its "up next": the first programme of the round that will play, or what is on it. */
+    private fun upNextLine(channel: ChannelSummary): String {
+        val next = queueFor(channel.id).upcoming(channel.playlist.slots).firstOrNull() ?: return channel.detail
+        return "Up next · ${next.title.name}" + (next.pending?.let { " · ${ChannelGuide.episode(it)}" } ?: "")
+    }
+
+    /** Home's tiles by channel, so focus can go back to the one that was just watched. */
+    private val channelTiles = HashMap<String, View>()
+
+    /** Home's row of channels: a tile for each playlist, then "More playlists", which opens the Channels page. */
+    private fun channelsRow() {
+        val store = playlists
+        val channels = ChannelGuide.summaries(store.all())
+        val onAir = store.lastTuned
+        channelTiles.clear()
+        val r = row("Your channels", if (channels.isEmpty()) null else "${channels.size}")
+        r.inner.minimumHeight = Cinema.px(activity, ChannelViews.TILE_H + 40)
+        channels.forEachIndexed { i, c ->
+            val tile = ChannelViews.tile(activity, c, upNextLine(c), onAir = c.id == onAir)
+            tile.onFocus = { lit -> if (lit) reveal(tile) }
+            tile.setOnClickListener { startChannel(c.id, tile) }
+            r.inner.addView(tile, cardParams(i))
+            channelTiles[c.id] = tile
+        }
+        val more = ChannelViews.moreCard(activity, channels.isNotEmpty())
+        more.onFocus = { lit -> if (lit) reveal(more) }
+        more.setOnClickListener { go(Dest.Playlists, remember = true) }
+        r.inner.addView(more, cardParams(channels.size))
+    }
+
+    /** The Channels page: every channel as a numbered row, and the one in focus on show beside them. */
+    private fun buildChannels() {
+        val channels = ChannelGuide.summaries(playlists.all())
+        val onAir = playlists.lastTuned
+        content.addView(Cinema.title(activity, "Channels", 64, maxLines = 1).apply { setPadding(pageStart, 0, 0, 0) })
+        val summary = if (channels.isEmpty()) "Playlists you make become channels"
+                      else "${channels.size} ${if (channels.size == 1) "channel" else "channels"} · a fresh shuffle every time you tune in"
+        content.addView(Cinema.text(activity, summary, 22, Cinema.MUTED).apply { setPadding(pageStart, Cinema.px(activity, 8), 0, Cinema.px(activity, 22)) })
+        val body = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false; setPadding(pageStart, 0, 0, 0) }
+        val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+        val preview = ChannelViews.Preview(activity) { url, width, done -> images.load(url, emptyMap(), maxWidth = width, tag = pageTag) { b -> done(b) } }
+        preview.tune.id = View.generateViewId(); preview.edit.id = View.generateViewId()
+        var shown: ChannelSummary? = null
+        fun show(c: ChannelSummary) {
+            shown = c
+            preview.show(c, queueFor(c.id).upcoming(c.playlist.slots), c.id == onAir)
+        }
+        preview.tune.setOnClickListener { shown?.let { startChannel(it.id, preview.tune) } }
+        preview.edit.setOnClickListener { shown?.let { go(Dest.Playlist(it.id), remember = true) } }
+        val rows = LinkedHashMap<String, ChannelViews.Row>()
+        channels.forEach { c ->
+            val row = ChannelViews.Row(activity, c, c.detail, c.id == onAir)
+            row.id = View.generateViewId()
+            c.playlist.slots.take(4).forEachIndexed { i, slot ->
+                slot.title.posterUrl?.let { url -> images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 92), tag = pageTag) { b -> row.setPoster(i, b) } }
+            }
+            row.onFocus = { focused ->
+                if (focused) {
+                    show(c)
+                    val target = if (preview.tune.visibility == View.VISIBLE) preview.tune else preview.edit
+                    row.nextFocusRightId = target.id
+                    preview.tune.nextFocusLeftId = row.id; preview.edit.nextFocusLeftId = row.id
+                }
+            }
+            row.setOnClickListener { startChannel(c.id, row) }
+            list.addView(row, LinearLayout.LayoutParams(Cinema.px(activity, 780), Cinema.px(activity, 128)).apply { topMargin = Cinema.px(activity, 14) })
+            rows[c.id] = row
+        }
+        val newRow = ChannelViews.newChannelRow(activity) {
+            playlistName { name -> go(Dest.Playlist(playlists.create(name).id), remember = true) }
+        }
+        list.addView(newRow, LinearLayout.LayoutParams(Cinema.px(activity, 780), Cinema.px(activity, 104)).apply { topMargin = Cinema.px(activity, 14) })
+        body.addView(list, LinearLayout.LayoutParams(-2, -2))
+        if (channels.isNotEmpty()) {
+            show(channels.first())
+            body.addView(preview, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 56) })
+        }
+        content.addView(body, LinearLayout.LayoutParams(-1, -2))
+        content.addView(Cinema.keyHints(activity, listOf("OK" to "Tune in", "Right" to "Lineup", "Back" to "Home"), 20).apply { setPadding(pageStart, Cinema.px(activity, 34), 0, 0) })
+        // Coming back from watching, focus returns to that channel. Arriving from Home (its card is gone), the first channel takes it;
+        // from the rail, focus stays where it is.
+        val back = channelFocusAfterBuild; channelFocusAfterBuild = null
+        ui.post {
+            if (back != null) rows[back]?.requestFocus()
+            else if (!top.hasFocus() && content.findFocus() == null) (rows.values.firstOrNull() ?: newRow).requestFocus()
         }
     }
 
@@ -4326,6 +4427,23 @@ class MoviesPanel(
     ) {
         var playing: PlaylistPlayback? = null
         val exhausted = mutableSetOf<String>()
+        /** False until a programme has actually begun, so the channel's ident opens the first one only. */
+        var tunedIn = false
+    }
+
+    /** Tunes in: plays the channel's round as the preview showed it, from the top. */
+    private fun startChannel(id: String, focus: View) {
+        if (broadcast != null) return
+        val run = BroadcastRun(id, emptyList<PlaylistSlot>().iterator(), focus, queueFor(id))
+        broadcast = run
+        playlists.lastTuned = id
+        playNextSlot(run)
+    }
+
+    /** A session is over: its shuffle is dropped, so the next tune-in starts a fresh one. */
+    private fun endSession(run: BroadcastRun, offAir: Boolean) {
+        channelQueues.remove(run.playlistId)
+        if (offAir) playlists.let { store -> if (store.lastTuned == run.playlistId) store.lastTuned = null }
     }
     private data class ScheduledTitle(val entry: Entry, val item: JellyfinItem?, val episode: PlaylistEpisode?)
     private var broadcast: BroadcastRun? = null
@@ -4345,7 +4463,14 @@ class MoviesPanel(
             ui.post { playNextSlot(run) }
         } else {
             broadcast = null
-            if (isVisible && current is Dest.Playlist) build()
+            endSession(run, offAir = false)
+            if (isVisible && (current is Dest.Playlist || current === Dest.Playlists)) {
+                if (current === Dest.Playlists) channelFocusAfterBuild = run.playlistId
+                build()
+            } else if (isVisible && current === Dest.Home) {
+                build()
+                ui.post { channelTiles[run.playlistId]?.requestFocus() }
+            }
         }
     }
 
@@ -4363,12 +4488,17 @@ class MoviesPanel(
         val slot = if (channel != null) channel.next(slots) else run.slots.asSequence().firstOrNull { !it.filmFinished }
         if (slot == null) {
             broadcast = null
+            endSession(run, offAir = true)
+            if (current === Dest.Playlists) channelFocusAfterBuild = run.playlistId
             build(channelEnded = playlist != null)
             if (channel == null) CinemaToast.show(activity, "Playlist finished", Toast.LENGTH_SHORT)
+            else if (current !is Dest.Playlist) CinemaToast.show(activity, "Off air. No playable programmes remain.", Toast.LENGTH_SHORT)
             return
         }
 
-        val screen = StreamLoadingView(activity, slot.title.name, playlist?.name).apply {
+        val number = playlist?.let { p -> playlists.all().indexOfFirst { it.id == p.id } + 1 }?.takeIf { it > 0 }
+        val firstProgramme = channel != null && !run.tunedIn
+        val screen = StreamLoadingView(activity, slot.title.name, playlist?.name, if (firstProgramme) number else null).apply {
             isFocusable = true
             isFocusableInTouchMode = true
             setOnKeyListener { _, code, _ -> code != android.view.KeyEvent.KEYCODE_BACK }
@@ -4393,8 +4523,9 @@ class MoviesPanel(
                 }
                 val episode = scheduled.episode
                 val label = if (episode == null) slot.title.name else "${slot.title.name} · S${episode.season} E${episode.number}"
-                val playback = PlaylistPlayback(run.playlistId, slot.id, episode, playlist?.name, channel?.peek(slots)?.title?.name)
+                val playback = PlaylistPlayback(run.playlistId, slot.id, episode, playlist?.name, channel?.peek(slots)?.title?.name, number, firstProgramme)
                 run.playing = playback
+                run.tunedIn = true
                 playlists.queue(playback)
                 val item = scheduled.item
                 if (item != null) {
@@ -5639,7 +5770,7 @@ class MoviesPanel(
             setPadding(0, 0, 0, 0)
             makeIconOnly()
             dark = true
-            contentDescription = "Add to playlist"
+            contentDescription = "Add to channel"
             setOnClickListener { choosePlaylistStart(e) }
         }
         buttons.addView(addToPlaylist, LinearLayout.LayoutParams(h, h).apply { marginStart = gap })
@@ -6077,7 +6208,7 @@ class MoviesPanel(
         Perf.mark("stream.press"); Perf.begin("stream.press->startReply")
         streamReturnFocus = button
         val label = shownTitle ?: e.title.name
-        val screen = StreamLoadingView(activity, label, playlist?.station).apply {
+        val screen = StreamLoadingView(activity, label, playlist?.station, playlist?.takeIf { it.tuneIn }?.number).apply {
             isFocusable = true; isFocusableInTouchMode = true
             // Nothing on the screen is selectable: keep the D-pad from wandering to the page underneath.
             setOnKeyListener { _, code, _ -> code != android.view.KeyEvent.KEYCODE_BACK }
@@ -6579,7 +6710,7 @@ class MoviesPanel(
                 val facts = EpisodeCards.metaParts(runtime, resume?.second, ep.airDate).joinToString(" · ").ifBlank { null }
                 val actions = buildList {
                     if (look.playShown) add(SheetAction(if (mine != null) "Play" else "Stream", label, primary = true) { card.play.performClick() })
-                    add(SheetAction("Start here in a playlist", label, icon = R.drawable.ic_cin_plus) {
+                    add(SheetAction("Start here in a channel", label, icon = R.drawable.ic_cin_plus) {
                         addPlaylistSlot(e, PlaylistEpisode(s.number, ep.number))
                     })
                 }

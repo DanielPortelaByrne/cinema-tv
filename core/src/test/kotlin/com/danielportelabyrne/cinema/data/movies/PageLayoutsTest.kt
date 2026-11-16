@@ -13,9 +13,22 @@ class PageLayoutsTest {
     }
 
     @Test fun unknown_rows_are_dropped_not_fatal() {
-        val back = PageLayouts.parse("""{"home":["NOPE","TOP10|all","TOP10|all"]}""")
+        val back = PageLayouts.parse("""{"_v":2,"home":["NOPE","TOP10|all","TOP10|all"]}""")
         assertEquals(listOf(Section(SectionType.TOP10, "all")), back[LayoutPage.HOME])
         assertTrue(PageLayouts.parse("not json").isEmpty())
+    }
+
+    @Test fun a_home_saved_before_channels_gets_the_row_once_after_the_first_row() {
+        val old = PageLayouts.parse("""{"home":["TOP10|all","MY_LIBRARY"]}""")
+        assertEquals(listOf(Section(SectionType.TOP10, "all"), Section(SectionType.BROADCASTS), Section(SectionType.MY_LIBRARY)), old[LayoutPage.HOME])
+        // Saved again, it is in the new format: taking the row off Home then stays taken off.
+        val removed = PageLayouts.parse(PageLayouts.encode(mapOf(LayoutPage.HOME to listOf(Section(SectionType.TOP10, "all")))))
+        assertEquals(listOf(Section(SectionType.TOP10, "all")), removed[LayoutPage.HOME])
+    }
+
+    @Test fun channels_are_on_the_default_home_right_after_the_first_row() {
+        assertEquals(Section(SectionType.BROADCASTS), PageLayouts.defaults(LayoutPage.HOME)[1])
+        assertEquals("Your channels", PageLayouts.label(Section(SectionType.BROADCASTS)))
     }
 
     @Test fun search_finds_a_top_10_of_a_service_and_skips_rows_already_there() {

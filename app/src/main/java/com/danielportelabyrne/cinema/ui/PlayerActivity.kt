@@ -479,22 +479,38 @@ class PlayerActivity : AppCompatActivity() {
             chrome = PlayerChrome(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)); wireChrome(it) }
         }
         station?.let { name ->
-            val ident = android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                val horizontal = Cinema.px(this@PlayerActivity, 28)
-                val vertical = Cinema.px(this@PlayerActivity, 16)
-                setPadding(horizontal, vertical, horizontal, vertical)
-                background = Cinema.glass(this@PlayerActivity, 18f, Cinema.BG)
+            // The station label, in Cinema's glass: the channel's number and name, the programme, what is next, and the
+            // stripe band along its top. It shows for a couple of seconds after the first frame, then clears.
+            val ident = android.widget.FrameLayout(this).apply {
+                background = Cinema.glass(this@PlayerActivity, 26f, Cinema.RAIL_FILL)
+                val corner = Cinema.pxf(this@PlayerActivity, 26)
+                outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, corner) } }
+                clipToOutline = true
+                clipToPadding = false
                 visibility = View.GONE
-                addView(Cinema.text(this@PlayerActivity, name, 18, Cinema.SAFFRON, weight = 600, caps = true))
-                addView(Cinema.text(this@PlayerActivity, title, 29, Cinema.CREAM, weight = 500).apply { maxLines = 2 })
-                playlistPlayback?.nextTitle?.let { next ->
-                    addView(Cinema.text(this@PlayerActivity, "Up next · $next", 20, Cinema.READING).apply { maxLines = 2 })
+                val column = android.widget.LinearLayout(this@PlayerActivity).apply { orientation = android.widget.LinearLayout.VERTICAL }
+                val top = android.widget.LinearLayout(this@PlayerActivity).apply { orientation = android.widget.LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                playlistPlayback?.number?.let { number ->
+                    top.addView(com.danielportelabyrne.cinema.design.cinema.ChannelViews.chip(this@PlayerActivity, number, com.danielportelabyrne.cinema.data.movies.ChannelGuide.look(number).copy(darkText = false)),
+                        android.widget.LinearLayout.LayoutParams(-2, -2).apply { marginEnd = Cinema.px(this@PlayerActivity, 14) })
                 }
+                top.addView(Cinema.text(this@PlayerActivity, name, 20, Cinema.SAFFRON, weight = 600, tracking = 0.08f, caps = true))
+                column.addView(top)
+                column.addView(Cinema.text(this@PlayerActivity, title, 46, Cinema.CREAM, serif = true, tracking = -0.02f).apply { maxLines = 2 },
+                    android.widget.LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(this@PlayerActivity, 12) })
+                playlistPlayback?.nextTitle?.let { next ->
+                    column.addView(Cinema.text(this@PlayerActivity, "Up next · $next", 22, Cinema.MUTED).apply { maxLines = 2 },
+                        android.widget.LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(this@PlayerActivity, 8) })
+                }
+                val pad = Cinema.px(this@PlayerActivity, 32)
+                setPadding(pad, Cinema.px(this@PlayerActivity, 30), pad, Cinema.px(this@PlayerActivity, 28))
+                addView(column, android.widget.FrameLayout.LayoutParams(-1, -2))
+                addView(com.danielportelabyrne.cinema.design.cinema.ChannelViews.band(this@PlayerActivity, 6),
+                    android.widget.FrameLayout.LayoutParams(-1, Cinema.px(this@PlayerActivity, 6), Gravity.TOP).apply { setMargins(-pad, -Cinema.px(this@PlayerActivity, 30), -pad, 0) })
             }
-            root.addView(ident, FrameLayout.LayoutParams(Cinema.px(this, 600), -2, Gravity.TOP or Gravity.START).apply {
-                leftMargin = Cinema.px(this@PlayerActivity, 96)
-                topMargin = Cinema.px(this@PlayerActivity, 76)
+            root.addView(ident, FrameLayout.LayoutParams(Cinema.px(this, 640), -2, Gravity.TOP or Gravity.START).apply {
+                leftMargin = Cinema.px(this@PlayerActivity, 84)
+                topMargin = Cinema.px(this@PlayerActivity, 72)
             })
             stationIdent = ident
         }
@@ -1099,7 +1115,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun dp(v: Int) = Math.round(v * resources.displayMetrics.density)
 
     /** The Cinema loading screen (the same one the Movies page shows while finding a copy), until the first frame. */
-    private fun buildLoading(): View = com.danielportelabyrne.cinema.design.cinema.StreamLoadingView(this, title, station).also { v ->
+    private fun buildLoading(): View = com.danielportelabyrne.cinema.design.cinema.StreamLoadingView(this, title, station, playlistPlayback?.takeIf { it.tuneIn }?.number).also { v ->
         loadingScreen = v
         if (station == null) v.message("Connecting to the sources…")
         art?.let { url -> RemoteImages.shared(this).load(url, maxWidth = 960) { v.backdrop(it) } }

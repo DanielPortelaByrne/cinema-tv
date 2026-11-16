@@ -17,8 +17,11 @@ import com.danielportelabyrne.cinema.design.Cinema
  *
  * The Movies page shows it while the home server looks for a copy; the player shows the same screen until the first
  * frame, so the hand-over between them is seamless. Only figures the server reports are shown; the rest read "—".
+ *
+ * On a channel ([station]), [tuneInNumber] is set for the first programme after tuning in: the channel's ident covers the
+ * screen until the picture is ready.
  */
-class StreamLoadingView(context: Context, title: String, station: String? = null) : FrameLayout(context) {
+class StreamLoadingView(context: Context, title: String, station: String? = null, tuneInNumber: Int? = null) : FrameLayout(context) {
     private val backdrop = HeroBackdrop(context, focusX = 1f, fadeTo = 0.38f)
     private val status: TextView
     // While nothing is known, the wavy loader; once some of the film has arrived, the wavy bar shows how much.
@@ -79,6 +82,8 @@ class StreamLoadingView(context: Context, title: String, station: String? = null
 
         addView(Cinema.keyHints(context, listOf("Back" to "to cancel"), 20), LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { rightMargin = Cinema.px(context, 96); bottomMargin = Cinema.px(context, 110) })
         step(LoadingStep.FINDING_PEERS)
+        // The first programme after tuning in opens with the channel's own ident over everything above.
+        if (station != null && tuneInNumber != null) addView(ChannelViews.ident(context, tuneInNumber, station, title), LayoutParams(-1, -1))
     }
 
     fun backdrop(bitmap: Bitmap) = backdrop.show(bitmap)

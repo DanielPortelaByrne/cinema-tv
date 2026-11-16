@@ -52,17 +52,22 @@ data class BroadcastPlaylist(
 /** Identifies the exact slot and episode handed to the player. */
 data class PlaylistPlayback(
     val playlistId: String, val slotId: String, val episode: PlaylistEpisode?,
-    val station: String? = null, val nextTitle: String? = null
+    val station: String? = null, val nextTitle: String? = null,
+    /** The channel's number (its place in the list), shown on the tune-in screen and the station label. */
+    val number: Int? = null,
+    /** True for the first programme after tuning in, which opens with the channel's own ident. */
+    val tuneIn: Boolean = false
 ) {
     fun encode(): String = JSONObject().put("playlist", playlistId).put("slot", slotId).put("episode", episode?.json())
-        .put("station", station).put("nextTitle", nextTitle).toString()
+        .put("station", station).put("nextTitle", nextTitle).put("number", number).put("tuneIn", tuneIn).toString()
 
     companion object {
         fun decode(raw: String?): PlaylistPlayback? = raw?.let {
             runCatching {
                 val value = JSONObject(it)
                 PlaylistPlayback(value.getString("playlist"), value.getString("slot"), PlaylistEpisode.read(value.optJSONArray("episode")),
-                    value.optString("station").ifBlank { null }, value.optString("nextTitle").ifBlank { null })
+                    value.optString("station").ifBlank { null }, value.optString("nextTitle").ifBlank { null },
+                    value.optInt("number").takeIf { it > 0 }, value.optBoolean("tuneIn"))
             }.getOrNull()
         }
     }
@@ -83,7 +88,15 @@ class PlaylistStore(platform: Platform) {
         return playlist
     }
 
-    fun delete(id: String) = synchronized(lock) { save(all().filterNot { it.id == id }) }
+    fun delete(id: String) = synchronized(lock) {
+        save(all().filterNot { it.id == id })
+        if (lastTuned == id) lastTuned = null
+    }
+
+    /** The channel tuned to most recently, shown as "On air" until it runs out of programmes. */
+    var lastTuned: String?
+        get() = prefs.getString("last_tuned", null)?.takeIf { it.isNotBlank() }
+        set(value) { prefs.edit().putString("last_tuned", value.orEmpty()).apply() }
 
     fun update(id: String, change: (BroadcastPlaylist) -> BroadcastPlaylist) = synchronized(lock) {
         save(all().map { if (it.id == id) change(it) else it })

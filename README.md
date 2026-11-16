@@ -31,11 +31,15 @@ Two extra services can run next to Seerr. They are **not part of this repo**, an
 
 [suggestashow](https://github.com/ConorHK/suggestashow) is an optional server that works out **Picked for you** from everything watched on Jellyfin, on any device, and learns from what is ignored or requested. Turn it on under **Settings → Integrations → Suggestashow** and give its address (on the desktop app, under **Helper services**). Cinema sends its Jellyfin sign-in so the server knows who is watching. While it is off, picks are worked out on the device as before. When the server cannot be reached, the last picks stay. A preset can set it with `"suggestashowUrl"`.
 
-## Watch a playlist as a channel
+## Channels
 
-On Android TV, add films or series to a playlist and choose **Watch as channel**. Each session starts with a fresh shuffle. Programmes start at 00:00, and each series slot remembers its own next episode. A programme advances its slot when playback reaches the end after video has started. Skipping or leaving early keeps the slot pending. Finished films stay out of later rounds, and **Playlist settings → Reset progress** returns the whole playlist to its original starting points.
+On Android TV, a playlist is a **channel**. **Your channels** is a row on Home: a painted tile for each channel with its number and what is up next, then **More playlists**, which opens the **Channels** page. There, each channel is a numbered row; the one in focus is previewed beside the list (what is on it, in the order it will play), with **Tune in** and **Edit lineup**. Add films and series to a channel with the **+** on a title, and make a new one from **New channel**.
 
-Use the player's **Next** control to skip, or **Back** to leave the channel. Sources use the same Jellyfin and Cinema streaming paths as playlist playback. The station card appears while a programme is being prepared, and the brief programme label clears from the picture on its own. **Play playlist** is still available for playback in list order.
+Tuning in opens with the channel's ident, then plays a fresh shuffle: each session starts from 00:00, and each series slot remembers its own next episode. The shuffle you see as "Up next" is the one that plays. A programme advances its slot when playback reaches the end after video has started. Skipping or leaving early keeps the slot pending. Finished films stay out of later rounds, and **Channel settings → Reset progress** returns the whole channel to its original starting points.
+
+Use the player's **Next** control to skip, or **Back** to leave the channel. The station label (the channel's number and name, the programme and what is next) appears over the picture for a moment, then clears. **Play in order**, on a channel's lineup page, plays it in list order instead. A channel tuned to last shows **On air** until it runs out of programmes.
+
+Mockups for the channel screens are in [docs/mockups/channels](docs/mockups/channels/index.html).
 
 ## Installing on a TV
 
@@ -181,6 +185,7 @@ adb shell am start -n com.danielportelabyrne.cinema/.CinemaActivity --es debug_s
 
 - `debug_setup_step` opens a setup page: `welcome`, `jellyfin`, `signin`, `seerr`, `arr`, `client`, `region`, `advanced` or `settings`.
 - `debug_cinema_dest` opens a Cinema page: `letterboxd`, `downloads`, `library`, `services`, `service-search` or `loading`.
+- `debug_skip_setup` (`--ez debug_skip_setup true`) opens Cinema without a Jellyfin server, and `debug_seed_channels` adds three made-up channels if there are none, so the Channels row and page can be checked on an emulator. `debug_cinema_dest` also takes `playlists` (the Channels page), `ident` (the tune-in screen) and `channel-sample` (a sample video as a channel's first programme).
 
 ## How the code is laid out
 

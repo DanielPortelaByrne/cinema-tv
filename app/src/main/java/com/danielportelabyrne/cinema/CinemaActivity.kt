@@ -317,7 +317,9 @@ class CinemaActivity : AppCompatActivity() {
 
         val start = {
             // Nothing to show until there is a Jellyfin server: first run, or after Reset everything.
+            seedDebugChannels(intent)
             when {
+                debugFlag(intent, "debug_skip_setup") -> openMovies()
                 !settings.setupDone || !jellyfin.hasServer -> setup.startFirstRun()
                 // The server is known but the sign-in was lost (a token rejected, or the app data partly wiped): say so.
                 !jellyfin.isConnected -> setup.startSignBackIn()
@@ -427,6 +429,32 @@ class CinemaActivity : AppCompatActivity() {
      * Debug builds only: a Jellyfin test account passed as intent extras by the device smoke test, so its password is
      * never in the APK. Release builds ignore these extras.
      */
+    /** Debug builds only: `--ez <name> true` turns a debug option on. */
+    private fun debugFlag(intent: android.content.Intent?, name: String): Boolean =
+        applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && intent?.getBooleanExtra(name, false) == true
+
+    /**
+     * Debug builds only: `--ez debug_seed_channels true` adds three made-up playlists (if there are none), so the channels
+     * row and page can be checked without a library. `--ez debug_skip_setup true` opens Cinema without a server.
+     */
+    private fun seedDebugChannels(intent: android.content.Intent?) {
+        if (!debugFlag(intent, "debug_seed_channels")) return
+        val store = com.danielportelabyrne.cinema.data.movies.PlaylistStore(com.danielportelabyrne.cinema.device.AndroidPlatform(this))
+        if (store.all().isNotEmpty()) return
+        fun title(name: String, kind: com.danielportelabyrne.cinema.data.movies.Kind) =
+            com.danielportelabyrne.cinema.data.movies.Title(name, kind, name, null, null, null, emptyList(), null, null, null, null, null, null)
+        fun channel(name: String, slots: List<com.danielportelabyrne.cinema.data.movies.PlaylistSlot>) =
+            store.create(name).also { c -> store.update(c.id) { it.copy(slots = slots) } }
+        val film = com.danielportelabyrne.cinema.data.movies.Kind.MOVIE
+        val show = com.danielportelabyrne.cinema.data.movies.Kind.SHOW
+        fun slot(name: String, kind: com.danielportelabyrne.cinema.data.movies.Kind, pending: com.danielportelabyrne.cinema.data.movies.PlaylistEpisode? = null) =
+            com.danielportelabyrne.cinema.data.movies.PlaylistSlot(title(name, kind), pending = pending)
+        channel("Evening Cinema", listOf(slot("The Last Light", film), slot("Night Train", film), slot("Harbour at Dawn", film), slot("Coastline", show), slot("The Long Table", film), slot("Paper Moon Road", show)))
+        val sitcoms = channel("Sunday Sitcoms", listOf(slot("Corner Shop", show, com.danielportelabyrne.cinema.data.movies.PlaylistEpisode(3, 4)), slot("Two Doors Down", show), slot("Flatmates", show), slot("Upstairs Neighbours", show)))
+        channel("Late Thrillers", listOf(slot("Grey Water", film), slot("Dead Reckoning", film), slot("The Quiet Hour", film), slot("Cold Harbour", film), slot("Glass House", film), slot("Night Shift", show), slot("Low Tide", film), slot("The Informant", film), slot("Blackout", show)))
+        store.lastTuned = sitcoms.id
+    }
+
     private fun debugTestAccount(intent: android.content.Intent?): TestAccount? {
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return null
         val server = intent?.getStringExtra("debug_jellyfin_server") ?: return null
