@@ -18,7 +18,7 @@ import com.danielportelabyrne.cinema.design.Cinema
  * The Movies page shows it while the home server looks for a copy; the player shows the same screen until the first
  * frame, so the hand-over between them is seamless. Only figures the server reports are shown; the rest read "—".
  */
-class StreamLoadingView(context: Context, title: String) : FrameLayout(context) {
+class StreamLoadingView(context: Context, title: String, station: String? = null) : FrameLayout(context) {
     private val backdrop = HeroBackdrop(context, focusX = 1f, fadeTo = 0.38f)
     private val status: TextView
     // While nothing is known, the wavy loader; once some of the film has arrived, the wavy bar shows how much.
@@ -41,10 +41,10 @@ class StreamLoadingView(context: Context, title: String) : FrameLayout(context) 
         val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val eyebrow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         eyebrow.addView(PulseDot(context), LinearLayout.LayoutParams(Cinema.px(context, 26), Cinema.px(context, 26)).apply { marginEnd = Cinema.px(context, 8) })
-        eyebrow.addView(Cinema.text(context, "Now loading", 17, Cinema.SAFFRON, weight = 600, tracking = 0.24f, caps = true))
+        eyebrow.addView(Cinema.text(context, station?.let { "$it  ·  Up next" } ?: "Now loading", 17, Cinema.SAFFRON, weight = 600, tracking = 0.24f, caps = true))
         column.addView(eyebrow)
         column.addView(Cinema.title(context, title, if (title.length > 22) 96 else 132), LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(context, 26) })
-        status = Cinema.text(context, "Finding a copy of $title. This can take a minute.", 28, Cinema.READING, weight = 300).apply { maxLines = 2 }
+        status = Cinema.text(context, if (station != null) "Preparing programme…" else "Finding a copy of $title. This can take a minute.", 28, Cinema.READING, weight = 300).apply { maxLines = 2 }
         column.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(context, 28) })
         val progress = FrameLayout(context)
         progress.addView(loader, LayoutParams(-1, -1))
@@ -59,7 +59,7 @@ class StreamLoadingView(context: Context, title: String) : FrameLayout(context) 
             trail.addView(label, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(context, 12) })
             steps[step] = dot to label
         }
-        column.addView(trail, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 34) })
+        if (station == null) column.addView(trail, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 34) })
 
         val chips = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         fun chip(name: String): TextView {
@@ -74,7 +74,7 @@ class StreamLoadingView(context: Context, title: String) : FrameLayout(context) 
             return value
         }
         seeds = chip("Seeds"); peers = chip("Peers"); speed = chip("Speed")
-        column.addView(chips, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 36) })
+        if (station == null) column.addView(chips, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 36) })
         addView(column, LayoutParams(Cinema.px(context, 900), -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin = Cinema.px(context, 112); bottomMargin = Cinema.px(context, 120) })
 
         addView(Cinema.keyHints(context, listOf("Back" to "to cancel"), 20), LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { rightMargin = Cinema.px(context, 96); bottomMargin = Cinema.px(context, 110) })

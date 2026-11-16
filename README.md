@@ -31,6 +31,12 @@ Two extra services can run next to Seerr. They are **not part of this repo**, an
 
 [suggestashow](https://github.com/ConorHK/suggestashow) is an optional server that works out **Picked for you** from everything watched on Jellyfin, on any device, and learns from what is ignored or requested. Turn it on under **Settings → Integrations → Suggestashow** and give its address (on the desktop app, under **Helper services**). Cinema sends its Jellyfin sign-in so the server knows who is watching. While it is off, picks are worked out on the device as before. When the server cannot be reached, the last picks stay. A preset can set it with `"suggestashowUrl"`.
 
+## Watch a playlist as a channel
+
+On Android TV, add films or series to a playlist and choose **Watch as channel**. Each session starts with a fresh shuffle. Programmes start at 00:00, and each series slot remembers its own next episode. A programme advances its slot when playback reaches the end after video has started. Skipping or leaving early keeps the slot pending. Finished films stay out of later rounds, and **Playlist settings → Reset progress** returns the whole playlist to its original starting points.
+
+Use the player's **Next** control to skip, or **Back** to leave the channel. Sources use the same Jellyfin and Cinema streaming paths as playlist playback. The station card appears while a programme is being prepared, and the brief programme label clears from the picture on its own. **Play playlist** is still available for playback in list order.
+
 ## Installing on a TV
 
 1. Get an APK. Either download one someone has built, or build it yourself (see below).

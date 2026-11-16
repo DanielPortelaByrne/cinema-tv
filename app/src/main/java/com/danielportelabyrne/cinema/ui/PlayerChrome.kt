@@ -524,6 +524,8 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     }
 
     /** Next exists or not (a next chapter or episode). */
+    fun describeNext(label: String) { nextButton.contentDescription = label }
+
     fun refreshNext() { nextButton.alpha = if (onNext != null) 0.9f else 0.3f; nextButton.isEnabled = onNext != null }
 
     // --- State ---

@@ -50,14 +50,19 @@ data class BroadcastPlaylist(
 )
 
 /** Identifies the exact slot and episode handed to the player. */
-data class PlaylistPlayback(val playlistId: String, val slotId: String, val episode: PlaylistEpisode?) {
-    fun encode(): String = JSONObject().put("playlist", playlistId).put("slot", slotId).put("episode", episode?.json()).toString()
+data class PlaylistPlayback(
+    val playlistId: String, val slotId: String, val episode: PlaylistEpisode?,
+    val station: String? = null, val nextTitle: String? = null
+) {
+    fun encode(): String = JSONObject().put("playlist", playlistId).put("slot", slotId).put("episode", episode?.json())
+        .put("station", station).put("nextTitle", nextTitle).toString()
 
     companion object {
         fun decode(raw: String?): PlaylistPlayback? = raw?.let {
             runCatching {
                 val value = JSONObject(it)
-                PlaylistPlayback(value.getString("playlist"), value.getString("slot"), PlaylistEpisode.read(value.optJSONArray("episode")))
+                PlaylistPlayback(value.getString("playlist"), value.getString("slot"), PlaylistEpisode.read(value.optJSONArray("episode")),
+                    value.optString("station").ifBlank { null }, value.optString("nextTitle").ifBlank { null })
             }.getOrNull()
         }
     }
@@ -82,6 +87,10 @@ class PlaylistStore(platform: Platform) {
 
     fun update(id: String, change: (BroadcastPlaylist) -> BroadcastPlaylist) = synchronized(lock) {
         save(all().map { if (it.id == id) change(it) else it })
+    }
+
+    fun resetProgress(id: String) = update(id) { playlist ->
+        playlist.copy(slots = playlist.slots.map { it.copy(lastFinished = null, pending = null, filmFinished = false) })
     }
 
     fun queue(playback: PlaylistPlayback) {

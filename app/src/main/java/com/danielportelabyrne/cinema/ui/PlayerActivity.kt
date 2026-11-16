@@ -164,6 +164,8 @@ class PlayerActivity : AppCompatActivity() {
     /** Opened from a Continue watching card: the saved links may have expired, and a fresh copy can be found instead. */
     private var fromContinue = false
     private var playlistPlayback: PlaylistPlayback? = null
+    private val station: String? get() = playlistPlayback?.station
+    private var stationIdent: View? = null
     private val playlistStore by lazy { PlaylistStore(AndroidPlatform(this)) }
     /** Some attempt showed a picture. Until then a dead saved link means finding the title again, not giving up. */
     private var playedAny = false
@@ -476,6 +478,26 @@ class PlayerActivity : AppCompatActivity() {
             view.isFocusable = false
             chrome = PlayerChrome(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)); wireChrome(it) }
         }
+        station?.let { name ->
+            val ident = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                val horizontal = Cinema.px(this@PlayerActivity, 28)
+                val vertical = Cinema.px(this@PlayerActivity, 16)
+                setPadding(horizontal, vertical, horizontal, vertical)
+                background = Cinema.glass(this@PlayerActivity, 18f, Cinema.BG)
+                visibility = View.GONE
+                addView(Cinema.text(this@PlayerActivity, name, 18, Cinema.SAFFRON, weight = 600, caps = true))
+                addView(Cinema.text(this@PlayerActivity, title, 29, Cinema.CREAM, weight = 500).apply { maxLines = 2 })
+                playlistPlayback?.nextTitle?.let { next ->
+                    addView(Cinema.text(this@PlayerActivity, "Up next · $next", 20, Cinema.READING).apply { maxLines = 2 })
+                }
+            }
+            root.addView(ident, FrameLayout.LayoutParams(Cinema.px(this, 600), -2, Gravity.TOP or Gravity.START).apply {
+                leftMargin = Cinema.px(this@PlayerActivity, 96)
+                topMargin = Cinema.px(this@PlayerActivity, 76)
+            })
+            stationIdent = ident
+        }
         bufferingView = FrameLayout(this).apply {
             visibility = View.GONE; isFocusable = false
             // A soft dark pool behind the loader, so it reads over a bright frame.
@@ -519,17 +541,17 @@ class PlayerActivity : AppCompatActivity() {
         if (report == null) { startAttempt(0); loadEpisodes(null) } else {
             // Start loading at once from what the library list already said (source and resume point), held paused; the
             // item's details (chapters, trickplay, the server's latest resume point) are fetched alongside. Playback
-            // begins when they arrive, or after ITEM_WAIT_MS at most, so a slow answer never holds up the film.
-            startAttempt(0, play = false)
+            // begins when they arrive or after ITEM_WAIT_MS at most. Channels start immediately from zero.
+            startAttempt(0, play = station != null)
             val release = Runnable { if (!isFinishing && !isDestroyed) player.playWhenReady = true }
-            handler.postDelayed(release, ITEM_WAIT_MS)
+            if (station == null) handler.postDelayed(release, ITEM_WAIT_MS)
             val client = jellyfin
             reporter.execute {
                 val fresh = client.item(report.itemId)
                 handler.post {
                     if (isFinishing || isDestroyed) return@post
                     if (fresh != null) { applyFreshItem(report, fresh); lbSource = Triple(fresh.imdbId, fresh.tmdbId, fresh.isEpisode) }
-                    handler.removeCallbacks(release); player.playWhenReady = true
+                    if (station == null) { handler.removeCallbacks(release); player.playWhenReady = true }
                     prefetchNextEpisode(fresh)
                     loadEpisodes(fresh)
                 }
@@ -599,12 +621,12 @@ class PlayerActivity : AppCompatActivity() {
                 items = parse(playbackIntent(this, plan.streams, plan.title, plan.resumeKey, updated).getStringExtra(EXTRA_ITEMS))
             }
             items = listOf(stereoItem(updated)) + items
-            startAttempt(0, play = false)
+            startAttempt(0, play = station != null && player.playWhenReady)
         } else if (fresh.sourceId != report.sourceId) {
             Perf.mark("player.sourceChanged")
             val plan = JellyfinPlayback.prepare(jellyfin, fresh, title, imdbId ?: "jf:${fresh.id}")
             items = parse(playbackIntent(this, plan.streams, plan.title, plan.resumeKey, updated).getStringExtra(EXTRA_ITEMS))
-            startAttempt(0, play = false)
+            startAttempt(0, play = station != null && player.playWhenReady)
         } else if (!started && kotlin.math.abs(updated.startMs - report.startMs) > RESUME_DRIFT_MS) {
             player.seekTo(updated.startMs)
         }
@@ -990,6 +1012,13 @@ class PlayerActivity : AppCompatActivity() {
             playedAny = true
             keepAwake()
             hideLoading()
+            stationIdent?.let { ident ->
+                ident.visibility = View.VISIBLE
+                handler.postDelayed({
+                    if (Motion.animationsOn(ident)) ident.animate().alpha(0f).setDuration(220).withEndAction { ident.visibility = View.GONE }.start()
+                    else ident.visibility = View.GONE
+                }, 2200)
+            }
             // The film's length is known now, so the chapter marks can be placed on the scrubber.
             chrome?.setChapters(itemChapters); refreshNextHook()
             startupMs = SystemClock.elapsedRealtime() - prepareAt
@@ -1006,7 +1035,11 @@ class PlayerActivity : AppCompatActivity() {
                     bufferStart = SystemClock.elapsedRealtime(); bufferEvents++; rebufferedAt = bufferStart
                 }
                 Player.STATE_READY -> { closeBuffer(); seeking = false }
-                Player.STATE_ENDED -> if (!ended) {
+                Player.STATE_ENDED -> if (!ended && !isFinishing) {
+                    if (station != null && !playedAny) {
+                        fallBackToStremio("Programme ended before its first frame")
+                        return
+                    }
                     closeBuffer(); ended = true; reportToJellyfin("Stopped", atEnd = true); recordStreamProgress(atEnd = true); recordHistory(ended = true); resumePrefs.edit().remove(resumeKey() ?: "").apply()
                     continueStore.save(ResumeItem(title, null, packageName, null, player.duration, player.duration, null, System.currentTimeMillis()), null)
                     playlistPlayback?.let { playback ->
@@ -1066,9 +1099,9 @@ class PlayerActivity : AppCompatActivity() {
     private fun dp(v: Int) = Math.round(v * resources.displayMetrics.density)
 
     /** The Cinema loading screen (the same one the Movies page shows while finding a copy), until the first frame. */
-    private fun buildLoading(): View = com.danielportelabyrne.cinema.design.cinema.StreamLoadingView(this, title).also { v ->
+    private fun buildLoading(): View = com.danielportelabyrne.cinema.design.cinema.StreamLoadingView(this, title, station).also { v ->
         loadingScreen = v
-        v.message("Connecting to the sources…")
+        if (station == null) v.message("Connecting to the sources…")
         art?.let { url -> RemoteImages.shared(this).load(url, maxWidth = 960) { v.backdrop(it) } }
     }
 
@@ -1257,6 +1290,12 @@ class PlayerActivity : AppCompatActivity() {
 
     /** What Next does: the next chapter, else the next episode once it is known, else nothing. */
     private fun nextTarget(): (() -> Unit)? {
+        if (station != null) return {
+            if (!ended && !isFinishing) {
+                setResult(PLAYLIST_SKIPPED)
+                finish()
+            }
+        }
         val pos = if (::player.isInitialized) player.currentPosition else 0L
         val next = com.danielportelabyrne.cinema.data.player.PlayerMath.chapterAt(itemChapters, pos)?.let { itemChapters.getOrNull(it.index + 1) }
         if (next != null) return { player.seekTo(next.startMs) }
@@ -1269,6 +1308,7 @@ class PlayerActivity : AppCompatActivity() {
         val c = chrome ?: return
         c.onNext = if (nextTarget() != null) ({ nextTarget()?.invoke(); Unit }) else null
         c.refreshNext()
+        if (station != null) c.describeNext("Skip programme")
     }
 
     private fun isHdr(f: androidx.media3.common.Format): Boolean =
@@ -1371,6 +1411,10 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun hideLoading() {
         updateBuffering()
+        if (station != null) {
+            loadingView?.visibility = View.GONE
+            return
+        }
         loadingView?.animate()?.alpha(0f)?.setDuration(400)?.withEndAction {
             loadingView?.visibility = View.GONE
             updateBuffering()
@@ -1523,8 +1567,9 @@ class PlayerActivity : AppCompatActivity() {
             snapshotToContinue()
             player.pause()
             // Leaving in the credits: the episode counts as finished, as it does when the file runs out.
-            reportToJellyfin("Stopped", atEnd = pastCredits())
-            recordHistory(credits = pastCredits())
+            val credits = station == null && pastCredits()
+            reportToJellyfin("Stopped", atEnd = credits)
+            recordHistory(credits = credits)
             record(failed = false)
         }
     }
@@ -1581,7 +1626,7 @@ class PlayerActivity : AppCompatActivity() {
         val known = player.duration.takeIf { it > 0 }
         // Reaching the credits counts as watched, as the end does: viewers usually leave as the credits roll. A stream that
         // reached its end also counts when its length was never reported, since the end is then the length.
-        val reached = atEnd || pastCredits()
+        val reached = atEnd || (station == null && pastCredits())
         val duration = known ?: if (reached) player.currentPosition else 0L
         val position = if (reached && known != null) known else player.currentPosition
         if (position <= 0) return
@@ -1635,6 +1680,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_PLAYLIST = "broadcast_playlist"
         const val PLAYLIST_REQUEST = 801
         const val PLAYLIST_UNAVAILABLE = Activity.RESULT_FIRST_USER
+        const val PLAYLIST_SKIPPED = Activity.RESULT_FIRST_USER + 1
 
         /** Provider name for films from the home stream service. */
         const val STREAM_PROVIDER = "Stream"
