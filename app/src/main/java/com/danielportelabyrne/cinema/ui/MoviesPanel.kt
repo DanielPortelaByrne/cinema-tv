@@ -32,6 +32,7 @@ import android.widget.EditText
 import android.app.AlertDialog
 import com.danielportelabyrne.cinema.data.movies.BroadcastPlaylist
 import com.danielportelabyrne.cinema.data.movies.ChannelGuide
+import com.danielportelabyrne.cinema.data.movies.ChannelPreload
 import com.danielportelabyrne.cinema.data.movies.ChannelSummary
 import com.danielportelabyrne.cinema.data.movies.PlaylistEpisode
 import com.danielportelabyrne.cinema.data.movies.BroadcastQueue
@@ -400,6 +401,7 @@ class MoviesPanel(
     fun show() {
         // The player asks, a few minutes before a streamed episode ends, for the next one to be searched for (see warmUpcoming).
         PlayerActivity.onUpcomingEpisode = { r -> ui.post { warmUpcoming(r) } }
+        PlayerActivity.onUpcomingProgramme = { p -> ui.post { preloadNextProgramme(p) } }
         Perf.mark("movies.show")
         Perf.begin("movies.open->firstRow"); Perf.begin("movies.open->firstPoster"); Perf.begin("movies.open->hero")
         overlay.visibility = View.VISIBLE
@@ -457,6 +459,7 @@ class MoviesPanel(
     }
     fun close() {
         PlayerActivity.onUpcomingEpisode = null
+        PlayerActivity.onUpcomingProgramme = null
         ui.removeCallbacks(prewarm)
         jellyfin.stopLibraryPolling()
         navigationFocusListener?.let { if (top.viewTreeObserver.isAlive) top.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
@@ -4324,7 +4327,7 @@ class MoviesPanel(
         r.inner.minimumHeight = Cinema.px(activity, ChannelViews.TILE_H + 40)
         channels.forEachIndexed { i, c ->
             val tile = ChannelViews.tile(activity, c, upNextLine(c), onAir = c.id == onAir)
-            tile.onFocus = { lit -> if (lit) reveal(tile) }
+            tile.onFocus = { lit -> if (lit) reveal(tile); preloadChannelAfterRest(if (lit) c else null) }
             tile.setOnClickListener { startChannel(c.id, tile) }
             r.inner.addView(tile, cardParams(i))
             channelTiles[c.id] = tile
@@ -4362,6 +4365,7 @@ class MoviesPanel(
                 slot.title.posterUrl?.let { url -> images.load(url, emptyMap(), maxWidth = Cinema.px(activity, 92), tag = pageTag) { b -> row.setPoster(i, b) } }
             }
             row.onFocus = { focused ->
+                preloadChannelAfterRest(if (focused) c else null)
                 if (focused) {
                     show(c)
                     val target = if (preview.tune.visibility == View.VISIBLE) preview.tune else preview.edit
@@ -6334,17 +6338,77 @@ class MoviesPanel(
      * signed-in stream service, or when one is already held for it. A search that waits its turn skips itself if another
      * page has been rested on since.
      */
-    private fun preStartStream(e: Entry, episode: Pair<Int, Int>?) {
-        if (!seerr.hasStreamService || !seerr.isSignedIn || streamLoading != null) return
+    private fun preStartStream(e: Entry, episode: Pair<Int, Int>?, channel: Boolean = false) {
+        // A channel streams with the add-ons alone, as playing one does; a title page needs the signed-in service.
+        val canFind = if (channel) seerr.hasStreamService || stremioAddons().isNotEmpty() else seerr.hasStreamService && seerr.isSignedIn
+        if (!canFind || streamLoading != null) return
         val key = streamKey(e, episode)
         aheadStreams.begin(key) {
             preStartPool.submit(java.util.concurrent.Callable {
                 if (!aheadStreams.holds(key)) throw java.util.concurrent.CancellationException()
                 val at = android.os.SystemClock.elapsedRealtime()
                 android.util.Log.i("StreamNow", "finding ${e.title.name}${episode?.let { " S${it.first} E${it.second}" }.orEmpty()} ahead of time")
-                findStream(e, episode).also { android.util.Log.i("StreamNow", "found ahead of time in ${android.os.SystemClock.elapsedRealtime() - at} ms") }
+                findStream(e, episode).also {
+                    android.util.Log.i("StreamNow", "found ahead of time in ${android.os.SystemClock.elapsedRealtime() - at} ms")
+                    // Read on another thread, so Play never waits on it.
+                    if (channel) slowPool.execute { warmOpening(it) }
+                }
             })
         }
+    }
+
+    // --- Channels: the next programme ready before it is asked for ---------------------------------
+
+    private var channelRest: Runnable? = null
+
+    /** Rested on a channel for a moment (or moved off it, with null): the programme it would open with is got ready, so Tune in is quick. */
+    private fun preloadChannelAfterRest(channel: ChannelSummary?) {
+        channelRest?.let { ui.removeCallbacks(it) }
+        channelRest = null
+        if (channel == null || broadcast != null) return
+        val r = Runnable {
+            channelRest = null
+            if (broadcast == null) queueFor(channel.id).upcoming(channel.playlist.slots).firstOrNull()?.let { preloadSlot(it) }
+        }
+        channelRest = r
+        ui.postDelayed(r, CHANNEL_REST_MS)
+    }
+
+    /** The programme after the one playing, called by the player a few minutes before this one ends. */
+    private fun preloadNextProgramme(playing: PlaylistPlayback) {
+        val run = broadcast?.takeIf { it.playlistId == playing.playlistId } ?: return
+        val slots = playlists.all().firstOrNull { it.id == run.playlistId }?.slots ?: return
+        run.queue?.peek(slots)?.let { preloadSlot(it) }
+    }
+
+    /** Works out which episode [slot] would play and, when it is not in the library, has its stream found and its opening read. */
+    private fun preloadSlot(slot: PlaylistSlot) {
+        slowPool.execute {
+            val scheduled = runCatching { resolvePlaylistSlot(slot) }.getOrNull() ?: return@execute
+            if (scheduled.item != null) return@execute   // in the library: Jellyfin has it ready
+            val episode = scheduled.episode?.let { it.season to it.number }
+            ui.post { preStartStream(scheduled.entry, episode, channel = true) }
+        }
+    }
+
+    /**
+     * Reads the first few MB of a stream the service has ready, so its engine has already fetched the opening by the time
+     * the programme starts. The bytes are thrown away; a link that is not ready, or an add-on's direct link, is left alone.
+     */
+    private fun warmOpening(found: Found) {
+        val url = found.service?.takeIf { it.status == StreamStatus.READY }?.url ?: return
+        runCatching {
+            val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            c.connectTimeout = 8000; c.readTimeout = 20000
+            c.setRequestProperty("Range", "bytes=0-${ChannelPreload.WARM_BYTES - 1}")
+            c.setRequestProperty("User-Agent", "Cinema-TV")
+            try {
+                c.inputStream.use { input ->
+                    val buf = ByteArray(64 * 1024); var left = ChannelPreload.WARM_BYTES
+                    while (left > 0) { val n = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt()); if (n < 0) break; left -= n }
+                }
+            } finally { c.disconnect() }
+        }.onFailure { android.util.Log.w("StreamNow", "couldn't read ahead: ${it.javaClass.simpleName}") }
     }
 
     /** Rested on [e] (a film, or an episode) for [DWELL_START_MS]: its stream is found ahead of time, so Play opens it at once. */
@@ -7526,6 +7590,8 @@ class MoviesPanel(
         const val STORAGE_TTL_MS = 60 * 60_000L
         const val REST_PREFETCH_MS = 350L   // how long focus rests on a poster before its backdrop is fetched
         const val DWELL_START_MS = 4_000L   // how long a film page, or an episode, is rested on before its stream is found ahead of time
+        /** How long resting on a channel before its first programme is got ready. */
+        const val CHANNEL_REST_MS = 1500L
         const val RETURN_REFRESH_DELAY_MS = 1_500L
         /** Cards on the Continue watching shelf, and how long before a series' episode listing is fetched again. */
         const val CONTINUE_LIMIT = 13
