@@ -28,6 +28,7 @@ data class Preset(
     val region: String?,
     val requestHelperUrl: String?,
     val streamServiceUrl: String?,
+    val suggestashowUrl: String? = null,
     val music: SubsonicConfig? = null,
     val fingerprint: String,
 ) {
@@ -42,6 +43,7 @@ data class Preset(
         region?.let { settings.region = it }
         requestHelperUrl?.let { settings.requestHelperUrl = it }
         streamServiceUrl?.let { settings.streamServiceUrl = it }
+        suggestashowUrl?.let { settings.suggestashowUrl = it; settings.setOn(Integration.SUGGESTASHOW, true) }
         music?.let { settings.subsonic = it; settings.setOn(Integration.MUSIC, true) }
         if (jellyfin != null) settings.setupDone = true
         prefs.edit().putString(APPLIED_KEY, fingerprint).apply()
@@ -123,6 +125,7 @@ data class Preset(
                 region = o.str("region")?.takeIf { it.length == 2 },
                 requestHelperUrl = o.str("requestHelperUrl"),
                 streamServiceUrl = o.str("streamServiceUrl"),
+                suggestashowUrl = o.str("suggestashowUrl"),
                 music = music(),
                 fingerprint = Integer.toHexString(json.hashCode()),
             )

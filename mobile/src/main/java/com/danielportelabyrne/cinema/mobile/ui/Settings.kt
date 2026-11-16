@@ -138,13 +138,14 @@ fun SettingsScreen(model: Model) {
 /** The TV's Integrations page: each optional service switched on or off, Music with its server, Stremio with its link. */
 @Composable
 private fun Integrations(model: Model) {
-    val on = remember { mutableStateMapOf<Integration, Boolean>().apply { Integration.entries.forEach { put(it, model.settings.isOn(it)) } } }
+    val integrations = remember { Integration.entries.filterNot { it == Integration.SUGGESTASHOW } }
+    val on = remember { mutableStateMapOf<Integration, Boolean>().apply { integrations.forEach { put(it, model.settings.isOn(it)) } } }
     var musicOpen by remember { mutableStateOf(false) }
     Card {
         Label("Integrations")
         Text("Optional services Cinema can add to the menu and to title pages. Switch off any you do not use.", style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted)
         Gap(8.dp)
-        Integration.entries.forEach { i ->
+        integrations.forEach { i ->
             val enabled = on[i] == true
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f).padding(end = 12.dp)) {
@@ -168,7 +169,7 @@ private fun Integrations(model: Model) {
 private fun detail(model: Model, i: Integration, on: Boolean): String {
     if (!on) return "Off · ${i.summary}"
     return when (i) {
-        Integration.LETTERBOXD -> "On · ${i.summary}"
+        Integration.LETTERBOXD, Integration.SUGGESTASHOW -> "On · ${i.summary}"
         Integration.MUSIC -> model.settings.subsonic?.let { "On · ${it.baseUrl}" + if (it.username.isNotBlank()) " · ${it.username}" else "" } ?: "On · set up a server to add Music"
         Integration.STREMIO -> if (model.settings.stremioKey != null) "On · linked" else "On · not linked yet"
     }

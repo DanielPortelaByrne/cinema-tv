@@ -5,6 +5,7 @@ import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * What has been played or streamed in Cinema, by TMDB id, so picks can learn from streams too (they never
@@ -38,22 +39,33 @@ class WatchHistory(platform: Platform) {
  * "Picked for you", kept on disk so the page shows the last picks at once. They are worked out again once a day, or
  * sooner (at most every half hour) when something new has been watched or added. Blocking; call off the main thread.
  */
-class PicksRepository(platform: Platform, private val seerr: SeerrClient, private val jellyfin: JellyfinClient, val history: WatchHistory) {
+class PicksRepository(
+    platform: Platform, private val seerr: SeerrClient, private val jellyfin: JellyfinClient, val history: WatchHistory,
+    private val remote: () -> SuggestashowClient? = { null }
+) {
     private val file = File(platform.filesDir, "picks.json")
+    private val remoteCache = File(platform.cacheDir, "suggestashow")
     private val prefs = platform.preferences("picks")
     @Volatile private var memory: List<Pick>? = null
 
     /** The last picks worked out, without any network. */
-    fun saved(): List<Pick> = memory ?: (try { if (file.exists()) Picks.fromJson(file.readText()) else emptyList() } catch (_: Exception) { emptyList() }).also { memory = it }
+    fun saved(): List<Pick> {
+        remote()?.let { server -> return remoteFile(server)?.let(::read).orEmpty() }
+        return memory ?: read(file).also { memory = it }
+    }
 
     /** Fresh picks when they are due, else the saved ones. Null when they could not be worked out (Seerr signed out or unreachable). */
     @Synchronized fun fresh(): List<Pick>? {
+        remote()?.let { server ->
+            val cache = remoteFile(server) ?: return null
+            return server.picks()?.also { keep(cache, it) }
+        }
         if (!seerr.isSignedIn) return null
         val library = jellyfin.takeIf { it.isConnected }?.library().orEmpty()
         val watched = history.all()
         val signature = "${library.size}:${library.firstOrNull()?.id}:${library.count { it.played }}:${watched.size}:${watched.lastOrNull()?.atMs}"
         val age = System.currentTimeMillis() - prefs.getLong("at", 0L)
-        val saved = saved()
+        val saved = memory ?: read(file).also { memory = it }
         val due = saved.isEmpty() || age > DAY_MS || (signature != prefs.getString("signature", null) && age > HALF_HOUR_MS)
         if (!due) return saved
 
@@ -69,10 +81,31 @@ class PicksRepository(platform: Platform, private val seerr: SeerrClient, privat
         if (reached == 0) return null
         val exclude = librarySeeds.map { Picks.key(it.kind, it.tmdbId) }.toSet() + watched.map { Picks.key(it.kind, it.tmdbId) }
         val picks = Picks.rank(seeds, suggestions, exclude)
-        try { File(file.parentFile, file.name + ".tmp").also { it.writeText(Picks.toJson(picks)); it.renameTo(file) } } catch (_: Exception) { }
-        prefs.edit().putLong("at", System.currentTimeMillis()).putString("signature", signature).apply()
+        keep(file, picks)
         memory = picks
+        prefs.edit().putLong("at", System.currentTimeMillis()).putString("signature", signature).apply()
         return picks
+    }
+
+    /** Tells a suggestashow server, when one is in use, that these picks were on screen. */
+    fun shown(picks: List<Pick>) { remote()?.shown(picks) }
+
+    private fun remoteFile(server: SuggestashowClient): File? {
+        val owner = jellyfin.ownerScope.takeIf { jellyfin.isConnected && it.isNotBlank() } ?: return null
+        val key = MessageDigest.getInstance("SHA-256").digest("$owner\n${server.base}".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        return File(remoteCache, "$key.json")
+    }
+
+    private fun read(file: File): List<Pick> = try {
+        if (file.isFile) Picks.fromJson(file.readText()) else emptyList()
+    } catch (_: Exception) { emptyList() }
+
+    private fun keep(file: File, picks: List<Pick>) {
+        try {
+            file.parentFile?.mkdirs()
+            File(file.parentFile, file.name + ".tmp").also { it.writeText(Picks.toJson(picks)); it.renameTo(file) }
+        } catch (_: Exception) { }
     }
 
     private companion object {
