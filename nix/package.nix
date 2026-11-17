@@ -45,6 +45,7 @@ stdenv.mkDerivation (finalAttrs: {
       ../app
       ../core
       ../desktop
+      ../mobile
       ../build.gradle.kts
       ../settings.gradle.kts
       ../gradle.properties
