@@ -45,3 +45,6 @@ keystore.properties
 result
 result-*
 *.idsig
+
+# Schedule pages fetched by scripts/schedules/build_dataset.py
+scripts/schedules/.cache/

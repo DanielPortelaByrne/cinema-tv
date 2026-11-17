@@ -41,6 +41,10 @@ Use the player's **Next** control to skip, or **Back** to leave the channel. The
 
 Mockups for the channel screens are in [docs/mockups/channels](docs/mockups/channels/index.html).
 
+### Classic TV schedules
+
+Cinema bundles what classic network television ran together: for each show, the seasons it was on air, and for pairs of shows how many seasons they ran directly after one another or on the same night. It comes from Wikipedia's season-by-season schedule pages (US networks from 1946, Canadian networks 2003 to 2023), is licensed CC BY-SA 4.0, and is rebuilt with `scripts/schedules/build_dataset.py` (see [scripts/schedules](scripts/schedules/README.md)). It does not cover the UK or the rest of Europe.
+
 ## Installing on a TV
 
 1. Get an APK. Either download one someone has built, or build it yourself (see below).
