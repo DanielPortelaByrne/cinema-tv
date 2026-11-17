@@ -440,7 +440,8 @@ class CinemaActivity : AppCompatActivity() {
     private fun seedDebugChannels(intent: android.content.Intent?) {
         if (!debugFlag(intent, "debug_seed_channels")) return
         val store = com.danielportelabyrne.cinema.data.movies.PlaylistStore(com.danielportelabyrne.cinema.device.AndroidPlatform(this))
-        if (store.all().isNotEmpty()) return
+        val fresh = store.all().isEmpty()
+        if (!fresh && store.all().any { it.name == "Classic Night" }) return
         fun title(name: String, kind: com.danielportelabyrne.cinema.data.movies.Kind) =
             com.danielportelabyrne.cinema.data.movies.Title(name, kind, name, null, null, null, emptyList(), null, null, null, null, null, null)
         fun channel(name: String, slots: List<com.danielportelabyrne.cinema.data.movies.PlaylistSlot>) =
@@ -449,10 +450,16 @@ class CinemaActivity : AppCompatActivity() {
         val show = com.danielportelabyrne.cinema.data.movies.Kind.SHOW
         fun slot(name: String, kind: com.danielportelabyrne.cinema.data.movies.Kind, pending: com.danielportelabyrne.cinema.data.movies.PlaylistEpisode? = null) =
             com.danielportelabyrne.cinema.data.movies.PlaylistSlot(title(name, kind), pending = pending)
-        channel("Evening Cinema", listOf(slot("The Last Light", film), slot("Night Train", film), slot("Harbour at Dawn", film), slot("Coastline", show), slot("The Long Table", film), slot("Paper Moon Road", show)))
-        val sitcoms = channel("Sunday Sitcoms", listOf(slot("Corner Shop", show, com.danielportelabyrne.cinema.data.movies.PlaylistEpisode(3, 4)), slot("Two Doors Down", show), slot("Flatmates", show), slot("Upstairs Neighbours", show)))
-        channel("Late Thrillers", listOf(slot("Grey Water", film), slot("Dead Reckoning", film), slot("The Quiet Hour", film), slot("Cold Harbour", film), slot("Glass House", film), slot("Night Shift", show), slot("Low Tide", film), slot("The Informant", film), slot("Blackout", show)))
-        store.lastTuned = sitcoms.id
+        val sitcoms = if (!fresh) null else {
+            channel("Evening Cinema", listOf(slot("The Last Light", film), slot("Night Train", film), slot("Harbour at Dawn", film), slot("Coastline", show), slot("The Long Table", film), slot("Paper Moon Road", show)))
+            val sitcomsChannel = channel("Sunday Sitcoms", listOf(slot("Corner Shop", show, com.danielportelabyrne.cinema.data.movies.PlaylistEpisode(3, 4)), slot("Two Doors Down", show), slot("Flatmates", show), slot("Upstairs Neighbours", show)))
+            channel("Late Thrillers", listOf(slot("Grey Water", film), slot("Dead Reckoning", film), slot("The Quiet Hour", film), slot("Cold Harbour", film), slot("Glass House", film), slot("Night Shift", show), slot("Low Tide", film), slot("The Informant", film), slot("Blackout", show)))
+            sitcomsChannel
+        }
+        // Real classic shows, so the order the schedule data gives can be seen: ran together on US networks in the 80s and 90s.
+        channel("Classic Night", listOf("Cheers", "Wings", "Frasier", "Seinfeld", "The Cosby Show", "A Different World", "Murder, She Wrote", "60 Minutes", "Dallas", "Falcon Crest")
+            .map { slot(it, show) })
+        sitcoms?.let { store.lastTuned = it.id }
     }
 
     private fun debugTestAccount(intent: android.content.Intent?): TestAccount? {

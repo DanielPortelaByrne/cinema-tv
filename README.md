@@ -45,6 +45,8 @@ Mockups for the channel screens are in [docs/mockups/channels](docs/mockups/chan
 
 Cinema bundles what classic network television ran together: for each show, the seasons it was on air, and for pairs of shows how many seasons they ran directly after one another or on the same night. It comes from Wikipedia's season-by-season schedule pages (US networks from 1946, Canadian networks 2003 to 2023), is licensed CC BY-SA 4.0, and is rebuilt with `scripts/schedules/build_dataset.py` (see [scripts/schedules](scripts/schedules/README.md)). It does not cover the UK or the rest of Europe.
 
+A channel uses it to choose its order. Each round is a weighted random walk: the first programme is random, and each next one is drawn from those left, more likely the more often it ran next to the last one (or on the same night as it), and more likely when their years on air overlap (a film from the years a series was on air suits it). Titles the data does not know keep a base weight, so nothing is left out and anything can still come next. The order is drawn again every round, so it is never the same list twice, and what the Channels page shows as **Up next** is what plays. The preview says **Classic TV order** only when the data really shapes that channel. **Channel settings** can switch a channel to a plain shuffle.
+
 ## Installing on a TV
 
 1. Get an APK. Either download one someone has built, or build it yourself (see below).
@@ -189,7 +191,7 @@ adb shell am start -n com.danielportelabyrne.cinema/.CinemaActivity --es debug_s
 
 - `debug_setup_step` opens a setup page: `welcome`, `jellyfin`, `signin`, `seerr`, `arr`, `client`, `region`, `advanced` or `settings`.
 - `debug_cinema_dest` opens a Cinema page: `letterboxd`, `downloads`, `library`, `services`, `service-search` or `loading`.
-- `debug_skip_setup` (`--ez debug_skip_setup true`) opens Cinema without a Jellyfin server, and `debug_seed_channels` adds three made-up channels if there are none, so the Channels row and page can be checked on an emulator. `debug_cinema_dest` also takes `playlists` (the Channels page), `ident` (the tune-in screen) and `channel-sample` (a sample video as a channel's first programme).
+- `debug_skip_setup` (`--ez debug_skip_setup true`) opens Cinema without a Jellyfin server, and `debug_seed_channels` adds three made-up channels, and a fourth of real classic shows, if there are none, so the Channels row and page can be checked on an emulator. `debug_cinema_dest` also takes `playlists` (the Channels page), `ident` (the tune-in screen) and `channel-sample` (a sample video as a channel's first programme).
 
 ## How the code is laid out
 

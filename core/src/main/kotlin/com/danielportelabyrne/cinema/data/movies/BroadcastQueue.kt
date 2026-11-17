@@ -2,8 +2,14 @@ package com.danielportelabyrne.cinema.data.movies
 
 import kotlin.random.Random
 
-/** One shuffled visit per slot in a round. Only a completed programme permits another round. */
-class BroadcastQueue(private val random: Random = Random.Default) {
+/**
+ * One visit per slot in a round, in a fresh random order each round. Only a completed programme permits another round.
+ * With [knowledge] the order follows what classic television ran together ([ChannelOrder]); without it, a plain shuffle.
+ */
+class BroadcastQueue(private val random: Random = Random.Default, private val knowledge: ScheduleKnowledge? = null) {
+    /** Whether rounds are ordered by what ran together on classic television, rather than shuffled plainly. */
+    val classic: Boolean get() = knowledge != null
+
     private val pending = ArrayDeque<String>()
     private var started = false
     private var completed = false
@@ -20,6 +26,10 @@ class BroadcastQueue(private val random: Random = Random.Default) {
         if (started && !completed) return
         started = true
         completed = false
+        if (knowledge != null) {
+            pending.addAll(ChannelOrder.sequence(eligible, random, knowledge, previousTitle).map { it.id })
+            return
+        }
         val shuffled = eligible.shuffled(random).toMutableList()
         if (shuffled.size > 1 && shuffled.first().title.key == previousTitle) {
             val alternatives = shuffled.indices.filter { shuffled[it].title.key != previousTitle }
