@@ -191,6 +191,7 @@ adb shell am start -n com.danielportelabyrne.cinema/.CinemaActivity --es debug_s
 
 - `debug_setup_step` opens a setup page: `welcome`, `jellyfin`, `signin`, `seerr`, `arr`, `client`, `region`, `advanced` or `settings`.
 - `debug_cinema_dest` opens a Cinema page: `letterboxd`, `downloads`, `library`, `services`, `service-search` or `loading`.
+- `debug_cinema_dest lb-film:<slug>` opens a Letterboxd film through its initial load and metadata refresh. Check that its title stays visible without pressing Down and Up, then check returning from the reviews.
 - `debug_skip_setup` (`--ez debug_skip_setup true`) opens Cinema without a Jellyfin server, and `debug_seed_channels` adds three made-up channels, and a fourth of real classic shows, if there are none, so the Channels row and page can be checked on an emulator. `debug_cinema_dest` also takes `playlists` (the Channels page), `ident` (the tune-in screen) and `channel-sample` (a sample video as a channel's first programme).
 
 ## How the code is laid out

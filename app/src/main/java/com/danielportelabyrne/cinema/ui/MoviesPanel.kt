@@ -649,6 +649,12 @@ class MoviesPanel(
     fun debugGo(name: String) {
         // "letterboxd", "downloads", "library": open that rail page.
         when (name) { "letterboxd" -> { go(Dest.Letterboxd); return }; "downloads" -> { go(Dest.Downloads); return }; "library" -> { go(Dest.Library); return }; "watchlist" -> { go(Dest.Watchlist); return }; "history" -> { go(Dest.History); return } }
+        // Exercise both the initial Letterboxd title and its asynchronous metadata rebuild.
+        if (name.startsWith("lb-film:")) {
+            val slug = name.removePrefix("lb-film:")
+            lbOpen(LbFilm(slug, slug.replace('-', ' '), null), null)
+            return
+        }
         // "lbtest:/path/": fetch one Letterboxd page and log what came back (checks the browser fallback on a device).
         if (name.startsWith("lbtest:")) {
             val web = com.danielportelabyrne.cinema.data.letterboxd.LetterboxdWeb(activity)
@@ -5724,6 +5730,9 @@ class MoviesPanel(
     private fun openDetail(e: Entry, related: List<Title>) {
         markFeaturedOpened(e.title.key)
         returnFocus = overlay.findFocus()
+        // Rebuilding a Letterboxd title can move focus while the old page is being removed.
+        detailFocusListener?.let { if (detail.viewTreeObserver.isAlive) detail.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
+        detailFocusListener = null
         detail.removeAllViews(); detail.visibility = View.VISIBLE
         // The page's container only swallows clicks; it must never hold focus itself, or hiding the page beneath
         // parks focus on it instead of on the first button.
@@ -5957,11 +5966,15 @@ class MoviesPanel(
         detailFocusListener = android.view.ViewTreeObserver.OnGlobalFocusChangeListener { _, focused ->
             if (!detailOpen || focused == null || !isWithin(focused, detail)) return@OnGlobalFocusChangeListener
             val inRow = isWithin(focused, rowScroller)
-            // Below the row (the reviews): the page follows the card itself; it is never sent back up.
+            // Use section order, not bounds: initial focus can arrive before layout, when every
+            // rectangle is zero, and Letterboxd can leave the recommendations row GONE.
+            // Neither case means the title's own buttons are below the row.
             val below = !inRow && run {
-                val f = android.graphics.Rect(0, 0, focused.width, focused.height); scroll.offsetDescendantRectToMyCoords(focused, f)
-                val r = android.graphics.Rect(0, 0, rowScroller.width, rowScroller.height); scroll.offsetDescendantRectToMyCoords(rowScroller, r)
-                f.top >= r.bottom - Cinema.px(activity, 20)
+                val column = rowScroller.parent as? ViewGroup
+                var section: View = focused
+                while (section.parent is View && section.parent !== column) section = section.parent as View
+                column != null && section.parent === column &&
+                    column.indexOfChild(section) > column.indexOfChild(rowScroller)
             }
             val now = when { inRow -> 1; below -> 2; else -> 0 }
             if (now == place) return@OnGlobalFocusChangeListener
