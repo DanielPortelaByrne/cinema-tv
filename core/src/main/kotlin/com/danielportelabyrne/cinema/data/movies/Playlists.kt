@@ -91,6 +91,17 @@ class PlaylistStore(platform: Platform) {
     fun delete(id: String) = synchronized(lock) {
         save(all().filterNot { it.id == id })
         if (lastTuned == id) lastTuned = null
+        prefs.edit().remove("pure_$id").apply()
+    }
+
+    /**
+     * Whether the channel's order follows what ran together on classic television. On unless the viewer chose a plain
+     * shuffle for it in Channel settings.
+     */
+    fun classicOrder(id: String): Boolean = !prefs.getBoolean("pure_$id", false)
+
+    fun setClassicOrder(id: String, on: Boolean) {
+        prefs.edit().apply { if (on) remove("pure_$id") else putBoolean("pure_$id", true) }.apply()
     }
 
     /** The channel tuned to most recently, shown as "On air" until it runs out of programmes. */

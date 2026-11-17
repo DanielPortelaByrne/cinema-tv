@@ -276,7 +276,7 @@ object ChannelViews {
         }
 
         /** Shows [channel]. [upcoming] is the order the next programmes will play in. */
-        fun show(channel: ChannelSummary, upcoming: List<PlaylistSlot>, onAir: Boolean) {
+        fun show(channel: ChannelSummary, upcoming: List<PlaylistSlot>, onAir: Boolean, classic: Boolean = false) {
             val context = context
             val look = channel.look
             val ink = onColour(look)
@@ -304,7 +304,8 @@ object ChannelViews {
                 info.addView(Cinema.text(context, note, 22, Cinema.MUTED).apply { maxLines = 2 }, LayoutParams(Cinema.px(context, WIDTH), -2).apply { topMargin = Cinema.px(context, 30) })
                 return
             }
-            info.addView(Cinema.text(context, "UP NEXT", 19, Cinema.SAFFRON, weight = 600, tracking = 0.1f, caps = true), LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 28) })
+            // Only said when what ran together on classic television really shapes this channel's order.
+            info.addView(Cinema.text(context, if (classic) "UP NEXT  ·  CLASSIC TV ORDER" else "UP NEXT", 19, Cinema.SAFFRON, weight = 600, tracking = 0.1f, caps = true), LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 28) })
             val strip = LinearLayout(context).apply { orientation = HORIZONTAL; clipChildren = false }
             upcoming.take(3).forEachIndexed { i, slot ->
                 val cell = LinearLayout(context).apply { orientation = VERTICAL }

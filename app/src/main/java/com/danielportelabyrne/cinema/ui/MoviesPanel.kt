@@ -32,7 +32,9 @@ import android.widget.EditText
 import android.app.AlertDialog
 import com.danielportelabyrne.cinema.data.movies.BroadcastPlaylist
 import com.danielportelabyrne.cinema.data.movies.ChannelGuide
+import com.danielportelabyrne.cinema.data.movies.ChannelOrder
 import com.danielportelabyrne.cinema.data.movies.ChannelPreload
+import com.danielportelabyrne.cinema.data.movies.ScheduleKnowledge
 import com.danielportelabyrne.cinema.data.movies.ChannelSummary
 import com.danielportelabyrne.cinema.data.movies.PlaylistEpisode
 import com.danielportelabyrne.cinema.data.movies.BroadcastQueue
@@ -402,6 +404,7 @@ class MoviesPanel(
         // The player asks, a few minutes before a streamed episode ends, for the next one to be searched for (see warmUpcoming).
         PlayerActivity.onUpcomingEpisode = { r -> ui.post { warmUpcoming(r) } }
         PlayerActivity.onUpcomingProgramme = { p -> ui.post { preloadNextProgramme(p) } }
+        ScheduleKnowledge.warm()   // read on another thread, so a channel's order can use it by the time one is shown
         Perf.mark("movies.show")
         Perf.begin("movies.open->firstRow"); Perf.begin("movies.open->firstPoster"); Perf.begin("movies.open->hero")
         overlay.visibility = View.VISIBLE
@@ -4277,7 +4280,9 @@ class MoviesPanel(
         }
         card("Channel settings", "Rename, reset progress or delete") {
             AlertDialog.Builder(activity).setTitle(playlist.name)
-                .setItems(arrayOf("Rename", "Reset progress", "Delete channel")) { _, choice ->
+                .setItems(arrayOf("Rename", "Reset progress",
+                    if (playlists.classicOrder(playlist.id)) "Order: switch to a plain shuffle" else "Order: switch to classic TV order",
+                    "Delete channel")) { _, choice ->
                     if (choice == 0) playlistName(playlist.name) { name ->
                         playlists.update(playlist.id) { it.copy(name = name) }
                         build()
@@ -4288,6 +4293,12 @@ class MoviesPanel(
                             channelQueues.remove(playlist.id)
                             build()
                         }
+                    } else if (choice == 2) {
+                        val on = !playlists.classicOrder(playlist.id)
+                        playlists.setClassicOrder(playlist.id, on)
+                        channelQueues.remove(playlist.id)
+                        CinemaToast.show(activity, if (on) "Ordered like classic TV, drawn again each round" else "A plain shuffle, drawn again each round", Toast.LENGTH_SHORT)
+                        build()
                     } else AlertDialog.Builder(activity).setTitle("Delete ${playlist.name}?")
                         .setNegativeButton("Cancel", null)
                         .setPositiveButton("Delete") { _, _ ->
@@ -4303,7 +4314,17 @@ class MoviesPanel(
 
     /** Each channel's shuffled round, drawn when it is first shown and kept until the session ends, so "Up next" is what plays. */
     private val channelQueues = HashMap<String, BroadcastQueue>()
-    private fun queueFor(id: String) = channelQueues.getOrPut(id) { BroadcastQueue() }
+    private fun queueFor(id: String) = channelQueues.getOrPut(id) {
+        // Classic TV order unless the channel is set to a plain shuffle. The data is normally read already (see show()).
+        val data = if (playlists.classicOrder(id)) ScheduleKnowledge.bundledIfReady() ?: ScheduleKnowledge.bundled() else null
+        BroadcastQueue(knowledge = data)
+    }
+
+    /** Whether what is previewed for [channel] is in classic TV order: the data is in use and actually shapes this channel. */
+    private fun orderedClassically(channel: ChannelSummary): Boolean {
+        val data = ScheduleKnowledge.bundledIfReady() ?: return false
+        return queueFor(channel.id).classic && ChannelOrder.shapes(data, channel.playlist.slots)
+    }
 
     /** A channel to put focus on after the page is built again on the way back from watching. */
     private var channelFocusAfterBuild: String? = null
@@ -4353,7 +4374,7 @@ class MoviesPanel(
         var shown: ChannelSummary? = null
         fun show(c: ChannelSummary) {
             shown = c
-            preview.show(c, queueFor(c.id).upcoming(c.playlist.slots), c.id == onAir)
+            preview.show(c, queueFor(c.id).upcoming(c.playlist.slots), c.id == onAir, classic = orderedClassically(c))
         }
         preview.tune.setOnClickListener { shown?.let { startChannel(it.id, preview.tune) } }
         preview.edit.setOnClickListener { shown?.let { go(Dest.Playlist(it.id), remember = true) } }
