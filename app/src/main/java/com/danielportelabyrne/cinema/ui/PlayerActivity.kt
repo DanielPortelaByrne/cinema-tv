@@ -3,6 +3,7 @@ package com.danielportelabyrne.cinema.ui
 import com.danielportelabyrne.cinema.design.cinema.CinemaToast
 import com.danielportelabyrne.cinema.device.AndroidPlatform
 import android.app.Activity
+import com.danielportelabyrne.cinema.data.movies.ChannelPreload
 import com.danielportelabyrne.cinema.data.movies.PlaylistPlayback
 import com.danielportelabyrne.cinema.data.movies.PlaylistStore
 import android.content.Context
@@ -195,10 +196,24 @@ class PlayerActivity : AppCompatActivity() {
         override fun run() { saveResume(); snapshotToContinue(); handler.postDelayed(this, 15_000) }
     }
     private val reportTick = object : Runnable {
-        override fun run() { reportToJellyfin("Progress"); recordStreamProgress(); recordHistory(); warmNextIfNear(); handler.postDelayed(this, REPORT_EVERY_MS) }
+        override fun run() { reportToJellyfin("Progress"); recordStreamProgress(); recordHistory(); warmNextIfNear(); warmNextProgrammeIfNear(); handler.postDelayed(this, REPORT_EVERY_MS) }
     }
     /** The episode and the one after it whose stream was last asked for ahead of time, so it is asked once. */
     private var warmedNext: Pair<Pair<Int, Int>, Pair<Int, Int>>? = null
+    private var warmedProgramme = false
+
+    /**
+     * On a channel, in the last few minutes of a programme, has the Movies page get the next one ready (its stream found
+     * and its opening read), so it starts the moment this one ends. Once for each programme, library or streamed.
+     */
+    private fun warmNextProgrammeIfNear() {
+        val playback = playlistPlayback ?: return
+        if (station == null || warmedProgramme || !::player.isInitialized) return
+        val duration = player.duration.takeIf { it > 0 } ?: return
+        if (!ChannelPreload.due(player.currentPosition, duration)) return
+        warmedProgramme = true
+        onUpcomingProgramme?.invoke(playback)
+    }
 
     /**
      * A few minutes before a streamed episode ends, has the Movies page find the next one's stream, so Play on the
@@ -1742,6 +1757,9 @@ class PlayerActivity : AppCompatActivity() {
         /** Starts playback of [ranked] in order, capped at three attempts. */
         /** Set by the Movies page: finds the next streamed episode's stream before it is asked for, a few minutes early. */
         @Volatile var onUpcomingEpisode: ((EpisodeRequest) -> Unit)? = null
+
+        /** Set by the Movies page: gets a channel's next programme ready, a few minutes before the one playing ends. */
+        @Volatile var onUpcomingProgramme: ((PlaylistPlayback) -> Unit)? = null
 
         @Volatile private var pendingEpisode: EpisodeRequest? = null
 

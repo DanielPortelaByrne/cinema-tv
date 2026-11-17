@@ -105,4 +105,20 @@ class ChannelGuideTest {
         assertNull(plain.number)
         assertFalse(plain.tuneIn)
     }
+
+    @Test fun the_next_programme_is_got_ready_in_the_last_few_minutes_only() {
+        val hour = 60 * 60_000L
+        assertFalse(ChannelPreload.due(positionMs = 0, durationMs = hour))
+        assertFalse(ChannelPreload.due(positionMs = hour - 4 * 60_000L, durationMs = hour))
+        assertTrue(ChannelPreload.due(positionMs = hour - 3 * 60_000L, durationMs = hour))
+        assertTrue(ChannelPreload.due(positionMs = hour - 10_000L, durationMs = hour))
+        // The length is not known yet, or the position is not: never due.
+        assertFalse(ChannelPreload.due(positionMs = 0, durationMs = 0))
+        assertFalse(ChannelPreload.due(positionMs = -1, durationMs = hour))
+        // A short programme is due partway in, never before its last three minutes: a found stream is held for four.
+        assertFalse(ChannelPreload.due(positionMs = 30_000L, durationMs = 5 * 60_000L))
+        assertTrue(ChannelPreload.due(positionMs = 2 * 60_000L, durationMs = 5 * 60_000L))
+        assertTrue(ChannelPreload.due(positionMs = 0, durationMs = 2 * 60_000L))
+        assertTrue(ChannelPreload.WINDOW_MS < 4 * 60_000L)
+    }
 }

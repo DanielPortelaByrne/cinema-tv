@@ -63,3 +63,19 @@ object ChannelGuide {
     /** "S3 E4": an episode in words. */
     fun episode(e: PlaylistEpisode) = "S${e.season} E${e.number}"
 }
+
+/**
+ * When a channel gets the next programme ready. A stream found ahead of time is only held for a few minutes (the stream
+ * service lets go of it after five), so it is found near the end of the programme before it, never at the start.
+ */
+object ChannelPreload {
+    /** How long before a programme ends the next one is found: under the four minutes a found stream is held. */
+    const val WINDOW_MS = 3 * 60_000L
+
+    /** How much of a stream's opening is read ahead of time, so the service has fetched the start before Play. */
+    const val WARM_BYTES = 6L * 1024 * 1024
+
+    /** Whether [positionMs] into a programme of [durationMs] is within [windowMs] of its end. False while the length is unknown. */
+    fun due(positionMs: Long, durationMs: Long, windowMs: Long = WINDOW_MS): Boolean =
+        durationMs > 0 && positionMs >= 0 && durationMs - positionMs <= windowMs
+}
