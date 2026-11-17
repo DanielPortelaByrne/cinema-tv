@@ -1,0 +1,15 @@
+classic-schedules.json
+
+Which television shows ran together on US network television (1946 onward) and Canadian network television
+(2003 to 2023): for each show the seasons it was on air, and for pairs of shows how many seasons they ran directly after
+one another or on the same night of the same network.
+
+Source: the season-by-season "network television schedule" pages of English Wikipedia
+(for example "1989-90 United States network television schedule"), https://en.wikipedia.org, read with
+scripts/schedules/build_dataset.py. The facts were taken from the schedule tables; show names are as Wikipedia gives them.
+
+Licence: Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0),
+https://creativecommons.org/licenses/by-sa/4.0/ , the licence of Wikipedia's text. Anyone reusing this file must
+credit Wikipedia and its contributors, say if they changed it, and share their version under the same licence.
+
+This licence covers this data file only. Cinema's code is under the MIT licence (see LICENSE at the top of the repository).
