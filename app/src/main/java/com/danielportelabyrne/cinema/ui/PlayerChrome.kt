@@ -37,7 +37,9 @@ import com.danielportelabyrne.cinema.design.cinema.WaveScrubberView
 /** What the chrome shows about the film; only what is known. */
 data class PlayerMeta(
     val title: String, val year: Int? = null, val genres: List<String> = emptyList(), val runtimeMin: Int? = null,
-    val certificate: String? = null, val rating: Double? = null, val overview: String? = null
+    val certificate: String? = null, val rating: Double? = null, val overview: String? = null,
+    /** The film's IMDb id, when its own title logo may stand in for the paused title (never set for episodes). */
+    val logoImdbId: String? = null
 )
 
 /**
@@ -129,6 +131,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     private val pausedScrim = View(context)
 
     private val pausedTitle = Cinema.title(context, "", 104)
+    private val pausedTitleSlot = TitleLogoSlot(context, pausedTitle, 900, 170)
     private val pausedMeta = FrameLayout(context)
     private val pausedSynopsis = Cinema.synopsis(context, "", 24, maxLines = 3)
     private val pausedPlayButton = PauseDisc(context).apply { playing = false }
@@ -312,7 +315,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         }, LinearLayout.LayoutParams(p(30), p(30)).apply { marginEnd = p(14) })
         eyebrow.addView(Cinema.text(context, "Paused", 17, Cinema.SAFFRON, weight = 600, tracking = 0.24f, caps = true))
         left.addView(eyebrow)
-        left.addView(pausedTitle, LinearLayout.LayoutParams(p(900), -2).apply { topMargin = p(22) })
+        left.addView(pausedTitleSlot, LinearLayout.LayoutParams(p(900), -2).apply { topMargin = p(22) })
         left.addView(pausedMeta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(22) })
         left.addView(pausedSynopsis, LinearLayout.LayoutParams(p(800), -2).apply { topMargin = p(20) })
         val buttons = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
@@ -436,6 +439,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         title.text = m.title
         pausedTitle.text = m.title
         Cinema.style(pausedTitle, when { m.title.length > 30 -> 68; m.title.length > 16 -> 84; else -> 104 }, Cinema.CREAM, serif = true, tracking = -0.02f)
+        pausedTitleSlot.bind(m.logoImdbId, RemoteImages.shared(context), this)
         val runtime = m.runtimeMin?.takeIf { it > 0 }?.let { if (it >= 60) "${it / 60}h ${it % 60}m" else "$it min" }
         metaLine.text = listOfNotNull(m.year?.toString(), m.genres.take(2).joinToString(", ").ifBlank { null }, runtime).joinToString(" · ")
         pausedMeta.removeAllViews()
