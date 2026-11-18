@@ -112,6 +112,20 @@ class PosterCard(context: Context, posterW: Int, posterH: Int, titled: Boolean =
         starBadge = pill
     }
 
+    private var newPill: View? = null
+
+    /** A solid saffron "NEW EPISODE" pill, top left, while a series has a recent episode the viewer has not seen. False takes it away. */
+    fun newEpisode(on: Boolean) {
+        if (on == (newPill != null)) return
+        if (!on) { poster.removeView(newPill); newPill = null; return }
+        val pill = Cinema.text(context, "NEW EPISODE", 14, 0xFF0C0806.toInt(), weight = 700, tracking = 0.14f).apply {
+            setPadding(Cinema.px(context, 11), Cinema.px(context, 5), Cinema.px(context, 11), Cinema.px(context, 5))
+            background = GradientDrawable().apply { cornerRadius = Cinema.pxf(context, 16); setColor(Cinema.SAFFRON) }
+        }
+        poster.addView(pill, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(Cinema.px(context, 10), Cinema.px(context, 10), 0, 0) })
+        newPill = pill
+    }
+
     private var watcherRow: LinearLayout? = null
 
     /**

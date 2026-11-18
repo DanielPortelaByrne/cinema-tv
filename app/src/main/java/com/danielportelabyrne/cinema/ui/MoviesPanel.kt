@@ -63,7 +63,9 @@ import com.danielportelabyrne.cinema.data.movies.PersonalFilter
 import com.danielportelabyrne.cinema.data.movies.PersonalPage
 import com.danielportelabyrne.cinema.data.movies.TitleFacts
 import com.danielportelabyrne.cinema.data.movies.TitleFactsStore
+import com.danielportelabyrne.cinema.data.movies.NewEpisodes
 import com.danielportelabyrne.cinema.data.movies.PlayHistoryStore
+import com.danielportelabyrne.cinema.data.movies.PlayedEntry
 import com.danielportelabyrne.cinema.data.movies.HistoryDay
 import com.danielportelabyrne.cinema.data.movies.HistoryItem
 import com.danielportelabyrne.cinema.data.movies.HistoryTimeline
@@ -433,7 +435,8 @@ class MoviesPanel(
         frost?.post { frost?.refresh(500); updateEdgeFade() }
         page.post { fillNear() }
         Perf.end("movies.open->firstRow", "reused"); Perf.end("movies.open->firstPoster", "reused"); Perf.end("movies.open->hero", "reused")
-        // Badges may have changed while the page was away (a download finished).
+        // Badges may have changed while the page was away (a download finished, an episode was watched).
+        refreshNewEpisodes()
         if (jellyfin.isConnected) worker.execute { jellyfin.library(); ui.post { rebadge(generation) } }
     }
 
@@ -1332,7 +1335,7 @@ class MoviesPanel(
         if (current !== Dest.Search) { if (voiceActive) voice?.cancel(); searchUi = null }
         frost?.post { frost?.refresh(500); updateEdgeFade() }
         builtAt = Perf.now(); builtConnected = jellyfin.isConnected; awaitingLibrary.clear()
-        hiddenViews.clear(); starred.clear(); favShelfCards.clear(); favRow = null; recentViews.clear(); recentRow = null; refreshFavSnapshot()
+        hiddenViews.clear(); starred.clear(); newEpisodeCards.clear(); newEpisodeAnswers.clear(); newEpisodeHistory = null; favShelfCards.clear(); favRow = null; recentViews.clear(); recentRow = null; refreshFavSnapshot()
         continueViews.clear(); continueRow = null; continueBusy = false; continueAgain = false; continueEpoch++
         ambientView?.palette = paletteFor(current)
         // Rows never wait for the library: they draw from the catalogue at once, and this one fetch badges them when it lands.
@@ -3301,6 +3304,7 @@ class MoviesPanel(
         if (gen != generation || !isVisible || personalPage() == null) return
         refreshFavourites()
         refreshRecent()
+        refreshNewEpisodes()
         continueRow?.let { fillContinue(it, gen) }
     }
 
@@ -3330,6 +3334,37 @@ class MoviesPanel(
         if (!f.hasId) return
         starred += card to e
         card.favourite(Favourites.contains(favSnapshot, f))
+    }
+
+    /** Series cards on this page that can carry the New episode pill, and the answer per series (cleared whenever history may have moved). */
+    private val newEpisodeCards = ArrayList<Pair<PosterCard, Entry>>()
+    private val newEpisodeAnswers = HashMap<String, Boolean>()
+    private var newEpisodeHistory: List<PlayedEntry>? = null
+
+    /** Cached listings and this viewer's history only: nothing is fetched per card. A series with no cached listing simply has no pill. */
+    private fun hasNewEpisode(e: Entry): Boolean {
+        val t = e.title
+        if (t.kind != Kind.SHOW) return false
+        val tmdb = t.tmdbId?.toLongOrNull()
+        val key = (t.tmdbId ?: t.imdbId ?: e.library?.id) ?: return false
+        return newEpisodeAnswers.getOrPut(key) {
+            if (tmdb == null) return@getOrPut false
+            val cat = seerr.cachedCatalogue(tmdb) ?: return@getOrPut false
+            val history = newEpisodeHistory ?: playHistory.list(jellyfin.ownerScope).also { newEpisodeHistory = it }
+            NewEpisodes.has(cat, EpisodeCards.today(), NewEpisodes.watchedOf(history, t.tmdbId, t.imdbId ?: e.library?.imdbId, e.library?.id))
+        }
+    }
+
+    private fun trackNewEpisode(card: PosterCard, e: Entry) {
+        if (e.title.kind != Kind.SHOW) return
+        newEpisodeCards += card to e
+        card.newEpisode(hasNewEpisode(e))
+    }
+
+    /** History, listings or the profile changed (return from playback, a page refresh): every pill on the page is re-decided. */
+    private fun refreshNewEpisodes() {
+        newEpisodeAnswers.clear(); newEpisodeHistory = null
+        newEpisodeCards.forEach { (c, e) -> c.newEpisode(hasNewEpisode(e)) }
     }
 
     /** A card from what was saved, so the shelf draws with no network. The library copy, if already loaded, only adds the Jellyfin picture headers. */
@@ -7448,7 +7483,7 @@ class MoviesPanel(
         card.subline?.text = note ?: subline(e.title)
         dress(card, e, badge, defer)
         chip?.let { card.chip(it) }
-        if (star) trackFavourite(card, e)
+        if (star) { trackFavourite(card, e); if (chip == null) trackNewEpisode(card, e) }
         hideable(card, e)
         card.onFocus = { lit -> if (lit) { reveal(card); if (onSelect == null) prefetchOnRest(card, e) } }
         card.setOnClickListener { if (onSelect != null) onSelect() else if (nested) openDetail(e, related) else { closeDetail(restoreFocus = false); openDetail(e, related) } }
