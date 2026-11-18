@@ -2457,7 +2457,8 @@ class MoviesPanel(
             card.setOnClickListener {
                 val reviewed = r.film
                 if (byFilm && reviewed != null) lbOpen(reviewed, null)
-                else infoSheet.show("REVIEW", r.authorName, listOfNotNull(r.rating?.let { com.danielportelabyrne.cinema.data.letterboxd.Lb.stars(it) }, lbDay(r.date)).joinToString(" · ").ifBlank { null }, listOf(r.text), null, listOf(SheetAction("Close") { }))
+                else infoSheet.show("REVIEW", r.authorName, listOfNotNull(r.rating?.let { com.danielportelabyrne.cinema.data.letterboxd.Lb.stars(it) }, lbDay(r.date)).joinToString(" · ").ifBlank { null }, listOf(r.text), null, listOf(SheetAction("Close") { }),
+                    person = com.danielportelabyrne.cinema.ui.room.Speaker(r.avatar))
             }
             row.inner.addView(card, LinearLayout.LayoutParams(Cinema.px(activity, 540), Cinema.px(activity, 300)).apply { if (i > 0) marginStart = Cinema.px(activity, 32) })
         }
