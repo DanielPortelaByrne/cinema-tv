@@ -6394,6 +6394,11 @@ class MoviesPanel(
                 when (result.status) {
                     StreamStatus.READY -> {
                         val url = result.url ?: return@runOnUiThread failed("The stream service didn't send a link. Try again in a minute.")
+                        // The service may hand back a neighbouring part: say so and let the viewer retry rather than play the wrong one.
+                        if (!com.danielportelabyrne.cinema.data.movies.EpisodeIdentity.acceptable(episode, result.label)) {
+                            android.util.Log.w("StreamNow", "the service's copy names another episode than S${episode?.first}E${episode?.second}")
+                            return@runOnUiThread failed("That copy is a different episode than S${episode?.first} E${episode?.second}, so it was not played. Try again in a minute.")
+                        }
                         val candidate = StreamCandidate("stream:${e.title.key}", PlayerActivity.STREAM_PROVIDER, result.label ?: e.title.name, url, null, StreamMetadata())
                         play(listOf(RankedStream(candidate, 100, 0L, false, Verdict.RECOMMENDED, null, emptyList())))
                     }
@@ -6424,13 +6429,19 @@ class MoviesPanel(
         val asked = Perf.now()
         val answers = imdb?.let { id -> runCatching { addonAnswersFor(id, episode).get() }.getOrNull() }
             ?: com.danielportelabyrne.cinema.data.stremio.AddonAnswers.NONE
-        val candidates = answers.torrents.sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
+        // An offer whose name plainly says another episode (part two under part one's number) is never played as this one.
+        val named = com.danielportelabyrne.cinema.data.movies.EpisodeIdentity
+        val offered = answers.torrents.filter { named.acceptable(episode, it.title) }
+        val offeredLinks = answers.links.filter { named.acceptable(episode, it.title) }
+        if (offered.size != answers.torrents.size || offeredLinks.size != answers.links.size)
+            android.util.Log.i("StreamNow", "left out ${answers.torrents.size - offered.size} torrents and ${answers.links.size - offeredLinks.size} links that name another episode than S${episode?.first}E${episode?.second}")
+        val candidates = offered.sortedByDescending { it.seeders }.take(STREAM_CANDIDATES)
         android.util.Log.i("StreamNow", "add-ons offered ${answers.torrents.size} torrents, ${answers.links.size} links " +
             "(${answers.links.count { !it.uncached }} cached) in ${Perf.now() - asked} ms for ${e.title.name} " +
             "(${addons.size} add-ons, ${addons.count { it.streams }} stream, imdb ${imdb != null})")
         // A direct link as good as the best torrent plays at once, as Stremio does with a debrid service.
         val runtimeSec = ((e.title.runtimeMin ?: if (episode == null) 110 else 45) * 60L)
-        val links = com.danielportelabyrne.cinema.data.stream.DirectLinks.choose(answers.links, answers.torrents,
+        val links = com.danielportelabyrne.cinema.data.stream.DirectLinks.choose(offeredLinks, offered,
             com.danielportelabyrne.cinema.data.stream.DeviceProfile.detect(activity),
             com.danielportelabyrne.cinema.data.stream.NetworkEstimator(activity).current(), runtimeSec)
         val working = links.firstOrNull { linkAnswers(it.candidate.url!!, it.candidate.headers) }
