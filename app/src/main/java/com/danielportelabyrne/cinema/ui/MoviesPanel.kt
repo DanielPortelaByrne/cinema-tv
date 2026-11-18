@@ -7246,7 +7246,7 @@ class MoviesPanel(
         fun showResults(q: String, services: List<Service>, channels: List<com.danielportelabyrne.cinema.data.movies.Channel>?, offline: Boolean = false) {
             kb.clear()
             val found: List<Any> = (services.map { Triple<Any, Int, Int>(it, ServiceDirectory.scoreOf(it, q), 1) } +
-                channels.orEmpty().map { Triple<Any, Int, Int>(it, ServiceDirectory.score(it.name, q), 0) })
+                channels.orEmpty().map { Triple<Any, Int, Int>(it, com.danielportelabyrne.cinema.data.movies.ChannelNames.score(it.name, q), 0) })
                 .filter { it.second > 0 }.sortedWith(compareByDescending<Triple<Any, Int, Int>> { it.second }.thenByDescending { it.third }).map { it.first }
             side.addView(smallHeading(if (found.isEmpty() && channels == null) "Looking up “$q”…" else "Matching “$q”").apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
             if (found.isEmpty()) {
