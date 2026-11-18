@@ -88,7 +88,7 @@ fun TitleScreen(model: Model, page: Screen.TitlePage) {
         }
         item {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 92.dp)) {
-                Text(t.name, style = TextStyle(fontFamily = fraunces(500, 56f), fontSize = 34.sp, lineHeight = 36.sp, letterSpacing = (-0.7).sp), color = Palette.ivory, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                TitleLogo(t.name, t.imdbId, TextStyle(fontFamily = fraunces(500, 56f), fontSize = 34.sp, lineHeight = 36.sp, letterSpacing = (-0.7).sp), 280, 96)
                 MetaLine(t.age, listOfNotNull(t.year?.toString(), t.genres.firstOrNull(), t.runtimeMin?.let { "${it / 60}h ${it % 60}m" }), t.imdbScore, Modifier.padding(top = 10.dp))
                 FlowRow(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     t.streamingLine()?.let { ProviderPill(it) }
