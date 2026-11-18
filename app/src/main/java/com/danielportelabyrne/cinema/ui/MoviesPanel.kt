@@ -131,6 +131,7 @@ import com.danielportelabyrne.cinema.design.AppTheme
 import com.danielportelabyrne.cinema.design.SectionHeader
 import com.danielportelabyrne.cinema.design.cinema.AmbientBackground
 import com.danielportelabyrne.cinema.design.cinema.CinemaButton
+import com.danielportelabyrne.cinema.design.cinema.CinemaChoiceSheet
 import com.danielportelabyrne.cinema.design.cinema.CinemaConfirm
 import com.danielportelabyrne.cinema.data.search.RecentSearches
 import com.danielportelabyrne.cinema.data.movies.FeaturedCandidate
@@ -4303,34 +4304,36 @@ class MoviesPanel(
             card("${index + 1}. ${slot.title.name}", state) { editPlaylistSlot(playlist, index) }
         }
         card("Channel settings", "Rename, reset progress or delete") {
-            AlertDialog.Builder(activity).setTitle(playlist.name)
-                .setItems(arrayOf("Rename", "Reset progress",
-                    if (playlists.classicOrder(playlist.id)) "Order: switch to a plain shuffle" else "Order: switch to classic TV order",
-                    "Delete channel")) { _, choice ->
-                    if (choice == 0) playlistName(playlist.name) { name ->
+            CinemaChoiceSheet.show(infoSheet, activity, "CHANNEL SETTINGS", playlist.name, listOf(
+                CinemaChoiceSheet.Choice("Rename") {
+                    playlistName(playlist.name) { name ->
                         playlists.update(playlist.id) { it.copy(name = name) }
                         build()
-                    } else if (choice == 1) {
-                        CinemaConfirm.show(infoSheet, activity, "RESET PROGRESS", playlist.name,
-                            "All programmes will return to their original starting points.", "Reset progress") {
-                            playlists.resetProgress(playlist.id)
-                            channelQueues.remove(playlist.id)
-                            build()
-                        }
-                    } else if (choice == 2) {
-                        val on = !playlists.classicOrder(playlist.id)
-                        playlists.setClassicOrder(playlist.id, on)
+                    }
+                },
+                CinemaChoiceSheet.Choice("Reset progress") {
+                    CinemaConfirm.show(infoSheet, activity, "RESET PROGRESS", playlist.name,
+                        "All programmes will return to their original starting points.", "Reset progress") {
+                        playlists.resetProgress(playlist.id)
                         channelQueues.remove(playlist.id)
-                        CinemaToast.show(activity, if (on) "Ordered like classic TV, drawn again each round" else "A plain shuffle, drawn again each round", Toast.LENGTH_SHORT)
                         build()
-                    } else AlertDialog.Builder(activity).setTitle("Delete ${playlist.name}?")
-                        .setNegativeButton("Cancel", null)
-                        .setPositiveButton("Delete") { _, _ ->
-                            playlists.delete(playlist.id)
-                            channelQueues.remove(playlist.id)
-                            backToPlaylists()
-                        }.show()
-                }.setNegativeButton("Cancel", null).show()
+                    }
+                },
+                CinemaChoiceSheet.Choice(if (playlists.classicOrder(playlist.id)) "Order: switch to a plain shuffle" else "Order: switch to classic TV order") {
+                    val on = !playlists.classicOrder(playlist.id)
+                    playlists.setClassicOrder(playlist.id, on)
+                    channelQueues.remove(playlist.id)
+                    CinemaToast.show(activity, if (on) "Ordered like classic TV, drawn again each round" else "A plain shuffle, drawn again each round", Toast.LENGTH_SHORT)
+                    build()
+                },
+                CinemaChoiceSheet.Choice("Delete channel", danger = true) {
+                    CinemaConfirm.show(infoSheet, activity, "DELETE CHANNEL", playlist.name,
+                        "The channel and where each programme has got to will be removed. Your library is not touched.", "Delete channel") {
+                        playlists.delete(playlist.id)
+                        channelQueues.remove(playlist.id)
+                        backToPlaylists()
+                    }
+                }))
         }
     }
 
@@ -4451,24 +4454,26 @@ class MoviesPanel(
 
     private fun editPlaylistSlot(playlist: BroadcastPlaylist, index: Int) {
         val slot = playlist.slots[index]
-        val choices = buildList {
-            if (index > 0) add("Move up" to -1)
-            if (index < playlist.slots.lastIndex) add("Move down" to 1)
-            add("Remove" to 0)
+        fun move(offset: Int) {
+            playlists.update(playlist.id) { latest ->
+                val slots = latest.slots.toMutableList()
+                val at = slots.indexOfFirst { it.id == slot.id }
+                if (at < 0 || at + offset !in slots.indices) return@update latest
+                val selected = slots.removeAt(at)
+                if (offset != 0) slots.add(at + offset, selected)
+                latest.copy(slots = slots)
+            }
+            build()
         }
-        AlertDialog.Builder(activity).setTitle(slot.title.name)
-            .setItems(choices.map { it.first }.toTypedArray()) { _, choice ->
-                val offset = choices[choice].second
-                playlists.update(playlist.id) { latest ->
-                    val slots = latest.slots.toMutableList()
-                    val at = slots.indexOfFirst { it.id == slot.id }
-                    if (at < 0 || at + offset !in slots.indices) return@update latest
-                    val selected = slots.removeAt(at)
-                    if (offset != 0) slots.add(at + offset, selected)
-                    latest.copy(slots = slots)
-                }
-                build()
-            }.setNegativeButton("Cancel", null).show()
+        val choices = buildList {
+            if (index > 0) add(CinemaChoiceSheet.Choice("Move up") { move(-1) })
+            if (index < playlist.slots.lastIndex) add(CinemaChoiceSheet.Choice("Move down") { move(1) })
+            add(CinemaChoiceSheet.Choice("Remove from channel", danger = true) {
+                CinemaConfirm.show(infoSheet, activity, "REMOVE PROGRAMME", slot.title.name,
+                    "It leaves ${playlist.name}. Your library is not touched.", "Remove") { move(0) }
+            })
+        }
+        CinemaChoiceSheet.show(infoSheet, activity, "LINEUP · ${index + 1} OF ${playlist.slots.size}", slot.title.name, choices)
     }
 
     private class BroadcastRun(
