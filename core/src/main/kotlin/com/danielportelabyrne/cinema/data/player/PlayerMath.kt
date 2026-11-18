@@ -197,6 +197,10 @@ object PlayerMath {
         else -> "${bps / 1000} kbps"
     }
 
+    /** The quiet paused-screen line: "1080p · HD · H.264 · 8.2 Mbps". Only what is known; null when nothing is. */
+    fun mediaLine(width: Int, height: Int, mime: String?, bps: Long): String? =
+        listOfNotNull(resolution(width, height), videoCodec(mime), bitrate(bps)).joinToString(" · ").ifBlank { null }
+
     /** "14.8 GB", "820 MB". */
     fun size(bytes: Long): String? = when {
         bytes <= 0 -> null

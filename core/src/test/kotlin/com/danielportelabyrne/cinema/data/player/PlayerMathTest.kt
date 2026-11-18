@@ -8,6 +8,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WaveGeometryTest {
+    @Test fun pausedMediaLineShowsOnlyWhatIsKnown() {
+        assertEquals("1080p · HD · H.264 · 8.2 Mbps", PlayerMath.mediaLine(1920, 1080, "video/avc", 8_200_000))
+        assertEquals("720p · HEVC", PlayerMath.mediaLine(1280, 720, "video/hevc", -1))
+        assertEquals(null, PlayerMath.mediaLine(0, 0, null, -1))
+    }
+
     @Test fun sineStartsAtTheBaselineAndPeaksAQuarterWaveIn() {
         assertEquals(900f, PlayerMath.waveY(96f, 96f, 900f, 13f, 150f), 0.001f)
         assertEquals(913f, PlayerMath.waveY(96f + 37.5f, 96f, 900f, 13f, 150f), 0.001f)

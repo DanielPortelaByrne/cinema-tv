@@ -22,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -127,6 +128,34 @@ class PlayerActivity : AppCompatActivity() {
         override fun next() { playNext() }
         override fun pip() { enterPip() }
         override fun skipIntro() { intro?.let { active.seekTo(it.endMs) } }
+        override fun preview(ms: Long) = showPreview(ms)
+    }
+
+    /** Trickplay for the item being played, when the server made it; null means no thumbnails and no requests. */
+    private var trickplay: com.danielportelabyrne.cinema.data.player.Trickplay? = null
+    private val sheets = android.util.LruCache<Int, android.graphics.Bitmap>(4)
+    private val sheetsLoading = HashSet<Int>()
+    private var previewMs = -1L
+
+    /** The thumbnail for [ms] while scrubbing (-1 when it ends): from a cached sheet, or the sheet is fetched once and then shown. */
+    private fun showPreview(ms: Long) {
+        previewMs = ms
+        val t = trickplay; val i = item
+        if (ms < 0 || t == null || i == null) { ui.thumb = null; return }
+        val (sheet, x, y) = t.tile(ms)
+        sheets.get(sheet)?.let { b ->
+            if (x + t.width <= b.width && y + t.height <= b.height) ui.thumb = android.graphics.Bitmap.createBitmap(b, x, y, t.width, t.height).asImageBitmap()
+            return
+        }
+        if (!sheetsLoading.add(sheet)) return
+        val url = com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.trickplayUrl(com.danielportelabyrne.cinema.data.jellyfin.JellyfinApi.cleanBase(client.server), i.id, t.width, sheet, i.sourceId)
+        val request = coil.request.ImageRequest.Builder(this).data(url).allowHardware(false)
+            .apply { client.playbackHeaders().forEach { (k, v) -> addHeader(k, v) } }
+            .target(
+                onSuccess = { d -> sheetsLoading.remove(sheet); (d as? android.graphics.drawable.BitmapDrawable)?.bitmap?.let { sheets.put(sheet, it); if (previewMs >= 0) showPreview(previewMs) } },
+                onError = { sheetsLoading.remove(sheet) },
+            ).build()
+        coil.Coil.imageLoader(this).enqueue(request)
     }
 
     /** The picture, with the Compose controls over it (the wavy scrubber, the ribbon, the tracks panel). */
@@ -150,6 +179,9 @@ class PlayerActivity : AppCompatActivity() {
             ui.buffering = p.playbackState == Player.STATE_BUFFERING
             ui.casting = view.player === cast
             ui.inIntro = intro?.contains(ui.positionMs) == true
+            ui.mediaLine = if (!ui.playing && item != null && !ui.casting) local.videoFormat?.let { f ->
+                com.danielportelabyrne.cinema.data.player.PlayerMath.mediaLine(f.width, f.height, f.sampleMimeType, f.bitrate.toLong())
+            }.orEmpty() else ""
             if (ui.durationMs > 0 && chapterMs.isNotEmpty()) ui.chapters = chapterMs.map { it.toFloat() / ui.durationMs }
             main.postDelayed(this, 250)
         }
@@ -178,7 +210,7 @@ class PlayerActivity : AppCompatActivity() {
         ui.eyebrow = if (i.isEpisode) listOfNotNull(i.seriesName, "S${i.season ?: 0} E${i.episode ?: 0}") else listOfNotNull("Film", i.year?.toString())
         ui.hasNext = i.isEpisode
         chapterMs = i.chapters.map { it.startMs }.filter { it > 0 }
-        intro = null
+        intro = null; trickplay = i.trickplay; sheets.evictAll(); sheetsLoading.clear(); ui.thumb = null
         io.execute { val w = client.introWindow(i.id); if (item?.id == i.id) intro = w }
         playLocal(client.streamUrl(i), label(i), positionMs, null)
         report("Playing")
@@ -187,11 +219,11 @@ class PlayerActivity : AppCompatActivity() {
     private fun playOffline(id: String) {
         val copy = model.offline.find(id) ?: run { finish(); return }
         offlineId = id
-        ui.title = copy.name; ui.eyebrow = listOfNotNull("On this phone", copy.subtitle); ui.hasNext = false; chapterMs = emptyList(); intro = null
+        ui.title = copy.name; ui.eyebrow = listOfNotNull("On this phone", copy.subtitle); ui.hasNext = false; chapterMs = emptyList(); intro = null; trickplay = null
         playLocal(Uri.fromFile(java.io.File(copy.file)).toString(), copy.name, copy.resumeMs, null)
     }
 
-    private fun playUrl(url: String, title: String) { ui.title = title; ui.eyebrow = listOf("Streaming"); ui.hasNext = false; chapterMs = emptyList(); intro = null; playLocal(url, title, 0L, null) }
+    private fun playUrl(url: String, title: String) { ui.title = title; ui.eyebrow = listOf("Streaming"); ui.hasNext = false; chapterMs = emptyList(); intro = null; trickplay = null; playLocal(url, title, 0L, null) }
 
     private fun playLocal(url: String, title: String, positionMs: Long, mime: String?) {
         val media = MediaItem.Builder().setUri(url).setMimeType(mime)

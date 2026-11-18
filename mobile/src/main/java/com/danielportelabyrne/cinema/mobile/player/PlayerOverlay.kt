@@ -97,6 +97,10 @@ class PlayerUi {
     var casting by mutableStateOf(false)
     /** True only while playback is inside an intro the server knows; the "Skip intro" pill shows then and never otherwise. */
     var inIntro by mutableStateOf(false)
+    /** "1080p · HD · H.264 · 8.2 Mbps" for the stream being played; blank when unknown or not a library stream. Shown only while paused. */
+    var mediaLine by mutableStateOf("")
+    /** The trickplay frame for the spot being scrubbed to; null when there is none (no trickplay, or not scrubbing). */
+    var thumb by mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
     /** Counts touches, so the controls stay up while the viewer is using them. */
     var touches by mutableIntStateOf(0)
 }
@@ -109,6 +113,8 @@ interface PlayerActions {
     fun next()
     fun pip()
     fun skipIntro()
+    /** Scrubbing is at [ms]; -1 when it has stopped. */
+    fun preview(ms: Long)
 }
 
 /**
@@ -120,6 +126,7 @@ interface PlayerActions {
 fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.content.Context) -> MediaRouteButton) {
     var visible by remember { mutableStateOf(true) }
     var panel by remember { mutableStateOf(false) }
+    var drag by remember { mutableStateOf<Float?>(null) }
     var flash by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(visible, ui.playing, ui.touches, panel) {
         if (visible && ui.playing && !panel) { delay(3800); visible = false }
@@ -148,6 +155,8 @@ fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.conte
                     Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
                         if (ui.eyebrow.isNotEmpty()) Eyebrow(ui.eyebrow, mark = true)
                         Text(ui.title, style = TextStyle(fontFamily = fraunces(500, 28f), fontSize = 22.sp, letterSpacing = (-0.4).sp), color = Palette.ivory, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        // Paused only: what is being played, in one quiet line.
+                        if (!ui.playing && !ui.buffering && ui.mediaLine.isNotBlank()) Text(ui.mediaLine, color = Palette.ivoryMuted, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     }
                     AndroidView({ ctx -> onCastButton(ctx) }, Modifier.size(48.dp))
                     IconButton(onClick = { panel = true }) { Icon(Icons.Filled.Subtitles, "Audio and subtitles", tint = Palette.ivory) }
@@ -164,7 +173,6 @@ fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.conte
                 }
                 // Bottom: the times, the wave, and the next episode.
                 Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, bottom = 6.dp)) {
-                    var drag by remember { mutableStateOf<Float?>(null) }
                     val progress = if (ui.durationMs > 0) (ui.positionMs.toFloat() / ui.durationMs).coerceIn(0f, 1f) else 0f
                     val shown = drag ?: progress
                     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -175,11 +183,19 @@ fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.conte
                     }
                     WaveScrubber(
                         progress = shown, chapters = ui.chapters, scrubbing = drag != null,
-                        onScrub = { drag = it; ui.touches++ },
-                        onDone = { f -> drag = null; if (ui.durationMs > 0) act.seekTo((f * ui.durationMs).toLong()) },
+                        onScrub = { drag = it; ui.touches++; act.preview((it * ui.durationMs).toLong()) },
+                        onDone = { f -> drag = null; act.preview(-1L); if (ui.durationMs > 0) act.seekTo((f * ui.durationMs).toLong()) },
                     )
                 }
             }
+        }
+        // Scrub thumbnail: only while dragging and only when the server has trickplay; it floats over the picture, so nothing moves.
+        val thumb = ui.thumb
+        val at = drag
+        if (at != null && thumb != null) Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, bottom = 96.dp)) {
+            Box(Modifier.weight(at.coerceAtLeast(0.001f)))
+            androidx.compose.foundation.Image(thumb, null, Modifier.width(168.dp).clip(RoundedCornerShape(10.dp)).background(Color.Black))
+            Box(Modifier.weight((1f - at).coerceAtLeast(0.001f)))
         }
         // Skip intro: one quiet pill above the wave, only while inside an intro the server knows.
         AnimatedVisibility(ui.inIntro && !panel, Modifier.align(Alignment.BottomEnd), enter = fadeIn(), exit = fadeOut()) {
