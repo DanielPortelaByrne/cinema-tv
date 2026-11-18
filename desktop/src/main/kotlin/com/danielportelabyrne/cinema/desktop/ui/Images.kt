@@ -85,7 +85,7 @@ class CachedImages(private val headersFor: (String) -> Map<String, String>, priv
 val LocalImages = staticCompositionLocalOf<ImageSource> { ImageSource { null } }
 
 @OptIn(ExperimentalCoroutinesApi::class)
-private val imageDispatcher = Dispatchers.IO.limitedParallelism(6)
+internal val imageDispatcher = Dispatchers.IO.limitedParallelism(6)
 
 /**
  * A picture from [url], over a flat [placeholder] until it arrives. With no picture at all, [fallback] (a title) is

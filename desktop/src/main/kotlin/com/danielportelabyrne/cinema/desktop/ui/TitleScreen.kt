@@ -83,7 +83,7 @@ fun TitleScreen(model: CinemaModel, route: Route.Title, art: Art) {
             Row(Modifier.fillMaxWidth()) {
                 Column(Modifier.weight(1f).onFocusChanged { if (it.hasFocus) scope.launch { route.scroll.animateScrollTo(0) } }) {
                     Eyebrow(listOfNotNull(if (t.kind == Kind.SHOW) "Series" else "Film", if (e.library != null) "In your library" else null))
-                    T(t.name, titleStyle(when { t.name.length > 30 -> 68; t.name.length > 18 -> 84; else -> 104 }), maxLines = 2, modifier = Modifier.padding(top = 20.dp))
+                    TitleLogo(t.name, t.imdbId, titleStyle(when { t.name.length > 30 -> 68; t.name.length > 18 -> 84; else -> 104 }), 640, 200, Modifier.padding(top = 20.dp))
                     TitleMeta(t, Modifier.padding(top = 24.dp))
                     Provider(t.services, Modifier.padding(top = 22.dp))
                     T(t.overview ?: e.library?.overview ?: "No description yet.", synopsisStyle(26), maxLines = 3, modifier = Modifier.padding(top = 22.dp).width(1040.dp))

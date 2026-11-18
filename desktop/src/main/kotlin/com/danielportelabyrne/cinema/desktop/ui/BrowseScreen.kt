@@ -299,7 +299,7 @@ private fun Hero(model: CinemaModel, state: PageState, first: FocusRequester, on
         AnimatedContent(t.key, transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(180)) }) { _ ->
             Column {
                 Eyebrow(listOfNotNull("Featured", state.heroLabels.getOrNull(index)))
-                T(t.name, titleStyle(heroTitleSize(t.name)), maxLines = 2, modifier = Modifier.padding(top = 22.dp).width(1100.dp))
+                TitleLogo(t.name, t.imdbId, titleStyle(heroTitleSize(t.name)), 640, 180, Modifier.padding(top = 22.dp).width(1100.dp))
                 TitleMeta(t, Modifier.padding(top = 30.dp))
                 t.overview?.takeIf { it.isNotBlank() }?.let { T(it, synopsisStyle(26), maxLines = 3, modifier = Modifier.padding(top = 26.dp).width(820.dp)) }
                 Provider(t.services, Modifier.padding(top = 30.dp))
