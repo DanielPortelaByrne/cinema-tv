@@ -34,6 +34,7 @@ import com.danielportelabyrne.cinema.data.movies.BroadcastPlaylist
 import com.danielportelabyrne.cinema.data.movies.ChannelGuide
 import com.danielportelabyrne.cinema.data.movies.ChannelOrder
 import com.danielportelabyrne.cinema.data.movies.ChannelPreload
+import com.danielportelabyrne.cinema.data.movies.ListFocus
 import com.danielportelabyrne.cinema.data.movies.ScheduleKnowledge
 import com.danielportelabyrne.cinema.data.movies.ChannelSummary
 import com.danielportelabyrne.cinema.data.movies.PlaylistEpisode
@@ -4815,6 +4816,7 @@ class MoviesPanel(
         var firstLoad = true
         var loading = false
         var lastSignature: String? = null
+        var childKeys: List<String?> = emptyList()
         var scheduled: Runnable? = null
         fun refresh() {
             scheduled?.let { ui.removeCallbacks(it) }
@@ -4849,12 +4851,17 @@ class MoviesPanel(
                     }
                     lastSignature = signature
                     val focused = (0 until holder.childCount).firstOrNull { holder.getChildAt(it).hasFocus() }
+                    val scrollY = page.scrollY
+                    val newKeys = ArrayList<String?>()
                     holder.removeAllViews()
                     requestDiagnostics = diagnostics
-                    if (rawRequests == null) holder.addView(note("Couldn't read your requests. Showing the download queue only.").apply { setPadding(margin, dp(4), margin, dp(4)) })
-                    if (seerr.hasRequestHelper && snapshot?.healthy != true) holder.addView(note("Automatic search status is unavailable. Download-client progress is shown below.").apply { setPadding(margin, dp(4), margin, dp(4)) })
-                    val rows = queue.orEmpty().map { q -> queueRow(q) { refresh() } } + requests.map { downloadRow(it) { refresh() } } +
-                        wanted.map { (tmdb, eps) -> wantedRow(tmdb, eps) { refresh() } } + upcoming.map { (tmdb, eps) -> upcomingRow(tmdb, eps) { refresh() } }
+                    if (rawRequests == null) { holder.addView(note("Couldn't read your requests. Showing the download queue only.").apply { setPadding(margin, dp(4), margin, dp(4)) }); newKeys.add(null) }
+                    if (seerr.hasRequestHelper && snapshot?.healthy != true) { holder.addView(note("Automatic search status is unavailable. Download-client progress is shown below.").apply { setPadding(margin, dp(4), margin, dp(4)) }); newKeys.add(null) }
+                    val keyed = queue.orEmpty().map { q -> "q${q.source}:${q.tmdbId}" to queueRow(q) { refresh() } } + requests.map { "r${it.id}" to downloadRow(it) { refresh() } } +
+                        wanted.map { (tmdb, eps) -> "w$tmdb" to wantedRow(tmdb, eps) { refresh() } } + upcoming.map { (tmdb, eps) -> "u$tmdb" to upcomingRow(tmdb, eps) { refresh() } }
+                    val rows = keyed.map { it.second }
+                    newKeys += keyed.map { it.first }
+                    if (rows.isEmpty()) newKeys.add(null)
                     if (rows.isEmpty()) holder.addView(note(if (queue == null) "Couldn't reach the download queue just now." else "Nothing requested yet. Open any title and press Queue download.").apply { setPadding(margin, dp(10), 0, 0) })
                     val q = queue.orEmpty()
                     updateStats(stats, listOf(q.count { it.isDownloading }, q.count { it.isWaiting }, q.count { it.status in setOf("metadata", "stalled") },
@@ -4865,11 +4872,19 @@ class MoviesPanel(
                     val pendingRequests = requests.filter { it.stage in pendingStages && diagnostics[it.id]?.stopped != true }
                     if (pendingQueue.isNotEmpty() || pendingRequests.isNotEmpty() || wantedEpisodes.isNotEmpty()) {
                         val total = pendingQueue.size + pendingRequests.size + wantedEpisodes.size
+                        newKeys.add("cancel-all")
                         holder.addView(pill("Cancel all pending ($total)", accent = false).apply { setOnClickListener { cancelAllPending(pendingQueue, pendingRequests, wantedEpisodes) { refresh() } } },
                             LinearLayout.LayoutParams(-2, Cinema.px(activity, 76)).apply { setMargins(margin, Cinema.px(activity, 36), 0, 0) })
                     }
                     if (firstLoad) { firstLoad = false; (0 until holder.childCount).map { holder.getChildAt(it) }.firstOrNull { it.isFocusable }?.let { requestFocusRobust(overlay as ViewGroup, it) } }
-                    else focused?.let { holder.getChildAt(it)?.requestFocus() }
+                    else if (focused != null) {
+                        // Focus follows the same row by identity; a removed row hands it to the nearest survivor, never back to the top.
+                        val target = ListFocus.after(childKeys, focused, newKeys) ?: newKeys.indices.firstOrNull { holder.getChildAt(it)?.isFocusable == true }
+                        target?.let { holder.getChildAt(it)?.requestFocus() }
+                        // Keep the viewport where it was; the rebuild would otherwise snap it to the top.
+                        page.post { page.scrollTo(0, scrollY.coerceAtMost((page.getChildAt(0)?.height ?: 0) - page.height).coerceAtLeast(0)) }
+                    }
+                    childKeys = newKeys
                     loadStorage(force = true)
                     // Progress moves, so look again every little while for as long as this page is the one on screen.
                     scheduled = Runnable { if (gen == generation && current == Dest.Downloads && !detailOpen) refresh() }
