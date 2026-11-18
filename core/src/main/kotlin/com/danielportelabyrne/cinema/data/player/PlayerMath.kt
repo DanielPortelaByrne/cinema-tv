@@ -47,6 +47,20 @@ object PlayerMath {
     }
 
     /**
+     * When the next-episode card may come up: [CREDITS_PROMPT_DELAY_MS] after the estimated credits start [startMs], so an
+     * early estimate never offers it while the story still plays. Null (offer it at the real end instead) with no start or
+     * length, or when that moment would be within [CREDITS_PROMPT_MIN_LEFT_MS] of the end.
+     */
+    fun creditsPromptMs(startMs: Long?, durationMs: Long): Long? {
+        if (startMs == null || durationMs <= 0) return null
+        val prompt = startMs + CREDITS_PROMPT_DELAY_MS
+        return prompt.takeIf { it <= durationMs - CREDITS_PROMPT_MIN_LEFT_MS }
+    }
+
+    const val CREDITS_PROMPT_DELAY_MS = 10_000L
+    const val CREDITS_PROMPT_MIN_LEFT_MS = 15_000L
+
+    /**
      * How long the credits last when the file has no credits chapter: about 6 % of the length, between a minute and four
      * minutes (so an hour-long episode's credits begin about three and a half minutes before the end).
      */

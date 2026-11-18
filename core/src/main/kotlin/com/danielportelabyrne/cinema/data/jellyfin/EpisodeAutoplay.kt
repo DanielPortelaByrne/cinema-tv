@@ -10,16 +10,22 @@ class EpisodeAutoplay(private val durationMs: Long = 3_000L) {
         private set
     private var deadline: Long? = null
     private var consumed = false
+    private var held = false
 
     fun ready(id: String, now: Long) {
         if (consumed) return
         nextId = id
-        if (ended && !cancelled && deadline == null) deadline = now + durationMs
+        if (ended && !held && !cancelled && deadline == null) deadline = now + durationMs
     }
 
-    fun end(now: Long) {
+    /**
+     * The programme is over, or (with [auto] false) only an estimate says its credits have begun: then the next episode
+     * is on offer ([takeNext] with playNow) but never starts by itself until a later [end] with [auto] true, the real end.
+     */
+    fun end(now: Long, auto: Boolean = true) {
         ended = true
-        if (nextId != null && !cancelled && !consumed && deadline == null) deadline = now + durationMs
+        held = !auto
+        if (!held && nextId != null && !cancelled && !consumed && deadline == null) deadline = now + durationMs
     }
 
     fun cancel() { cancelled = true; deadline = null }

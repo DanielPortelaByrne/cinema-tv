@@ -248,7 +248,8 @@ class PlayerActivity : AppCompatActivity() {
             if (::player.isInitialized && !ended && !creditsCard && hasNext() && !autoplay.cancelled && foreground && player.isPlaying) {
                 val duration = player.duration.takeIf { it != C.TIME_UNSET } ?: 0L
                 val start = creditsStartFor(duration)
-                if (start != null && player.currentPosition >= start) {
+                val prompt = com.danielportelabyrne.cinema.data.player.PlayerMath.creditsPromptMs(start, duration)
+                if (prompt != null && player.currentPosition >= prompt) {
                     Log.i(CREDITS_TAG, "Credits card at ${player.currentPosition} ms of $duration ms (credits start $start ms, known $knownCreditsMs, learned tail $learnedTailMs)")
                     showCreditsCard()
                 }
@@ -368,7 +369,8 @@ class PlayerActivity : AppCompatActivity() {
         val nextId = nextAutoplayId() ?: return
         val now = SystemClock.elapsedRealtime()
         creditsCard = true
-        autoplay = EpisodeAutoplay(CREDITS_COUNTDOWN_MS).also { it.ready(nextId, now); it.end(now) }
+        // An estimated credits start only offers Play next; nothing advances until the player really ends (or Play next is chosen).
+        autoplay = EpisodeAutoplay().also { it.ready(nextId, now); it.end(now, auto = false) }
         Perf.mark("player.creditsCard at ${player.currentPosition} of ${player.duration}")
         view.hideController()
         chrome?.setState(com.danielportelabyrne.cinema.data.player.PlayerUi.Hidden)
@@ -1093,8 +1095,9 @@ class PlayerActivity : AppCompatActivity() {
                 if (started && !ended) reportToJellyfin("Progress")
                 if (creditsCard && !ended) {
                     // Back before the credits: the card goes, and comes back when they begin again.
-                    val start = creditsStartFor(player.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
-                    if (start == null || new.positionMs < start) {
+                    val duration = player.duration.takeIf { it != C.TIME_UNSET } ?: 0L
+                    val prompt = com.danielportelabyrne.cinema.data.player.PlayerMath.creditsPromptMs(creditsStartFor(duration), duration)
+                    if (prompt == null || new.positionMs < prompt) {
                         creditsCard = false; handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
                         autoplay = EpisodeAutoplay().also { state -> nextAutoplayId()?.let { state.ready(it, SystemClock.elapsedRealtime()) } }
                     }
@@ -1716,7 +1719,6 @@ class PlayerActivity : AppCompatActivity() {
         /** Provider name for films from the home stream service. */
         const val STREAM_PROVIDER = "Stream"
         /** How long the next-episode card counts down when it comes up with the credits. */
-        private const val CREDITS_COUNTDOWN_MS = 10_000L
         private const val STREAM_MIN_BUFFER_MS = 30_000
         private const val STREAM_MAX_BUFFER_MS = 90_000
         private const val STREAM_START_BUFFER_MS = 1_500

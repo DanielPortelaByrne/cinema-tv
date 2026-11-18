@@ -22,6 +22,28 @@ class EpisodeAutoplayTest {
         assertNull(state.takeNext(15_000, playNow = true))
     }
 
+    @Test fun estimated_credits_offer_next_but_never_advance_until_the_real_end() {
+        val state = EpisodeAutoplay()
+        state.ready("next", 0); state.end(1_000, auto = false)
+        assertNull(state.remainingMs(1_000))
+        assertNull(state.takeNext(500_000))
+        state.ready("next", 600_000) // a late lookup must not start the countdown either
+        assertNull(state.remainingMs(600_000))
+        state.end(700_000) // the player really ended
+        assertEquals(3_000L, state.remainingMs(700_000))
+        assertEquals("next", state.takeNext(703_000))
+    }
+
+    @Test fun explicit_next_and_dismiss_work_during_estimated_credits() {
+        val explicit = EpisodeAutoplay()
+        explicit.ready("next", 0); explicit.end(1_000, auto = false)
+        assertEquals("next", explicit.takeNext(2_000, playNow = true))
+        val dismissed = EpisodeAutoplay()
+        dismissed.ready("next", 0); dismissed.end(1_000, auto = false); dismissed.cancel()
+        dismissed.end(900_000)
+        assertNull(dismissed.takeNext(1_000_000))
+    }
+
     @Test fun duplicate_end_and_lookup_callbacks_do_not_extend_the_countdown() {
         val state = EpisodeAutoplay()
         state.ready("next", 0); state.end(100)
