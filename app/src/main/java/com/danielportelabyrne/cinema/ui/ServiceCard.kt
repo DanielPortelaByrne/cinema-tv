@@ -87,10 +87,16 @@ class ServiceCard(context: Context, label: String, private val colours: Pair<Int
         val words = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         // Its own width, not the column's: a name longer than "FILMS & SERIES" was cut to it ("Paramo").
         words.addView(Cinema.text(context, label, 36, Cinema.CREAM, serif = true, weight = 500).apply {
-            maxLines = 1; setShadowLayer(Cinema.pxf(context, 14), 0f, Cinema.pxf(context, 2), 0xCC000000.toInt())
-            // Clear of the fan: a long name ("Paramount+") steps down in size rather than running into the posters.
-            androidx.core.widget.TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(this, Cinema.px(context, 26), Cinema.px(context, 36), 1, android.util.TypedValue.COMPLEX_UNIT_PX)
-        }, LinearLayout.LayoutParams(Cinema.px(context, 186), Cinema.px(context, 50)))
+            setShadowLayer(Cinema.pxf(context, 14), 0f, Cinema.pxf(context, 2), 0xCC000000.toInt())
+            // Clear of the fan: a long name ("Paramount+") steps down in size rather than running into the posters. One that
+            // still does not fit on a line at the smallest size ("Disney Channel") wraps to two whole lines, growing upward
+            // from the caption, instead of being cut off by a fixed one-line height.
+            val fit = NAME_SIZES.firstOrNull { s -> Paint(paint).apply { textSize = Cinema.pxf(context, s) }.measureText(label) <= Cinema.px(context, NAME_W) }
+            val twoLines = fit == null && label.contains(' ')
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, Cinema.pxf(context, fit ?: if (twoLines) NAME_TWO_LINE_SIZE else NAME_SIZES.last()))
+            maxLines = if (twoLines) 2 else 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(Cinema.px(context, NAME_W), -2))
         words.addView(Cinema.text(context, caption, 15, Cinema.alpha(Cinema.CREAM, 0.7f), weight = 600, tracking = 0.18f, caps = true),
             LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 4) })
         // Added after the fan, so a long name is drawn over the posters, never hidden behind one.
@@ -140,6 +146,9 @@ class ServiceCard(context: Context, label: String, private val colours: Pair<Int
         /** Mockup sizes: the card, and each poster in its fan. */
         const val W = 520; const val H = 292
         const val POSTER_W = 128; const val POSTER_H = 192
+        private const val NAME_W = 186
+        private val NAME_SIZES = (36 downTo 26).toList()
+        private const val NAME_TWO_LINE_SIZE = 30
 
         /**
          * Each service's colours, from its own branding but deepened and warmed a little toward Cinema's dark brown, so the
