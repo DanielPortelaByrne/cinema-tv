@@ -3,23 +3,33 @@ package com.danielportelabyrne.cinema.ui.account
 import android.app.Activity
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
+import android.graphics.Path
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.TextView
 import com.danielportelabyrne.cinema.R
 import com.danielportelabyrne.cinema.data.account.AccountStore
 import com.danielportelabyrne.cinema.data.account.CinemaAccount
+import com.danielportelabyrne.cinema.data.account.GoldProfiles
 import com.danielportelabyrne.cinema.data.account.LauncherPerson
 import com.danielportelabyrne.cinema.data.account.ProfileScope
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinClient
 import com.danielportelabyrne.cinema.data.jellyfin.JellyfinSession
 import com.danielportelabyrne.cinema.data.search.Qwerty
 import com.danielportelabyrne.cinema.design.Cinema
+import com.danielportelabyrne.cinema.design.Motion
 import com.danielportelabyrne.cinema.design.cinema.CinemaButton
 import com.danielportelabyrne.cinema.design.cinema.QwertyKeyboard
 import com.danielportelabyrne.cinema.ui.room.InfoSheet
@@ -39,8 +49,14 @@ class WhoScreen(
     private val launcher: LauncherPerson?,
     /** Finds a person's favourite-title characters off the main thread and hands them back on it (see FavouriteCharacters). */
     private val favourites: (CinemaAccount, (List<Pair<String, String>>) -> Unit) -> Unit = { _, _ -> },
+    /** Who has found Gold Mode (hold OK on a face for three seconds) and who has it on. */
+    private val gold: GoldProfiles = GoldProfiles.session,
     private val onChosen: (CinemaAccount) -> Unit
 ) {
+    /** Forgets a three-second hold in progress (Back, or the face losing focus). */
+    private var cancelHold: (() -> Unit)? = null
+    private var goldCaption: TextView? = null
+    private val hideCaption = Runnable { goldCaption?.animate()?.alpha(0f)?.setDuration(400)?.start() }
     /** What Back does from here: back to the people, or nothing (leave Cinema) when already there. */
     private var backTo: (() -> Unit)? = null
     private var picker: CharacterPicker? = null
@@ -48,6 +64,7 @@ class WhoScreen(
     private val root = object : FrameLayout(activity) {
         override fun dispatchKeyEvent(event: KeyEvent): Boolean {
             if (event.keyCode == KeyEvent.KEYCODE_BACK && picker?.isOpen != true) {
+                cancelHold?.invoke()
                 val back = backTo ?: return super.dispatchKeyEvent(event)
                 if (event.action == KeyEvent.ACTION_UP) back()
                 return true
@@ -140,7 +157,25 @@ class WhoScreen(
         row.addView(addBox, LinearLayout.LayoutParams(p(300), -2))
         column.addView(row, LinearLayout.LayoutParams(-2, -2).apply { topMargin = p(90) })
         root.addView(column, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+        // Where Gold Mode speaks: low on the screen, so the row of faces never moves.
+        goldCaption = Cinema.text(activity, "", 26, Cinema.SAFFRON, weight = 500, tracking = 0.12f).apply { alpha = 0f; gravity = Gravity.CENTER }
+            .also { root.addView(it, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = p(120) }) }
         (first ?: add).let { t -> t.post { t.requestFocus() } }
+    }
+
+    /** A quiet line for a moment, then gone; also read out by the TV's screen reader. */
+    private fun say(text: String) {
+        val c = goldCaption ?: return
+        c.removeCallbacks(hideCaption)
+        c.text = text
+        if (Motion.animationsOn(c)) c.animate().alpha(1f).setDuration(300).start() else c.alpha = 1f
+        c.announceForAccessibility(text)
+        c.postDelayed(hideCaption, 3500)
+    }
+
+    private fun mix(a: Int, b: Int, t: Float): Int {
+        fun ch(shift: Int) = (((a shr shift) and 0xFF) * (1 - t) + ((b shr shift) and 0xFF) * t).toInt()
+        return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
     }
 
     /**
@@ -156,18 +191,106 @@ class WhoScreen(
         val tile = object : View(activity) {
             val paint = Paint(Paint.ANTI_ALIAS_FLAG)
             val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; typeface = Cinema.text(activity, "", 10, serif = true).typeface }
+
+            // --- Gold Mode: hold OK three seconds on a face ---
+            val champagne = mix(Cinema.SAFFRON, Cinema.CREAM, 0.4f)
+            val gesture = HoldGesture()
+            val gild = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+            val gildFill = Paint(Paint.ANTI_ALIAS_FLAG)
+            val oval = RectF()
+            val star = Path()
+            var sweep = -1f      // 0..1 while the unlock sweep runs
+            var starPop = 1f
+            val stepper = Runnable { step() }
+
+            fun describe() = name + if (a != null && gold.isEnabled(a.userId)) ", Gold Mode on" else ""
+
+            fun step() {
+                if (!gesture.holding) { invalidate(); return }
+                if (a != null && gesture.tick(SystemClock.uptimeMillis())) {
+                    val held = gold.held(a.userId)
+                    contentDescription = describe()
+                    say(when (held) {
+                        GoldProfiles.Held.UNLOCKED -> "GOLD MODE UNLOCKED — Only the finest."
+                        GoldProfiles.Held.ENABLED -> "Gold Mode on"
+                        GoldProfiles.Held.DISABLED -> "Gold Mode off"
+                    })
+                    if (held == GoldProfiles.Held.UNLOCKED && Motion.animationsOn(this)) {
+                        ValueAnimator.ofFloat(0f, 1f).apply {
+                            duration = 900
+                            addUpdateListener { sweep = it.animatedValue as Float; starPop = OvershootInterpolator().getInterpolation((sweep * 2f).coerceAtMost(1f)); invalidate() }
+                            addListener(object : AnimatorListenerAdapter() { override fun onAnimationEnd(an: Animator) { sweep = -1f; starPop = 1f; invalidate() } })
+                        }.start()
+                    }
+                }
+                invalidate()
+                if (gesture.holding) postOnAnimation(stepper)
+            }
+
+            fun key(code: Int, e: KeyEvent): Boolean {
+                if (a == null || (code != KeyEvent.KEYCODE_DPAD_CENTER && code != KeyEvent.KEYCODE_ENTER && code != KeyEvent.KEYCODE_NUMPAD_ENTER)) return false
+                when (e.action) {
+                    KeyEvent.ACTION_DOWN -> if (gesture.down(SystemClock.uptimeMillis())) {
+                        cancelHold = { gesture.cancel(); invalidate() }
+                        postOnAnimation(stepper)
+                    }
+                    KeyEvent.ACTION_UP -> { val end = gesture.up(SystemClock.uptimeMillis()); invalidate(); if (end == HoldGesture.End.CLICK) performClick() }
+                    else -> return false
+                }
+                return true
+            }
+
+            fun cancelHoldNow() { gesture.cancel(); removeCallbacks(stepper); invalidate() }
+            override fun onWindowFocusChanged(hasWindowFocus: Boolean) { super.onWindowFocusChanged(hasWindowFocus); if (!hasWindowFocus) cancelHoldNow() }
+            override fun onDetachedFromWindow() { cancelHoldNow(); super.onDetachedFromWindow() }
+
+            /** The progress arc, the thin gold outline and its star: drawn on the face's own edge, so its size never changes. */
+            fun mark(c: Canvas, cx: Float, cy: Float, r: Float) {
+                val u = Cinema.pxf(activity, 1)
+                val on = a != null && gold.isEnabled(a.userId)
+                val p = gesture.progress(SystemClock.uptimeMillis())
+                if (on) { gild.strokeWidth = 3 * u; gild.color = champagne; c.drawCircle(cx, cy, r - 1.5f * u, gild) }
+                if (gesture.holding && p > 0.08f) {
+                    val ri = r - 2.5f * u
+                    oval.set(cx - ri, cy - ri, cx + ri, cy + ri)
+                    gild.strokeWidth = 5 * u; gild.color = Cinema.alpha(Cinema.CREAM, 0.25f); c.drawCircle(cx, cy, ri, gild)
+                    gild.color = champagne; c.drawArc(oval, -90f, 360f * p, false, gild)
+                }
+                if (sweep >= 0f) {
+                    val ri = r - 3f * u
+                    oval.set(cx - ri, cy - ri, cx + ri, cy + ri)
+                    gild.strokeWidth = 6 * u; gild.color = Cinema.alpha(Cinema.CREAM, 0.9f * (1f - sweep))
+                    c.drawArc(oval,-90f + 360f * sweep, 70f, false, gild)
+                }
+                if (on) {
+                    // A five-point star just outside the portrait, upper right.
+                    val sx = cx + (r + 13 * u) * 0.7071f; val sy = cy - (r + 13 * u) * 0.7071f
+                    val outer = 9 * u * starPop; val inner = outer * 0.42f
+                    star.rewind()
+                    for (i in 0 until 10) {
+                        val ang = Math.toRadians(-90.0 + i * 36.0); val rad = if (i % 2 == 0) outer else inner
+                        val x = sx + (rad * Math.cos(ang)).toFloat(); val y = sy + (rad * Math.sin(ang)).toFloat()
+                        if (i == 0) star.moveTo(x, y) else star.lineTo(x, y)
+                    }
+                    star.close()
+                    gild.strokeWidth = 2 * u; gild.color = Cinema.BG; c.drawPath(star, gild)
+                    gildFill.color = champagne; c.drawPath(star, gildFill)
+                }
+            }
+
             override fun onDraw(c: Canvas) {
                 val cx = width / 2f; val cy = height / 2f; val r = width / 2f - Cinema.pxf(activity, 24)
                 val lit = isFocused
                 if (lit) { val step = Cinema.pxf(activity, 6); for (i in 4 downTo 1) { paint.color = Cinema.STRIPES[i - 1]; c.drawCircle(cx, cy, r + step * i, paint) } }
-                if (a != null) { Avatars.draw(c, a.avatar, cx, cy, r, letter, serif = text.typeface, view = this); return }
+                if (a != null) { Avatars.draw(c, a.avatar, cx, cy, r, letter, serif = text.typeface, view = this); mark(c, cx, cy, r); return }
                 // "+", centred on its own ink in the circle.
                 Avatars.letter(c, letter, cx, cy, r, if (lit) Cinema.CREAM else Cinema.alpha(Cinema.CREAM, 0.06f), null,
                     ink = if (lit) Cinema.INK else Cinema.alpha(Cinema.CREAM, 0.75f), size = 0.8f)
             }
         }.apply {
-            isFocusable = true; isClickable = true; contentDescription = name
-            setOnFocusChangeListener { v, f -> v.invalidate(); label.setTextColor(if (f) Cinema.CREAM else rest)
+            isFocusable = true; isClickable = true; contentDescription = describe()
+            setOnKeyListener { _, code, e -> key(code, e) }
+            setOnFocusChangeListener { v, f -> if (!f) cancelHoldNow(); v.invalidate(); label.setTextColor(if (f) Cinema.CREAM else rest)
                 v.animate().scaleX(if (f) 1.06f else 1f).scaleY(if (f) 1.06f else 1f).setDuration(160).start() }
             setOnClickListener { if (a != null) onChosen(a) else nameEntry() }
         }
