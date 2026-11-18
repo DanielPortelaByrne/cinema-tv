@@ -138,7 +138,7 @@ object ChannelViews {
             background = GradientDrawable().apply { cornerRadius = Cinema.pxf(context, 200); setColor(Cinema.CREAM) }
         }
         card.poster.addView(tune, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, Cinema.px(context, 20), Cinema.px(context, 22), 0) })
-        card.poster.addView(Cinema.text(context, channel.name, 40, ink, serif = true, weight = 500, tracking = -0.01f).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
+        card.poster.addView(Cinema.text(context, channel.name, 40, ink, serif = true, weight = 500, tracking = -0.01f).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END; tag = NAME_TAG },
             FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(Cinema.px(context, 28), 0, Cinema.px(context, 20), Cinema.px(context, 58)) })
         card.poster.addView(Cinema.text(context, line, 21, Cinema.alpha(ink, 0.85f)).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END },
             FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(Cinema.px(context, 28), 0, Cinema.px(context, 20), Cinema.px(context, 26)) })
@@ -150,6 +150,28 @@ object ChannelViews {
             stripe.visibility = if (focused) View.VISIBLE else View.GONE
         }
         return card
+    }
+
+    private const val NAME_TAG = "channel-name"
+
+    /**
+     * Puts a network's logo on a channel's tile in place of its name in type (the name stays as the tile's description).
+     * The logo sits on a cream plate so any mark reads on any channel colour, and keeps its own proportions.
+     * Until a logo arrives, or when there is none, the tile is exactly as it was.
+     */
+    fun showLogo(card: PosterCard, logo: Bitmap) {
+        val context = card.context
+        val name = card.poster.findViewWithTag<View>(NAME_TAG) ?: return
+        if (logo.width <= 0 || logo.height <= 0) return
+        name.visibility = View.INVISIBLE
+        val plate = ImageView(context).apply {
+            setImageBitmap(logo); scaleType = ImageView.ScaleType.FIT_CENTER; adjustViewBounds = true
+            setPadding(Cinema.px(context, 16), Cinema.px(context, 8), Cinema.px(context, 16), Cinema.px(context, 8))
+            background = GradientDrawable().apply { cornerRadius = Cinema.pxf(context, 14); setColor(Cinema.CREAM) }
+        }
+        card.poster.addView(plate, FrameLayout.LayoutParams(-2, Cinema.px(context, 64), Gravity.BOTTOM or Gravity.START).apply {
+            setMargins(Cinema.px(context, 28), 0, Cinema.px(context, 20), Cinema.px(context, 58))
+        })
     }
 
     /** The last card of the row: opens the Channels page, where playlists are made and edited. */

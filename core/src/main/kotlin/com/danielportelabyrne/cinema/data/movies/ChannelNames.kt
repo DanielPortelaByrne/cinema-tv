@@ -25,6 +25,8 @@ object ChannelNames {
         listOf("Nick Jr.", "nick jr", "nickjr"),
         listOf("Nicktoons", "nick toons"),
         listOf("Cartoon Network", "cartoon net", "cn"),
+        listOf("Adult Swim", "adultswim"),
+        listOf("Nicktoons", "nick toonz", "nicktoonz"),
         listOf("Boomerang"),
         listOf("Jetix"),
         listOf("Fox Kids"),
@@ -40,6 +42,19 @@ object ChannelNames {
 
     private fun fold(s: String): String = Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
         .lowercase(Locale.ROOT).replace("+", " plus ").replace(Regex("[^a-z0-9]+"), "")
+
+    /**
+     * The network a channel called [name] is named after, or null. Only the whole name counts, ignoring case, accents,
+     * spaces and punctuation ("[adult swim]", "ADULT  SWIM"): "Adult Swim Nights" or "Pop Up Cinema" match nothing.
+     */
+    fun brand(name: String): String? {
+        val flat = fold(name)
+        if (flat.isEmpty()) return null
+        return FAMILIES.firstOrNull { names -> names.any { fold(it) == flat } }?.first()
+    }
+
+    /** Whether [candidate] (a network found on Wikidata) is the network [brand], by its whole name. */
+    fun sameBrand(candidate: String, brand: String): Boolean = fold(candidate) == fold(brand)
 
     /** How well a channel called [name] answers [query]: its own name first, then what people call the network (75), 0 for not at all. */
     fun score(name: String, query: String): Int {
