@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,12 +19,16 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Replay
@@ -42,6 +48,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -49,6 +60,8 @@ import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
 import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.Kind
 import com.danielportelabyrne.cinema.data.movies.LayoutPage
+import com.danielportelabyrne.cinema.data.movies.Mix
+import com.danielportelabyrne.cinema.data.movies.Mixes
 import com.danielportelabyrne.cinema.data.movies.PageLayouts
 import com.danielportelabyrne.cinema.data.movies.Picks
 import com.danielportelabyrne.cinema.data.movies.Section
@@ -229,16 +242,20 @@ fun SpecPage(model: Model, key: String, title: String, eyebrow: List<String>, sp
  * typing: "sports documentaries", "top 10 on netflix"), and back to the default. Every change is saved at once, to the same
  * place the TV keeps its layouts.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LayoutEditorScreen(model: Model, page: LayoutPage) {
     var list by remember { mutableStateOf(model.layoutOf(page)) }
     var adding by remember { mutableStateOf(false) }
+    /** The row being built: its place in the list (-1 when it is new) and the parts chosen so far. */
+    var building by remember { mutableStateOf<Pair<Int, Mix>?>(null) }
     fun commit(next: List<Section>) { list = next; model.saveLayout(page, next) }
     val details = remember { PageLayouts.options().associate { it.section.id to it.detail } }
     Column(Modifier.fillMaxSize()) {
         TabHeader("Customise ${page.label}", listOf("Rows", "${list.size}"), RibbonShape.LOOP)
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             CreamButton("Add a row", Icons.Filled.Add) { adding = true }
+            GlassButton("Build a row", Icons.Filled.Edit) { building = -1 to Mix() }
             GlassButton("Default", Icons.Filled.Replay) { commit(PageLayouts.defaults(page)); model.toast("${page.label} is back to its default rows") }
         }
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -248,6 +265,7 @@ fun LayoutEditorScreen(model: Model, page: LayoutPage) {
                         Text(PageLayouts.label(s), color = Palette.ivory, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         details[s.id]?.let { Text(it, color = Palette.dim, style = MaterialTheme.typography.bodySmall) }
                     }
+                    PageLayouts.asMix(s)?.let { m -> IconButton(onClick = { building = i to m }) { Icon(Icons.Filled.Edit, "Edit ${PageLayouts.label(s)}", tint = Palette.ivory) } }
                     IconButton(onClick = { if (i > 0) commit(list.toMutableList().also { it.add(i - 1, it.removeAt(i)) }) }, enabled = i > 0) {
                         Icon(Icons.Filled.KeyboardArrowUp, "Move up", tint = if (i > 0) Palette.ivory else Palette.dim)
                     }
@@ -261,6 +279,45 @@ fun LayoutEditorScreen(model: Model, page: LayoutPage) {
         }
     }
     if (adding) AddRow(have = list, onPick = { opt -> commit(list + opt.section); adding = false; model.toast("Added ${opt.label}") }, onClose = { adding = false })
+    building?.let { (at, start) ->
+        BuildRow(start, editing = at >= 0, onSave = { mix ->
+            val section = Section(SectionType.MIX, mix.encode())
+            commit(if (at in list.indices) list.toMutableList().also { it[at] = section } else if (list.none { it.id == section.id }) list + section else list)
+            building = null; model.toast(if (at >= 0) "Saved ${Mixes.label(mix)}" else "Added ${Mixes.label(mix)}")
+        }, onClose = { building = null })
+    }
+}
+
+/** The TV's "Build a row" on a phone: the row's name as it will read, then each part's choices; the same parts ([Mixes.parts]) in the same order. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BuildRow(start: Mix, editing: Boolean, onSave: (Mix) -> Unit, onClose: () -> Unit) {
+    var mix by remember { mutableStateOf(start) }
+    val parts = remember { Mixes.parts() }
+    Dialog(onDismissRequest = onClose) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 640.dp).clip(RoundedCornerShape(24.dp)).background(Color(0xFF1E1610)).padding(16.dp)) {
+            Text("Build a row", style = MaterialTheme.typography.headlineSmall, color = Palette.ivory)
+            Text(Mixes.label(mix), style = MaterialTheme.typography.titleMedium, color = Palette.butter, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(vertical = 8.dp))
+            if (Mixes.spec(mix) == null) Text("No titles for this mix. Pick another service.", style = MaterialTheme.typography.bodySmall, color = Palette.terracotta, modifier = Modifier.padding(bottom = 8.dp))
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                parts.forEach { part ->
+                    Text(part.name, style = MaterialTheme.typography.labelLarge, color = Palette.ivoryMuted, modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        part.choices.forEach { (value, name) ->
+                            val on = part.get(mix) == value
+                            Box(Modifier.semantics(mergeDescendants = true) { contentDescription = "${part.name}: $name" + if (on) ", selected" else ""; role = Role.RadioButton; selected = on }) {
+                                ChoicePill(name, on) { mix = part.set(mix, value) }
+                            }
+                        }
+                    }
+                }
+            }
+            Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CreamButton(if (editing) "Save this row" else "Add this row", Icons.Filled.Check) { onSave(mix) }
+                GlassButton("Cancel") { onClose() }
+            }
+        }
+    }
 }
 
 @Composable
