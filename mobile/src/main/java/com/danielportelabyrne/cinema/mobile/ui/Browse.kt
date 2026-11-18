@@ -155,7 +155,7 @@ private fun Hero(model: Model, rows: List<CatalogueRow>) {
                     Box(Modifier.fillMaxSize().background(Brush.radialGradient(0f to Color(0xCC0B0807), 1f to Color.Transparent, center = androidx.compose.ui.geometry.Offset(0f, 1400f), radius = 1300f)))
                     Column(Modifier.align(Alignment.BottomStart).padding(start = 20.dp, end = 20.dp, bottom = 46.dp)) {
                         Eyebrow(listOf("Featured", label))
-                        Text(t.name, style = MaterialTheme.typography.displayMedium, color = Palette.ivory, maxLines = 3, modifier = Modifier.padding(top = 8.dp))
+                        TitleLogo(t.name, t.imdbId, MaterialTheme.typography.displayMedium, 280, 88, Modifier.padding(top = 8.dp))
                         MetaLine(t.age, listOfNotNull(t.year?.toString(), t.genres.firstOrNull(), t.runtimeMin?.let { "${it / 60}h ${it % 60}m" }), t.imdbScore, Modifier.padding(top = 10.dp))
                         t.overview?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Palette.reading, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp)) }
                         Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
