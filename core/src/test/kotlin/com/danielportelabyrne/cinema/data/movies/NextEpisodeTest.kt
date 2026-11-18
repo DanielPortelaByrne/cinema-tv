@@ -121,6 +121,17 @@ class NextEpisodeTest {
         assertEquals(NextUp(1, 3, continuing = false), up)
     }
 
+    // The page lists regular seasons only (specials, season 0, are filtered out before this is called).
+    @Test fun stream_a_finished_special_leads_to_the_first_regular_episode() {
+        val up = NextEpisode.forStream(listOf(1 to 1, 1 to 2), listOf(streamed(0, 1, positionMs = 2_600_000, at = 50)))
+        assertEquals(NextUp(1, 1, continuing = false), up)
+    }
+
+    @Test fun stream_a_part_watched_special_that_is_not_listed_is_passed_over() {
+        val up = NextEpisode.forStream(listOf(1 to 1, 1 to 2), listOf(streamed(0, 1, positionMs = 600_000, at = 50)))
+        assertEquals(NextUp(1, 1, continuing = false), up)
+    }
+
     @Test fun stream_last_episode_finished_gives_nothing_next() {
         assertNull(NextEpisode.forStream(listOf(1 to 1, 1 to 2), listOf(streamed(1, 2, positionMs = 2_600_000, at = 50))))
     }
