@@ -41,6 +41,7 @@ import com.danielportelabyrne.cinema.data.movies.PlaylistEpisode
 import com.danielportelabyrne.cinema.data.movies.BroadcastQueue
 import com.danielportelabyrne.cinema.data.movies.PlaylistPlayback
 import com.danielportelabyrne.cinema.data.movies.PlaylistSlot
+import com.danielportelabyrne.cinema.data.movies.ClassicLineups
 import com.danielportelabyrne.cinema.data.movies.PlaylistStore
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -4189,6 +4190,46 @@ class MoviesPanel(
         com.danielportelabyrne.cinema.ui.room.ChannelNameSheet(activity, infoSheet).show(initial, save)
     }
 
+    /** New channel: a blank one to name, or an era's lineup built from the series the library already has. */
+    private fun newChannelChoice() {
+        CinemaChoiceSheet.show(infoSheet, activity, "NEW CHANNEL", "How do you want to start?", listOf(
+            CinemaChoiceSheet.Choice("Name it and add my own") {
+                playlistName { name -> go(Dest.Playlist(playlists.create(name).id), remember = true) }
+            },
+            CinemaChoiceSheet.Choice("Recreate a classic lineup") { chooseClassicLineup() }
+        ))
+    }
+
+    private fun chooseClassicLineup() {
+        CinemaChoiceSheet.show(infoSheet, activity, "CLASSIC LINEUPS · FROM YOUR LIBRARY", "Pick an era",
+            ClassicLineups.all.map { lineup -> CinemaChoiceSheet.Choice("${lineup.name}  ·  ${lineup.summary}") { importClassicLineup(lineup) } })
+    }
+
+    private fun importClassicLineup(lineup: ClassicLineups.Lineup) {
+        if (!jellyfin.isConnected) {
+            CinemaToast.show(activity, "Connect your library first: classic lineups are built from the series you have", Toast.LENGTH_LONG)
+            return
+        }
+        CinemaToast.show(activity, "Looking through your library for ${lineup.name}…", Toast.LENGTH_SHORT)
+        worker.execute {
+            val items = jellyfin.library().filter { it.isSeries }
+            val match = ClassicLineups.match(lineup, libraryEntries(items)) { it.title.name }
+            activity.runOnUiThread {
+                if (match.found.isEmpty()) {
+                    CinemaToast.show(activity, "None of the ${lineup.programmes.size} ${lineup.name} series are in your library yet, so no channel was made", Toast.LENGTH_LONG)
+                    return@runOnUiThread
+                }
+                val channel = playlists.create(lineup.name)
+                playlists.update(channel.id) { it.copy(slots = match.found.map { e ->
+                    PlaylistSlot(e.title.copy(imdbId = knownImdb(e) ?: e.library?.imdbId), e.library?.id, null)
+                }) }
+                val gap = if (match.missing.isEmpty()) "" else " · ${match.missing.size} not in your library"
+                CinemaToast.show(activity, "${lineup.name}: ${match.found.size} of ${lineup.programmes.size} series added$gap", Toast.LENGTH_LONG)
+                go(Dest.Playlist(channel.id), remember = true)
+            }
+        }
+    }
+
     private fun choosePlaylistStart(entry: Entry) {
         if (entry.title.kind == Kind.MOVIE) {
             addPlaylistSlot(entry)
@@ -4425,9 +4466,7 @@ class MoviesPanel(
             list.addView(row, LinearLayout.LayoutParams(Cinema.px(activity, 780), Cinema.px(activity, 128)).apply { topMargin = Cinema.px(activity, 14) })
             rows[c.id] = row
         }
-        val newRow = ChannelViews.newChannelRow(activity) {
-            playlistName { name -> go(Dest.Playlist(playlists.create(name).id), remember = true) }
-        }
+        val newRow = ChannelViews.newChannelRow(activity) { newChannelChoice() }
         list.addView(newRow, LinearLayout.LayoutParams(Cinema.px(activity, 780), Cinema.px(activity, 104)).apply { topMargin = Cinema.px(activity, 14) })
         body.addView(list, LinearLayout.LayoutParams(-2, -2))
         if (channels.isNotEmpty()) {
