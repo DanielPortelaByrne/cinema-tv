@@ -495,7 +495,10 @@ class PlayerActivity : AppCompatActivity() {
             // Films and episodes get the Cinema chrome: wavy scrubber, scrubbing preview and the paused screen.
             view.useController = false
             view.isFocusable = false
-            chrome = PlayerChrome(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)); wireChrome(it) }
+            chrome = PlayerChrome(this).also {
+                root.addView(it, FrameLayout.LayoutParams(-1, -1)); wireChrome(it)
+                station?.let { name -> it.station = playlistPlayback?.number to name; it.nextTitle = playlistPlayback?.nextTitle }
+            }
         }
         station?.let { name ->
             // The station label, in Cinema's glass: the channel's number and name, the programme, what is next, and the

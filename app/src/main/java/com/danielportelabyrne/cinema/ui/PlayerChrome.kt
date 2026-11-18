@@ -80,6 +80,10 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     var bitrateSamples: () -> List<Long> = { emptyList() }
     var chipLabels: () -> Triple<String?, String?, String?> = { Triple(null, null, null) }   // subtitles, audio, quality
 
+    /** Set when this is a channel's programme: its (number, name) heads the controls, and NOW / NEXT replace the film's facts. */
+    var station: Pair<Int?, String>? = null
+        set(v) { field = v; if (v != null) metaLine.maxLines = 2 }
+    var nextTitle: String? = null
     var state: PlayerUi = PlayerUi.Hidden
         private set
 
@@ -554,7 +558,8 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         chapterLabel.visibility = if (scrubbing || chapters.isEmpty()) INVISIBLE else VISIBLE
         timeNow.visibility = if (scrubbing) INVISIBLE else VISIBLE; timeLeft.visibility = timeNow.visibility
         preview.visibility = if (scrubbing) VISIBLE else GONE
-        eyebrowHolder.removeAllViews(); eyebrowHolder.addView(Cinema.eyebrow(context, listOf(if (scrubbing) "Scrubbing" else "Now playing"), 15))
+        val heading = if (scrubbing) "Scrubbing" else station?.let { (number, name) -> com.danielportelabyrne.cinema.data.movies.BroadcastBanner.eyebrow(number, name) } ?: "Now playing"
+        eyebrowHolder.removeAllViews(); eyebrowHolder.addView(Cinema.eyebrow(context, listOf(heading), 15))
         layoutEpisodes()
         when {
             next == PlayerUi.Controls && before != PlayerUi.Controls && before !is PlayerUi.Scrubbing -> { refreshChips(); refreshNext(); pauseButton.requestFocus() }
@@ -718,6 +723,12 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
                 setSpan(android.text.style.ForegroundColorSpan(Cinema.CREAM), s, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), s, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
+        }
+        if (station != null && state == PlayerUi.Controls) {
+            // On a channel the line under the title is what is on and what follows, from the real length, not the film's facts.
+            val now = System.currentTimeMillis()
+            val b = com.danielportelabyrne.cinema.data.movies.BroadcastBanner
+            metaLine.text = listOfNotNull(b.nowLine(now, pos, dur), b.nextLine(now, pos, dur, nextTitle)).joinToString("\n").ifBlank { metaLine.text.toString() }
         }
         // Controls slip away after five quiet seconds while the film plays.
         if (state == PlayerUi.Controls && !drawerOpen && isPlaying() && android.os.SystemClock.uptimeMillis() - lastKeyAt > 5000) setState(PlayerUi.Hidden)

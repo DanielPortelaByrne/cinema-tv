@@ -18,6 +18,11 @@ class BroadcastBannerTest {
         assertNull(BroadcastBanner.length(0))
     }
 
+    @Test fun eyebrowNamesTheChannelWithItsNumberWhenKnown() {
+        assertEquals("CH 12 · BBC One", BroadcastBanner.eyebrow(12, "BBC One"))
+        assertEquals("BBC One", BroadcastBanner.eyebrow(null, "BBC One"))
+    }
+
     @Test fun nowLineBacksUpToTheStartAndMeetsTheEnd() {
         // 4 minutes in: it began at 20:11 and ends at 20:35.
         assertEquals("NOW 20:11–20:35 · 24 min", BroadcastBanner.nowLine(at2015, 4 * min, 24 * min, utc))

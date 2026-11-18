@@ -20,6 +20,9 @@ object BroadcastBanner {
         return if (minutes >= 60) "${minutes / 60} h" + (if (minutes % 60 > 0) " ${minutes % 60} min" else "") else "$minutes min"
     }
 
+    /** The controls' small heading on a channel: "CH 12 · BBC ONE" (the number only when known); the name is left as given, the view upper-cases it. */
+    fun eyebrow(number: Int?, station: String): String = if (number != null) "CH $number · $station" else station
+
     /** "NOW 20:15–20:39 · 24 min", from when it began (now less [positionMs]); only the length when [durationMs] is known but nothing else is; null when the length is not known. */
     fun nowLine(nowMs: Long, positionMs: Long, durationMs: Long, zone: TimeZone = TimeZone.getDefault()): String? {
         val len = length(durationMs) ?: return null
