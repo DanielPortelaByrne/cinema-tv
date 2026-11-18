@@ -52,6 +52,9 @@ private fun paper(context: Context, radiusDp: Int): GradientDrawable = GradientD
 // ---------------------------------------------------------------------------------------------
 
 /** The sideboard: projects standing on a walnut ledge. One caption below the ledge follows the focused object. */
+/** Who is speaking in a sheet of someone's words: their picture's address, if they have one. */
+class Speaker(val avatarUrl: String?)
+
 class SheetAction(val label: String, val sublabel: String? = null, val primary: Boolean = false, val icon: Int? = null, val run: () -> Unit)
 
 /**
@@ -87,7 +90,9 @@ class InfoSheet(private val container: FrameLayout) {
         /** Size of [image] in dp; defaults to a portrait poster. */
         imageSizeDp: Pair<Int, Int> = 150 to 225,
         /** The picture on the page that [image] shows: it flies from there into the sheet. */
-        from: View? = null
+        from: View? = null,
+        /** The words are a person's (a review): [title] is their name, shown small beside their picture. */
+        person: Speaker? = null
     ) {
         // A refresh redraws the same sheet in place (for results that arrive late): keep the way back and the focused button.
         val focusedIndex = if (refresh) lastButtons.indexOfFirst { it.isFocused }.coerceAtLeast(0) else 0
@@ -146,11 +151,26 @@ class InfoSheet(private val container: FrameLayout) {
         val actions = actions.filter { it.label != "Close" }
         val danger = actions.any { isDestructive(it.label) }
         textHost.addView(Cinema.eyebrow(context, listOf(kicker.lowercase(Locale.UK).replaceFirstChar { it.uppercase() }), color = if (danger) Cinema.DANGER_TEXT else Cinema.SAFFRON))
-        textHost.addView(Cinema.title(context, title, if (title.length > 28) 48 else 60, maxLines = 3).apply { maxWidth = measure },
-            LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 16) })
-        subtitle?.let {
-            textHost.addView(Cinema.text(context, it, 20, Cinema.SAFFRON, weight = 600, tracking = 0.06f).apply { maxWidth = measure },
-                LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 14) })
+        if (person != null) {
+            // A person's words (a review): who said them sits small beside their picture, so the words stay the focus.
+            val size = Cinema.px(context, 72)
+            val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val face = com.danielportelabyrne.cinema.design.cinema.AvatarView(context, 72).apply { set(title, null); drawRing = false }
+            head.addView(face, LinearLayout.LayoutParams(size, size))
+            val who = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            who.addView(Cinema.text(context, title, 30, Cinema.CREAM, weight = 600).apply { maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
+            subtitle?.let { who.addView(Cinema.text(context, it, 20, Cinema.MUTED, weight = 500).apply { maxLines = 1 }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 4) }) }
+            head.addView(who, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(context, 22) })
+            textHost.addView(head, LinearLayout.LayoutParams(measure, -2).apply { topMargin = Cinema.px(context, 22) })
+            // Never waited for: the initial shows at once and the picture replaces it if and when it arrives.
+            person.avatarUrl?.let { url -> com.danielportelabyrne.cinema.ui.RemoteImages.shared(context).load(url, maxWidth = 144) { b -> face.set(title, b) } }
+        } else {
+            textHost.addView(Cinema.title(context, title, if (title.length > 28) 48 else 60, maxLines = 3).apply { maxWidth = measure },
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 16) })
+            subtitle?.let {
+                textHost.addView(Cinema.text(context, it, 20, Cinema.SAFFRON, weight = 600, tracking = 0.06f).apply { maxWidth = measure },
+                    LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 14) })
+            }
         }
         lines.forEach {
             textHost.addView(Cinema.text(context, it, 24, Cinema.READING, weight = 300).apply { maxWidth = measure; setLineSpacing(0f, 1.22f) },
