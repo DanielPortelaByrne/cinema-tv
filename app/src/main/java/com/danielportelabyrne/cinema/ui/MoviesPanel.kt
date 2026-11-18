@@ -6319,7 +6319,7 @@ class MoviesPanel(
                     remember(e.title, streamed = true)
                     PlayerActivity.launch(activity, ranked, label, found.imdb,
                         artUrl = e.title.backdropUrl ?: e.title.posterUrl,
-                        meta = if (episode == null) PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview)
+                        meta = if (episode == null) PlayerMeta(label, e.title.year, e.title.genres, e.title.runtimeMin, e.title.age, e.title.imdbScore, e.title.overview, logoImdbId = e.title.imdbId)
                             else PlayerMeta(label, e.title.year, e.title.genres, listed?.runtime ?: e.title.runtimeMin, e.title.age, e.title.imdbScore, listed?.overview), episode = episode,
                         history = streamHistory(e, found.imdb, episode), fromStart = playlist?.station != null, playlist = playlist)
                     if (playlist != null) closeStreamLoading()
