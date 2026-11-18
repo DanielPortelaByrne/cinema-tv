@@ -60,8 +60,11 @@ class RemoteImages private constructor(context: Context) {
         load(url, headers, maxWidth, tag, SHADED, false, done)
 
     /** A title logo: a transparent PNG, so it keeps its alpha channel (posters and stills are opaque and decode smaller). */
-    fun loadLogo(url: String, maxWidth: Int, tag: Any?, done: (Bitmap) -> Unit) =
+    fun loadLogo(url: String, maxWidth: Int, tag: Any?, done: (Bitmap) -> Unit) {
+        // A title with no logo answers 404 every time: ask once per run, not on every turn of the hero.
+        if (url in missingLogos) return
         load(url, emptyMap(), maxWidth, tag, LOGO, false, done)
+    }
 
     fun loadShadedPosterPriority(url: String, maxWidth: Int, tag: Any?, done: (Bitmap) -> Unit) {
         val at = Perf.now()
@@ -88,6 +91,7 @@ class RemoteImages private constructor(context: Context) {
         private const val SHADED = "shaded"
         private const val LOGO = "logo"
         private const val TAG = "Images"
+        private val missingLogos: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
         fun shared(context: Context): RemoteImages = shared ?: synchronized(this) {
             shared ?: RemoteImages(context.applicationContext).also { shared = it }
@@ -108,6 +112,7 @@ class RemoteImages private constructor(context: Context) {
             headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
             c.exchange {
                 val code = c.responseCode
+                if (code == 404 && "/logo/" in url) missingLogos.add(url)
                 if (code != 200) { Perf.mark("image ${url.substringBefore('?')} -> HTTP $code"); Log.w(TAG, "image ${url.substringBefore('?')} -> HTTP $code"); null } else c.inputStream.use { it.readBytes() }
             }
         } catch (e: Exception) {

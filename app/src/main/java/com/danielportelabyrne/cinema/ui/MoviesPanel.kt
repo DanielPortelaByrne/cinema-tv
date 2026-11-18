@@ -5658,7 +5658,7 @@ class MoviesPanel(
         }
         showHero(0)
         // The other featured titles' pictures, ready in memory before their turn comes.
-        heroEntries.drop(1).forEach { prefetchBackdrop(it) }
+        heroEntries.drop(1).forEach { prefetchBackdrop(it); prefetchLogo(it) }
         ui.removeCallbacks(heroTick)
         if (heroEntries.size > 1) ui.postDelayed(heroTick, HERO_TURN_MS)
     }
@@ -5741,7 +5741,7 @@ class MoviesPanel(
         heroEyebrow.addView(Cinema.eyebrow(activity, listOfNotNull("Featured", heroLabels.getOrNull(index))))
         Cinema.style(heroTitle, heroTitleSize(titleParts(t.name).first) * (if (heroCompact) 0.9 else 1.0), Cinema.CREAM, serif = true, tracking = -0.02f)
         heroTitle.text = splitTitle(t.name)
-        heroTitleSlot.bind(t.imdbId, images, pageTag)
+        bindLogo(heroTitleSlot, e, pageTag) { heroEntries.getOrNull(heroIndex)?.title?.key == t.key }
         heroMeta.removeAllViews(); heroMeta.addView(if (heroCompact) meta(t, 21) else meta(t))
         heroBody.text = t.overview.orEmpty(); heroBody.visibility = if (t.overview.isNullOrBlank()) View.GONE else View.VISIBLE
         heroProvider.removeAllViews(); Cinema.provider(activity, t.services)?.let { heroProvider.addView(it) }
@@ -5861,7 +5861,7 @@ class MoviesPanel(
         text.addView(Cinema.eyebrow(activity, listOfNotNull(if (t.kind == Kind.SHOW) "Series" else "Film", if (e.library != null) "In your library" else null)))
         val mainName = titleParts(t.name).first
         val heading = Cinema.title(activity, t.name, heroTitleSize(mainName) * 0.9, maxLines = 3).apply { setText(splitTitle(t.name)) }
-        val headingSlot = TitleLogoSlot(activity, heading, 720, 190).also { it.bind(t.imdbId, images, pageTag) }
+        val headingSlot = TitleLogoSlot(activity, heading, 720, 190).also { sl -> bindLogo(sl, e, pageTag) { sl.isAttachedToWindow } }
         text.addView(headingSlot, LinearLayout.LayoutParams(Cinema.px(activity, 960), -2).apply { topMargin = Cinema.px(activity, 22) })
         text.addView(meta(t, 21), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
         val about = Cinema.synopsis(activity, t.overview ?: e.library?.overview ?: "No description yet.", 24, maxLines = 3)
@@ -6564,6 +6564,25 @@ class MoviesPanel(
 
     /** The IMDb id for [e] if it is already known, without asking anyone: its own, or one found before. */
     private fun knownImdb(e: Entry): String? = e.title.imdbId ?: imdbMemo[e.title.key]
+
+    /**
+     * Shows [e]'s logo in [slot]. At once when its IMDb id is known; otherwise as soon as Seerr has given it, because Home's
+     * featured titles carry only a TMDB id and so never got a logo before. [still] says the slot is still showing [e].
+     */
+    private fun bindLogo(slot: TitleLogoSlot, e: Entry, tag: Any?, still: () -> Boolean) {
+        val known = knownImdb(e)
+        slot.bind(known, images, tag)
+        if (known != null || e.title.tmdbId == null) return
+        slowPool.execute { imdbOf(e)?.let { id -> activity.runOnUiThread { if (still()) slot.bind(id, images, tag) } } }
+    }
+
+    /** Warms a featured title's logo (and its IMDb id) in memory before its turn, so it appears with the title rather than after it. */
+    private fun prefetchLogo(e: Entry) {
+        slowPool.execute {
+            val url = com.danielportelabyrne.cinema.data.movies.TitleLogos.url(imdbOf(e)) ?: return@execute
+            activity.runOnUiThread { images.loadLogo(url, Cinema.px(activity, 720), pageTag) { } }
+        }
+    }
 
     /**
      * The IMDb id for [e]: its own, or Seerr's for its TMDB id. A title opened from the Home spotlight has only the TMDB id,
