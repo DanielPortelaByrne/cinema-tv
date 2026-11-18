@@ -268,7 +268,7 @@ object ChannelViews {
         row.addView(plus, LinearLayout.LayoutParams(Cinema.px(context, 60), Cinema.px(context, 60)).apply { marginEnd = Cinema.px(context, 26) })
         val text = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val title = Cinema.text(context, "New channel", 28, Cinema.CREAM, weight = 500)
-        val sub = Cinema.text(context, "Name it, then add films and series", 20, Cinema.MUTED)
+        val sub = Cinema.text(context, "Name it, or recreate a classic lineup", 20, Cinema.MUTED)
         text.addView(title); text.addView(sub, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(context, 4) })
         row.addView(text)
         row.setOnFocusChangeListener { _, f ->
