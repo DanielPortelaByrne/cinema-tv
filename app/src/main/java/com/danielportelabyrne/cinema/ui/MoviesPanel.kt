@@ -351,6 +351,7 @@ class MoviesPanel(
 
     private lateinit var storageView: TextView
     private lateinit var heroTitle: TextView
+    private lateinit var heroTitleSlot: TitleLogoSlot
     private lateinit var heroBody: TextView
     private lateinit var heroButtons: LinearLayout
     private var heroSet = false
@@ -5554,7 +5555,8 @@ class MoviesPanel(
         // Over a bright picture the words keep a soft shadow of their own, so the arc can stay thin.
         if (home) { heroTitle.setShadowLayer(Cinema.pxf(activity, 22), 0f, Cinema.pxf(activity, 3), 0xAA000000.toInt()); heroBody.setShadowLayer(Cinema.pxf(activity, 12), 0f, Cinema.pxf(activity, 2), 0xAA000000.toInt()) }
         column.addView(heroEyebrow)
-        column.addView(heroTitle, LinearLayout.LayoutParams(Cinema.px(activity, if (home) 960 else 1100), -2).apply { topMargin = Cinema.px(activity, 22) })
+        heroTitleSlot = TitleLogoSlot(activity, heroTitle, 720, 190)
+        column.addView(heroTitleSlot, LinearLayout.LayoutParams(Cinema.px(activity, if (home) 960 else 1100), -2).apply { topMargin = Cinema.px(activity, 22) })
         column.addView(heroMeta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
         column.addView(heroBody, LinearLayout.LayoutParams(Cinema.px(activity, if (home) 700 else 820), -2).apply { topMargin = Cinema.px(activity, 26) })
         column.addView(heroProvider, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
@@ -5676,6 +5678,7 @@ class MoviesPanel(
         heroEyebrow.addView(Cinema.eyebrow(activity, listOfNotNull("Featured", heroLabels.getOrNull(index))))
         Cinema.style(heroTitle, heroTitleSize(titleParts(t.name).first) * (if (heroCompact) 0.9 else 1.0), Cinema.CREAM, serif = true, tracking = -0.02f)
         heroTitle.text = splitTitle(t.name)
+        heroTitleSlot.bind(t.imdbId, images, pageTag)
         heroMeta.removeAllViews(); heroMeta.addView(if (heroCompact) meta(t, 21) else meta(t))
         heroBody.text = t.overview.orEmpty(); heroBody.visibility = if (t.overview.isNullOrBlank()) View.GONE else View.VISIBLE
         heroProvider.removeAllViews(); Cinema.provider(activity, t.services)?.let { heroProvider.addView(it) }
@@ -5795,7 +5798,8 @@ class MoviesPanel(
         text.addView(Cinema.eyebrow(activity, listOfNotNull(if (t.kind == Kind.SHOW) "Series" else "Film", if (e.library != null) "In your library" else null)))
         val mainName = titleParts(t.name).first
         val heading = Cinema.title(activity, t.name, heroTitleSize(mainName) * 0.9, maxLines = 3).apply { setText(splitTitle(t.name)) }
-        text.addView(heading, LinearLayout.LayoutParams(Cinema.px(activity, 960), -2).apply { topMargin = Cinema.px(activity, 22) })
+        val headingSlot = TitleLogoSlot(activity, heading, 720, 190).also { it.bind(t.imdbId, images, pageTag) }
+        text.addView(headingSlot, LinearLayout.LayoutParams(Cinema.px(activity, 960), -2).apply { topMargin = Cinema.px(activity, 22) })
         text.addView(meta(t, 21), LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 30) })
         val about = Cinema.synopsis(activity, t.overview ?: e.library?.overview ?: "No description yet.", 24, maxLines = 3)
         text.addView(about, LinearLayout.LayoutParams(Cinema.px(activity, 700), -2).apply { topMargin = Cinema.px(activity, 26) })
@@ -7520,7 +7524,8 @@ class MoviesPanel(
         words.addView(nameSlot, LinearLayout.LayoutParams(-2, -2))
         // Logos only on the large stills: the smaller ones (and a grid's many) keep the name in type, which costs no picture.
         t.imdbId?.takeIf { it.startsWith("tt") && (spotlight || w >= STILL_W) }?.let { imdb ->
-            images.loadLogo(LOGO_URL.format(imdb), Cinema.px(activity, logoW.coerceAtLeast(1)), pageTag) { b ->
+            val logoUrl = com.danielportelabyrne.cinema.data.movies.TitleLogos.url(imdb) ?: return@let
+            images.loadLogo(logoUrl,Cinema.px(activity, logoW.coerceAtLeast(1)), pageTag) { b ->
                 logo.setImageBitmap(b); logo.visibility = View.VISIBLE
                 if (com.danielportelabyrne.cinema.design.Motion.animationsOn(logo)) { logo.alpha = 0f; logo.animate().alpha(1f).setDuration(220).start(); name.animate().alpha(0f).setDuration(220).withEndAction { name.visibility = View.GONE }.start() }
                 else name.visibility = View.GONE
@@ -7631,7 +7636,6 @@ class MoviesPanel(
         /** Space between the two stills of a grid row's column. */
         const val GRID_GAP = 28
         /** Title logos (transparent PNGs) by IMDb id, from the artwork service Stremio uses. No key; 404 when there is none. */
-        const val LOGO_URL = "https://images.metahub.space/logo/medium/%s/img"
         const val HERO_HEIGHT = 762      // mockup px: the first row's heading sits at 812
         const val HOME_HERO_HEIGHT = 850 // Home gives its featured title more room: the Top 10 heading sits at 900, just showing
         const val HOME_HERO_START = 100  // mockup px: with the rail away the words start nearer the edge
