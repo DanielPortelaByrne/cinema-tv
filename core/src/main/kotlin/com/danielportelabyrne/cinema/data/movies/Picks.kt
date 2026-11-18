@@ -40,6 +40,16 @@ data class Pick(val suggestion: Suggestion, val score: Double, val because: Stri
 object Picks {
     fun key(kind: Kind, tmdbId: Long) = (if (kind == Kind.MOVIE) "m:" else "s:") + tmdbId
 
+    /**
+     * The key a title is known by everywhere: the catalogue's "tmdb:" key when its TMDB id is known (so a film opened from
+     * Letterboxd and the same film opened from search are one title), else [fallback]. Never guessed from the name, so a
+     * remake or a series sharing a name stays separate.
+     */
+    fun canonicalKey(kind: Kind, tmdbId: String?, fallback: String): String {
+        val id = tmdbId?.trim()?.toLongOrNull()?.takeIf { it > 0 } ?: return fallback
+        return "tmdb:" + key(kind, id)
+    }
+
     private const val DAY_MS = 24 * 60 * 60 * 1000L
 
     /**

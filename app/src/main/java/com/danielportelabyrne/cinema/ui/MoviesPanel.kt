@@ -2107,8 +2107,11 @@ class MoviesPanel(
             if (info == null) { openDetail(entry(t), emptyList()); return }
             // A title already on screen is redrawn with its details; focus stays where it was on the list.
             if (!detailOpen || detailEntry?.title?.key != key) return
+            // With its TMDB id known it is the same title the catalogue and search show, so favourites, history and the
+            // library badge agree. Without one it keeps its Letterboxd key; it is never matched by name.
+            val canonical = t.copy(key = com.danielportelabyrne.cinema.data.movies.Picks.canonicalKey(t.kind, t.tmdbId, key))
             val keep = returnFocus
-            openDetail(entry(t), emptyList())
+            openDetail(entry(canonical), emptyList())
             returnFocus = keep
         }
         show(null)

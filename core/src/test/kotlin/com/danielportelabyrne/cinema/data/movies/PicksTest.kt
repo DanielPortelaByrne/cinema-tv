@@ -6,6 +6,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PicksTest {
+    @Test fun canonicalKeyUsesTheCatalogueKeyWhenTheTmdbIdIsKnown() {
+        assertEquals("tmdb:m:603", Picks.canonicalKey(Kind.MOVIE, "603", "lb:the-matrix"))
+        assertEquals("tmdb:s:603", Picks.canonicalKey(Kind.SHOW, " 603 ", "lb:the-matrix"))
+    }
+
+    @Test fun canonicalKeyKeepsTheFallbackWithoutAUsableId() {
+        assertEquals("lb:x", Picks.canonicalKey(Kind.MOVIE, null, "lb:x"))
+        assertEquals("lb:x", Picks.canonicalKey(Kind.MOVIE, "", "lb:x"))
+        assertEquals("lb:x", Picks.canonicalKey(Kind.MOVIE, "tt0133093", "lb:x"))
+        assertEquals("lb:x", Picks.canonicalKey(Kind.MOVIE, "0", "lb:x"))
+    }
+
     private fun sug(id: Long, name: String = "T$id", genres: List<String> = emptyList(), vote: Double? = null, owned: Boolean = false) =
         Suggestion(id, Kind.MOVIE, name, 2020, null, "/p$id.jpg", "/b$id.jpg", genres, vote, owned)
 
