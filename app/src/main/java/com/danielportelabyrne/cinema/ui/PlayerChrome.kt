@@ -542,6 +542,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
             listOf(pausedSlide, controls, episodesLayer).forEach { it.animate().cancel() }
             episodeScroller.alpha = PEEK_ALPHA
         }
+        if ((next == PlayerUi.Paused) != (before == PlayerUi.Paused)) dockOptions(next == PlayerUi.Paused)
         val scrubbing = next is PlayerUi.Scrubbing
         transport.visibility = if (scrubbing) INVISIBLE else VISIBLE
         chips.visibility = if (scrubbing) INVISIBLE else VISIBLE
@@ -559,6 +560,24 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         }
         nudge()
         tick()
+    }
+
+    /**
+     * The subtitle, audio and quality chips and the options button are the same views on the controls and on the paused
+     * screen: they move with the state, so pausing keeps every option (and its availability) and nothing is duplicated.
+     * Paused, they share the row of the times, between the two, so the episodes below stay clear.
+     */
+    private fun dockOptions(inPaused: Boolean) {
+        val host = if (inPaused) pausedSlide else controls
+        (chips.parent as? ViewGroup)?.removeView(chips); (slidersButton.parent as? ViewGroup)?.removeView(slidersButton)
+        if (inPaused) {
+            host.addView(chips, LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { leftMargin = p(PAUSED_OPTIONS_X); topMargin = p(PAUSED_OPTIONS_Y) })
+            host.addView(slidersButton, LayoutParams(p(54), p(54), Gravity.TOP or Gravity.END).apply { rightMargin = p(PAUSED_OPTIONS_X); topMargin = p(PAUSED_OPTIONS_Y) })
+        } else {
+            host.addView(chips, LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin = p(96); bottomMargin = p(40) })
+            host.addView(slidersButton, LayoutParams(p(54), p(54), Gravity.BOTTOM or Gravity.END).apply { rightMargin = p(96); bottomMargin = p(40) })
+        }
+        refreshChips()
     }
 
     private fun enterPaused() {
@@ -594,12 +613,14 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
             val inDrawer = isInside(focus, drawer)
             val inTabs = isInside(focus, seasonPills)
             val inChapters = isInside(focus, chapterScroller)
-            val atFoot = if (state == PlayerUi.Paused) !(chapterScroller.visibility == VISIBLE && !inChapters) else isInside(focus, chips) || slidersButton.isFocused
+            val atFoot = isInside(focus, chips) || slidersButton.isFocused
             val handled = when (key) {
                 PlayerUi.Key.DOWN -> when {
                     inDrawer && inTabs -> { (currentTile() ?: episodeRow.getChildAt(0))?.requestFocus(); true }
                     inDrawer -> true
                     atFoot -> { openDrawer(true); true }
+                    // Paused, Down from anywhere above lands on the options first (the foot of the screen), then the episodes.
+                    state == PlayerUi.Paused -> (0 until chips.childCount).map { chips.getChildAt(it) }.firstOrNull { it.visibility == VISIBLE }?.requestFocus() ?: openDrawer(true).let { true }
                     else -> false
                 }
                 PlayerUi.Key.UP -> when {
@@ -686,7 +707,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         pauseButton.playing = isPlaying()
         PlayerMath.chapterAt(chapters, pos)?.let { chapterLabel.text = "Ch ${it.index + 1} · ${it.name}" }
         if (state is PlayerUi.Scrubbing) updatePreview(shown, dur)
-        if (state == PlayerUi.Paused) { refreshStream(); refreshChapterCards(pos, dur) }
+        if (state == PlayerUi.Paused) { refreshStream(); refreshChapterCards(pos, dur); refreshChips() }
         PlayerMath.endsAt(System.currentTimeMillis(), pos, dur)?.let { t ->
             endsAt.text = android.text.SpannableStringBuilder("Ends at ").apply {
                 val s = length; append(android.text.format.DateFormat.getTimeFormat(context).format(java.util.Date(t)))
@@ -1230,14 +1251,16 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
          * The episodes below the scrubber (mockup px): where their label row starts, its height, and how far the paused
          * screen rises to show the cards whole. Closed, only the tops of the cards show, a little dimmed.
          */
-        const val DRAWER_TOP = 982
+        const val DRAWER_TOP = 996
         const val HANDLE_H = 42
-        const val DRAWER_LIFT = 250
+        const val DRAWER_LIFT = 264
         const val PEEK_ALPHA = 0.72f
         /** Over the playing film: how far the controls lift to make room, where the episodes' label row sits, and how far they rise to show the cards. */
         const val CONTROLS_RAISE = 58
         const val CONTROLS_DRAWER_TOP = 990
         const val CONTROLS_LIFT = 250
+        /** The options on the paused screen: the row of the times, clear of the time labels either side, and clear of the episodes' label row. */
+        const val PAUSED_OPTIONS_X = 330; const val PAUSED_OPTIONS_Y = 934
         /** An episode card's still in the drawer. */
         const val TILE_W = 384; const val TILE_H = 216
 
