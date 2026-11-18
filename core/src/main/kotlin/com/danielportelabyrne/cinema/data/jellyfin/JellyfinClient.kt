@@ -448,6 +448,12 @@ class JellyfinClient(private val platform: Platform) {
         return com.danielportelabyrne.cinema.data.intro.CreditsTimes.fromJellyfinSegments(body)
     }
 
+    /** Where an item's intro runs on the server, when its segments know it; null otherwise. */
+    fun introWindow(itemId: String): com.danielportelabyrne.cinema.data.intro.IntroWindow? {
+        val body = request("GET", JellyfinApi.segmentsUrl(JellyfinApi.cleanBase(server), itemId, "Intro")) ?: return null
+        return com.danielportelabyrne.cinema.data.intro.CreditsTimes.introFromJellyfinSegments(body)
+    }
+
     /** Every episode of a series, with season and episode numbers, or empty when there are none or Jellyfin cannot be reached. */
     fun episodes(seriesId: String): List<JellyfinItem> {
         val uid = userId ?: return emptyList()

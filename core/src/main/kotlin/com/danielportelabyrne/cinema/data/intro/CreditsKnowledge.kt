@@ -4,6 +4,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 
+/** Where an episode's intro runs, in ms from the start. */
+data class IntroWindow(val startMs: Long, val endMs: Long) {
+    /** Whether the viewer is inside the intro, so a skip makes sense: not in its last second, where it would do nothing. */
+    fun contains(positionMs: Long): Boolean = positionMs >= startMs && positionMs < endMs - 1_000L
+}
+
 /** Where an episode's credits begin, as TheIntroDB or Jellyfin's own segments say. Pure, so the parsing can be tested. */
 object CreditsTimes {
     /** TheIntroDB's `GET /v4/media` address for an episode, found by its IMDb id and its season and episode numbers. */
@@ -33,6 +39,19 @@ object CreditsTimes {
             // Jellyfin counts in 100-nanosecond ticks.
             val ticks = segment.optLong("StartTicks", 0L)
             if (ticks > 0) return ticks / 10_000L
+        }
+        return null
+    }
+
+    /** The first usable Intro segment in a Jellyfin `/MediaSegments` answer, in ms; null when the server has none. */
+    fun introFromJellyfinSegments(json: String): IntroWindow? {
+        val items = try { JSONObject(json).optJSONArray("Items") } catch (_: Exception) { null } ?: return null
+        for (i in 0 until items.length()) {
+            val segment = items.optJSONObject(i) ?: continue
+            if (segment.optString("Type") != "Intro") continue
+            val start = segment.optLong("StartTicks", 0L) / 10_000L
+            val end = segment.optLong("EndTicks", 0L) / 10_000L
+            if (start >= 0 && end > start) return IntroWindow(start, end)
         }
         return null
     }

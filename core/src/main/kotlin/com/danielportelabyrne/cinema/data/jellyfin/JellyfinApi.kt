@@ -166,8 +166,8 @@ object JellyfinApi {
     fun episodesUrl(base: String, userId: String, seriesId: String): String =
         "$base/Shows/${enc(seriesId)}/Episodes?userId=${enc(userId)}&Fields=Overview,MediaSources,RunTimeTicks"
 
-    /** The Outro segment (end credits) the server knows for an item, if its intro and credits detection has found one. */
-    fun segmentsUrl(base: String, itemId: String): String = "$base/MediaSegments/${enc(itemId)}?includeSegmentTypes=Outro"
+    /** The segment of [type] (Outro: end credits, Intro) the server knows for an item, if its intro and credits detection has found one. */
+    fun segmentsUrl(base: String, itemId: String, type: String = "Outro"): String = "$base/MediaSegments/${enc(itemId)}?includeSegmentTypes=$type"
 
     /** Sequence follows the episode being watched, including rewatches; never jumps over a gap in a season. */
     fun followingEpisode(current: JellyfinItem, episodes: List<JellyfinItem>): JellyfinItem? {

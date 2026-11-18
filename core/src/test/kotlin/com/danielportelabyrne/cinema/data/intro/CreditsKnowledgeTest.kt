@@ -43,6 +43,18 @@ class CreditsKnowledgeTest {
         assertNull(CreditsTimes.fromJellyfinSegments("""{"Items":[],"TotalRecordCount":0}"""))
     }
 
+    @Test fun jellyfin_intro_window_is_read_in_ms_and_ignores_other_segments() {
+        val json = """{"Items":[{"Type":"Outro","StartTicks":24000000000,"EndTicks":26000000000},
+            {"Type":"Intro","StartTicks":300000000,"EndTicks":900000000}],"TotalRecordCount":2}"""
+        val w = CreditsTimes.introFromJellyfinSegments(json)
+        assertEquals(IntroWindow(30_000L, 90_000L), w)
+        assertTrue(w!!.contains(30_000L)); assertTrue(w.contains(60_000L))
+        assertFalse(w.contains(29_999L)); assertFalse(w.contains(89_500L)); assertFalse(w.contains(120_000L))
+        assertNull(CreditsTimes.introFromJellyfinSegments("""{"Items":[{"Type":"Intro","StartTicks":5,"EndTicks":5}]}"""))
+        assertNull(CreditsTimes.introFromJellyfinSegments("""{"Items":[]}"""))
+        assertNull(CreditsTimes.introFromJellyfinSegments("not json"))
+    }
+
     @Test fun plausible_starts_are_in_the_second_half_and_before_the_end() {
         val hour = 3_600_000L
         assertTrue(CreditsTimes.plausible(3_400_000L, hour))
