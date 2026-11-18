@@ -63,4 +63,18 @@ class QueueTest {
         assertTrue(item.copy(sizeLeftBytes = 500).canCancel)
         assertTrue(item.copy(status = "metadata", sizeBytes = 0).canCancel)
     }
+
+    @Test fun finished_downloads_can_be_removed_but_only_when_one_torrent_maps_to_one_episode_or_movie() {
+        val hash = "b".repeat(40)
+        val ep = """{"id":7,"episodeId":7,"downloadId":"$hash","status":"completed","size":1000,"sizeleft":0,"series":{"title":"Sabrina","tmdbId":605},"episode":{"id":7,"seasonNumber":5,"episodeNumber":1}}"""
+        val done = QueueApi.parse(queue(ep), QueueSource.SONARR).single()
+        assertTrue(done.isComplete); assertTrue(done.canRemoveCompleted); assertFalse(done.canCancel)
+        assertTrue(done.copy(status = "downloading").canRemoveCompleted)        // 100% bytes, status not caught up
+        assertFalse(done.copy(sizeLeftBytes = 500, status = "downloading").canRemoveCompleted) // partial row
+        assertFalse(done.copy(downloadId = null).canRemoveCompleted)            // no torrent to target
+        assertFalse(done.copy(episodeIds = listOf(1, 2, 3)).canRemoveCompleted) // season pack is ambiguous
+        val movie = QueueApi.parse("""{"records":[{"id":5,"movieId":9,"downloadId":"$hash","status":"completed","size":1000,"sizeleft":0,"movie":{"title":"Dune","year":2021,"tmdbId":438631}}]}""", QueueSource.RADARR).single()
+        assertTrue(movie.canRemoveCompleted)
+        assertFalse(movie.copy(movieId = null).canRemoveCompleted)
+    }
 }
