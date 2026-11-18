@@ -95,6 +95,8 @@ class PlayerUi {
     var audio by mutableStateOf<List<TrackOption>>(emptyList())
     var text by mutableStateOf<List<TrackOption>>(emptyList())
     var casting by mutableStateOf(false)
+    /** True only while playback is inside an intro the server knows; the "Skip intro" pill shows then and never otherwise. */
+    var inIntro by mutableStateOf(false)
     /** Counts touches, so the controls stay up while the viewer is using them. */
     var touches by mutableIntStateOf(0)
 }
@@ -106,6 +108,7 @@ interface PlayerActions {
     fun seekTo(ms: Long)
     fun next()
     fun pip()
+    fun skipIntro()
 }
 
 /**
@@ -177,6 +180,13 @@ fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.conte
                     )
                 }
             }
+        }
+        // Skip intro: one quiet pill above the wave, only while inside an intro the server knows.
+        AnimatedVisibility(ui.inIntro && !panel, Modifier.align(Alignment.BottomEnd), enter = fadeIn(), exit = fadeOut()) {
+            Text("Skip intro", color = Palette.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.navigationBarsPadding().padding(end = 24.dp, bottom = 96.dp)
+                    .clip(CircleShape).background(Palette.ivory).clickable { act.skipIntro(); ui.touches++ }
+                    .padding(horizontal = 20.dp, vertical = 10.dp))
         }
         if (panel) TracksPanel(ui, onClose = { panel = false })
     }

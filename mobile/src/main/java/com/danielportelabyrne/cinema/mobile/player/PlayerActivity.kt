@@ -68,6 +68,8 @@ class PlayerActivity : AppCompatActivity() {
     private val ui = PlayerUi()
     private val active get() = view.player ?: local
     private var chapterMs: List<Long> = emptyList()
+    /** Where the server says this item's intro runs; null when it does not know (or this is not a library item). */
+    @Volatile private var intro: com.danielportelabyrne.cinema.data.intro.IntroWindow? = null
     private lateinit var local: ExoPlayer
     private var cast: CastPlayer? = null
     private var session: MediaSession? = null
@@ -124,6 +126,7 @@ class PlayerActivity : AppCompatActivity() {
         override fun seekTo(ms: Long) { active.seekTo(ms) }
         override fun next() { playNext() }
         override fun pip() { enterPip() }
+        override fun skipIntro() { intro?.let { active.seekTo(it.endMs) } }
     }
 
     /** The picture, with the Compose controls over it (the wavy scrubber, the ribbon, the tracks panel). */
@@ -146,6 +149,7 @@ class PlayerActivity : AppCompatActivity() {
             ui.playing = p.isPlaying
             ui.buffering = p.playbackState == Player.STATE_BUFFERING
             ui.casting = view.player === cast
+            ui.inIntro = intro?.contains(ui.positionMs) == true
             if (ui.durationMs > 0 && chapterMs.isNotEmpty()) ui.chapters = chapterMs.map { it.toFloat() / ui.durationMs }
             main.postDelayed(this, 250)
         }
@@ -174,6 +178,8 @@ class PlayerActivity : AppCompatActivity() {
         ui.eyebrow = if (i.isEpisode) listOfNotNull(i.seriesName, "S${i.season ?: 0} E${i.episode ?: 0}") else listOfNotNull("Film", i.year?.toString())
         ui.hasNext = i.isEpisode
         chapterMs = i.chapters.map { it.startMs }.filter { it > 0 }
+        intro = null
+        io.execute { val w = client.introWindow(i.id); if (item?.id == i.id) intro = w }
         playLocal(client.streamUrl(i), label(i), positionMs, null)
         report("Playing")
     }
@@ -181,11 +187,11 @@ class PlayerActivity : AppCompatActivity() {
     private fun playOffline(id: String) {
         val copy = model.offline.find(id) ?: run { finish(); return }
         offlineId = id
-        ui.title = copy.name; ui.eyebrow = listOfNotNull("On this phone", copy.subtitle); ui.hasNext = false; chapterMs = emptyList()
+        ui.title = copy.name; ui.eyebrow = listOfNotNull("On this phone", copy.subtitle); ui.hasNext = false; chapterMs = emptyList(); intro = null
         playLocal(Uri.fromFile(java.io.File(copy.file)).toString(), copy.name, copy.resumeMs, null)
     }
 
-    private fun playUrl(url: String, title: String) { ui.title = title; ui.eyebrow = listOf("Streaming"); ui.hasNext = false; chapterMs = emptyList(); playLocal(url, title, 0L, null) }
+    private fun playUrl(url: String, title: String) { ui.title = title; ui.eyebrow = listOf("Streaming"); ui.hasNext = false; chapterMs = emptyList(); intro = null; playLocal(url, title, 0L, null) }
 
     private fun playLocal(url: String, title: String, positionMs: Long, mime: String?) {
         val media = MediaItem.Builder().setUri(url).setMimeType(mime)
