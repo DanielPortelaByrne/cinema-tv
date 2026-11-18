@@ -78,6 +78,13 @@ object ChannelData {
     /** Wikimedia's picture of a logo file, as a 240 px image the TV can draw (it renders the vector ones). */
     fun logoUrl(raw: String): String = raw.replace("http://", "https://").substringBefore("?") + "?width=240"
 
+    /** Of a search for the network called [name], the matches that are called that (or start with it), at most [limit]: the rest is noise. */
+    fun named(found: List<Triple<String, String, String?>>, name: String, limit: Int = 8): List<Triple<String, String, String?>> {
+        fun flat(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+        val want = flat(name)
+        return found.filter { flat(it.second).startsWith(want) }.take(limit)
+    }
+
     /** The channels among the search's [candidates] that have shows, with the show count, in the order found. */
     fun channels(candidates: List<Triple<String, String, String?>>, countsJson: String): List<Channel> {
         val counts = HashMap<String, Pair<Int, String?>>()
@@ -157,9 +164,16 @@ class ChannelRepository(platform: Platform, private val clock: () -> Long = Syst
             candidates += found
             if (found.size < ChannelData.PAGE) break
         }
-        if (candidates.isEmpty()) return emptyList()
-        val counts = get(ChannelData.sparqlUrl(ChannelData.countQuery(candidates.map { it.first })), "application/sparql-results+json") ?: return emptyList()
-        return ChannelData.channels(candidates, counts).also { searches[key] = it }
+        // Then each network the query is short for, asked for by its name: a fragment like "pop" or "disney" buries them.
+        for (name in ChannelNames.expand(key)) {
+            if (name.lowercase() == key) continue
+            val found = get(ChannelData.searchUrl(name), "application/json")?.let(ChannelData::parseSearch) ?: continue
+            candidates += ChannelData.named(found, name)
+        }
+        val unique = candidates.distinctBy { it.first }
+        if (unique.isEmpty()) return emptyList()
+        val counts = get(ChannelData.sparqlUrl(ChannelData.countQuery(unique.map { it.first })), "application/sparql-results+json") ?: return emptyList()
+        return ChannelData.channels(unique, counts).also { searches[key] = it }
     }
 
     /** A channel's shows, best known first: kept two weeks, and a stale copy is used when the network fails. */

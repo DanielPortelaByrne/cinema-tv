@@ -139,6 +139,8 @@ object ServiceDirectory {
             n == q -> 100
             aliasHit -> 95
             n.startsWith(q) -> 85
+            q.length >= 3 && n.replace(" ", "") == q.replace(" ", "") -> 90   // spacing aside: "tinypop" is "Tiny Pop"
+            q.length >= 4 && !q.contains(' ') && n.replace(" ", "").startsWith(q) -> 80   // "tinyp" starts "Tiny Pop"
             q.split(' ').all { t -> words.any { it.startsWith(t) } } -> 70
             q.length >= 3 && words.any { it.contains(q.replace(" ", "")) } -> 50   // inside a word, never across two ("tubi tv" is not an "itv")
             else -> 0
