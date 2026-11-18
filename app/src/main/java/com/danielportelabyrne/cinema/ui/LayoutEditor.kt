@@ -13,7 +13,6 @@ import com.danielportelabyrne.cinema.data.movies.LayoutPage
 import com.danielportelabyrne.cinema.data.movies.Mix
 import com.danielportelabyrne.cinema.data.movies.Mixes
 import com.danielportelabyrne.cinema.data.movies.SectionType
-import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.PageLayouts
 import com.danielportelabyrne.cinema.data.movies.Section
 import com.danielportelabyrne.cinema.data.search.Qwerty
@@ -65,21 +64,8 @@ class LayoutEditor(
     /** The row being changed, or -1 when the built row is new. */
     private var replacing = -1
 
-    /** Each part: its name, its choices (value to name; null value is "any"), how to read it from a mix and set it. */
-    private class Part(val name: String, val choices: List<Pair<String?, String>>, val get: (Mix) -> String?, val set: (Mix, String?) -> Mix)
-
-    private val parts: List<Part> by lazy {
-        val genres = listOf<Pair<String?, String>>(null to "Any") + Mixes.GENRES.map { it.first to it.third }
-        val services = listOf<Pair<String?, String>>(null to "All my services") + (Catalog.followed + Catalog.KNOWN).distinctBy { it.code }.map { it.code to it.label }
-        listOf(
-            Part("Order", Mixes.ORDERS.map { it.first to it.second }, { it.order }) { m, v -> m.copy(order = v ?: "trending") },
-            Part("Type", Mixes.KINDS.map { it.first to it.second }, { it.kind }) { m, v -> m.copy(kind = v ?: "all") },
-            Part("Category", genres, { it.genre }) { m, v -> m.copy(genre = v, sub = if (v == null) null else m.sub) },
-            Part("Subcategory", genres, { it.sub }) { m, v -> m.copy(sub = v) },
-            Part("Service", services, { it.service }) { m, v -> m.copy(service = v) },
-            Part("Made in", listOf<Pair<String?, String>>(null to "Anywhere") + Mixes.MADE.map { it.first to it.second }, { it.made }) { m, v -> m.copy(made = v) }
-        )
-    }
+    /** Each part: its name, its choices and how to read and set it; the phone's builder offers the same (see [Mixes.parts]). */
+    private val parts: List<Mixes.Part> by lazy { Mixes.parts() }
 
     // --- The search for a row to add ---------------------------------------------------------------------------
     private val pickMode = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; visibility = GONE }
@@ -166,8 +152,7 @@ class LayoutEditor(
     private fun showBuilt() {
         preview.text = Mixes.label(mix)
         parts.forEachIndexed { i, part ->
-            val name = part.choices.firstOrNull { it.first == part.get(mix) }?.second ?: part.choices.first().second
-            partViews[i].text = "${part.name}:   ‹  $name  ›"
+            partViews[i].text = "${part.name}:   ‹  ${part.chosen(mix)}  ›"
         }
     }
 

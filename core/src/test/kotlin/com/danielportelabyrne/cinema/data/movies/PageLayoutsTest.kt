@@ -93,6 +93,30 @@ class MixesTest {
         // An old documentary row opens in the builder as a documentary mix.
         assertEquals(Mix("popular", "films", "doc"), PageLayouts.asMix(Section(SectionType.DOCS, "films")))
     }
+
+    @Test fun the_builders_parts_cover_every_part_of_a_mix_and_round_trip_through_the_saved_layout() {
+        val parts = Mixes.parts()
+        assertEquals(listOf("Order", "Type", "Category", "Subcategory", "Service", "Made in"), parts.map { it.name })
+        // Choosing every part's last choice leaves a mix that survives being saved in a layout and read back, as a TV would read it.
+        var m = Mix()
+        parts.forEach { p -> m = p.set(m, p.choices.last().first) }
+        assertEquals("top10", m.order); assertEquals("series", m.kind); assertEquals("wsn", m.genre); assertEquals("wsn", m.sub)
+        val saved = PageLayouts.parse(PageLayouts.encode(mapOf(LayoutPage.HOME to listOf(Section(SectionType.MIX, m.encode())))))
+        assertEquals(m, PageLayouts.asMix(saved.getValue(LayoutPage.HOME).single()))
+        // The label shows what each part chose; "Any" and "Anywhere" are the first choice and read as unset.
+        assertEquals("Any", parts[2].chosen(Mix()))
+        assertEquals("Western", parts[2].chosen(m))
+        assertEquals("Trending", parts[0].chosen(Mix(order = "unheard-of")))
+    }
+
+    @Test fun clearing_the_category_clears_the_subcategory_and_an_unknown_service_has_no_row_to_ask_for() {
+        val parts = Mixes.parts()
+        val withBoth = Mix(genre = "doc", sub = "crm")
+        assertEquals(null, parts[2].set(withBoth, null).sub)
+        assertEquals("crm", parts[2].set(withBoth, "cmy").sub)
+        // The phone tells the owner when the parts chosen ask for nothing, rather than showing an empty page.
+        assertEquals(null, Mixes.spec(Mix(service = "no-such-service")))
+    }
 }
 
 class GenrePagesTest {

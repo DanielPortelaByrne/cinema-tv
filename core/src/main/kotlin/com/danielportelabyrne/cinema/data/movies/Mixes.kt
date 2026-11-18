@@ -42,6 +42,26 @@ object Mixes {
         Triple("de", "German", listOf("DE")), Triple("it", "Italian", listOf("IT")), Triple("au", "Australian", listOf("AU"))
     )
 
+    /** One part a row is built from: its name, its choices (value to name; a null value is "any") and how to read and set it on a [Mix]. */
+    class Part(val name: String, val choices: List<Pair<String?, String>>, val get: (Mix) -> String?, val set: (Mix, String?) -> Mix) {
+        /** The name of the choice [m] has for this part (the first choice when it holds something unknown). */
+        fun chosen(m: Mix): String = choices.firstOrNull { it.first == get(m) }?.second ?: choices.first().second
+    }
+
+    /** The parts the TV's and the phone's row builders offer, in order, with the same choices. */
+    fun parts(): List<Part> {
+        val genres = listOf<Pair<String?, String>>(null to "Any") + GENRES.map { it.first to it.third }
+        val services = listOf<Pair<String?, String>>(null to "All my services") + (Catalog.followed + Catalog.KNOWN).distinctBy { it.code }.map { it.code to it.label }
+        return listOf(
+            Part("Order", ORDERS.map { it.first to it.second }, { it.order }) { m, v -> m.copy(order = v ?: "trending") },
+            Part("Type", KINDS.map { it.first to it.second }, { it.kind }) { m, v -> m.copy(kind = v ?: "all") },
+            Part("Category", genres, { it.genre }) { m, v -> m.copy(genre = v, sub = if (v == null) null else m.sub) },
+            Part("Subcategory", genres, { it.sub }) { m, v -> m.copy(sub = v) },
+            Part("Service", services, { it.service }) { m, v -> m.copy(service = v) },
+            Part("Made in", listOf<Pair<String?, String>>(null to "Anywhere") + MADE.map { it.first to it.second }, { it.made }) { m, v -> m.copy(made = v) }
+        )
+    }
+
     private fun service(code: String?) = code?.let { c -> (Catalog.followed + Catalog.KNOWN).firstOrNull { it.code == c } }
 
     /** The JustWatch request for [m]: the category is asked for, and the subcategory kept from what comes back. */
