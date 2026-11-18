@@ -167,6 +167,8 @@ class PlayerActivity : AppCompatActivity() {
     private var playlistPlayback: PlaylistPlayback? = null
     private val station: String? get() = playlistPlayback?.station
     private var stationIdent: View? = null
+    private var stationNow: android.widget.TextView? = null
+    private var stationNext: android.widget.TextView? = null
     private val playlistStore by lazy { PlaylistStore(AndroidPlatform(this)) }
     /** Some attempt showed a picture. Until then a dead saved link means finding the title again, not giving up. */
     private var playedAny = false
@@ -515,9 +517,12 @@ class PlayerActivity : AppCompatActivity() {
                 column.addView(top)
                 column.addView(Cinema.text(this@PlayerActivity, title, 46, Cinema.CREAM, serif = true, tracking = -0.02f).apply { maxLines = 2 },
                     android.widget.LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(this@PlayerActivity, 12) })
+                // NOW with its real clock times, then NEXT with an estimated start: both filled in when the first frame shows.
+                stationNow = Cinema.text(this@PlayerActivity, "", 22, Cinema.CREAM, weight = 600, tracking = 0.04f).apply { maxLines = 1; visibility = View.GONE }
+                column.addView(stationNow, android.widget.LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(this@PlayerActivity, 8) })
                 playlistPlayback?.nextTitle?.let { next ->
-                    column.addView(Cinema.text(this@PlayerActivity, "Up next · $next", 22, Cinema.MUTED).apply { maxLines = 2 },
-                        android.widget.LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(this@PlayerActivity, 8) })
+                    stationNext = Cinema.text(this@PlayerActivity, "Up next · $next", 22, Cinema.MUTED).apply { maxLines = 2 }
+                    column.addView(stationNext, android.widget.LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(this@PlayerActivity, 8) })
                 }
                 val pad = Cinema.px(this@PlayerActivity, 32)
                 setPadding(pad, Cinema.px(this@PlayerActivity, 30), pad, Cinema.px(this@PlayerActivity, 28))
@@ -1046,6 +1051,9 @@ class PlayerActivity : AppCompatActivity() {
             keepAwake()
             hideLoading()
             stationIdent?.let { ident ->
+                val now = System.currentTimeMillis(); val pos = player.currentPosition; val len = player.duration.takeIf { it > 0 } ?: 0L
+                com.danielportelabyrne.cinema.data.movies.BroadcastBanner.nowLine(now, pos, len)?.let { stationNow?.text = it; stationNow?.visibility = View.VISIBLE }
+                com.danielportelabyrne.cinema.data.movies.BroadcastBanner.nextLine(now, pos, len, playlistPlayback?.nextTitle)?.let { stationNext?.text = it }
                 ident.visibility = View.VISIBLE
                 handler.postDelayed({
                     if (Motion.animationsOn(ident)) ident.animate().alpha(0f).setDuration(220).withEndAction { ident.visibility = View.GONE }.start()
