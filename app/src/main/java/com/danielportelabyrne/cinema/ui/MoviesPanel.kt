@@ -4183,31 +4183,7 @@ class MoviesPanel(
     private val playlists get() = PlaylistStore(AndroidPlatform(activity))
 
     private fun playlistName(initial: String = "", save: (String) -> Unit) {
-        val field = EditText(activity).apply {
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            isSingleLine = true
-            setText(initial)
-            setSelectAllOnFocus(true)
-            hint = "Channel name"
-        }
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle(if (initial.isEmpty()) "New channel" else "Rename channel")
-            .setView(field)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Save", null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val name = field.text.toString().trim()
-                if (name.isEmpty()) field.error = "Enter a name"
-                else {
-                    dialog.dismiss()
-                    save(name)
-                }
-            }
-            field.requestFocus()
-        }
-        dialog.show()
+        com.danielportelabyrne.cinema.ui.room.ChannelNameSheet(activity, infoSheet).show(initial, save)
     }
 
     private fun choosePlaylistStart(entry: Entry) {
