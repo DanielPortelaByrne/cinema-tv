@@ -116,6 +116,31 @@ class PlaylistsTest {
             store.all().single().slots)
     }
 
+    private fun withIds(name: String, kind: Kind, imdb: String? = null, tmdb: String? = null, year: Int? = null) =
+        Title(name, kind, name, year, null, null, emptyList(), null, null, null, null, imdb, tmdb)
+
+    @Test fun aChannelRecognisesATitleItAlreadyHoldsByAnyIdOrByNameAndYear() {
+        val channel = BroadcastPlaylist("Evening", slots = listOf(
+            PlaylistSlot(withIds("Heat", Kind.MOVIE, imdb = "tt1", tmdb = "10")),
+            PlaylistSlot(withIds("Plain", Kind.MOVIE, year = 1999))
+        ))
+        assertTrue(channel.holds(withIds("Heat (1995)", Kind.MOVIE, tmdb = "10"), null, null))
+        assertTrue(channel.holds(withIds("Heat", Kind.MOVIE, imdb = "tt1"), null, null))
+        assertTrue(channel.holds(withIds("plain", Kind.MOVIE, year = 1999), null, null))
+        assertFalse(channel.holds(withIds("Plain", Kind.MOVIE, year = 2000), null, null))
+        assertFalse(channel.holds(withIds("Heat", Kind.SHOW, tmdb = "10"), null, null))
+        assertFalse(channel.holds(withIds("Other", Kind.MOVIE, tmdb = "11"), null, null))
+    }
+
+    @Test fun theSameSeriesFromAnotherEpisodeIsADeliberateSecondSlot() {
+        val show = withIds("Show", Kind.SHOW, tmdb = "5")
+        val channel = BroadcastPlaylist("Evening", slots = listOf(PlaylistSlot(show, start = PlaylistEpisode(2, 1))))
+        assertTrue(channel.holds(show, null, PlaylistEpisode(2, 1)))
+        assertFalse(channel.holds(show, null, null))
+        assertFalse(channel.holds(show, null, PlaylistEpisode(2, 2)))
+        assertFalse(BroadcastPlaylist("Empty").holds(show, null, null))
+    }
+
     private fun title(name: String, kind: Kind) =
         Title(name, kind, name, null, null, null, emptyList(), null, null, null, null, null, null)
 }

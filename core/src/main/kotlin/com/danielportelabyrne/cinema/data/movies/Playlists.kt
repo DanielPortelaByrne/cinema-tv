@@ -47,7 +47,22 @@ data class BroadcastPlaylist(
     val name: String,
     val id: String = UUID.randomUUID().toString(),
     val slots: List<PlaylistSlot> = emptyList()
-)
+) {
+    /**
+     * True when this channel already has [title] starting from [start] (null: from the beginning). The same series from
+     * another episode is a deliberate second slot, so it does not count.
+     */
+    fun holds(title: Title, libraryId: String?, start: PlaylistEpisode?): Boolean = slots.any { slot ->
+        val other = slot.title
+        slot.start == start && other.kind == title.kind && when {
+            sharesId(other.tmdbId, title.tmdbId) || sharesId(other.imdbId, title.imdbId) || sharesId(slot.libraryId, libraryId) -> true
+            else -> other.tmdbId.isNullOrBlank() && other.imdbId.isNullOrBlank() && slot.libraryId.isNullOrBlank() &&
+                other.name.equals(title.name, ignoreCase = true) && other.year == title.year
+        }
+    }
+
+    private fun sharesId(a: String?, b: String?) = !a.isNullOrBlank() && a == b
+}
 
 /** Identifies the exact slot and episode handed to the player. */
 data class PlaylistPlayback(
