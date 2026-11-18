@@ -5034,6 +5034,15 @@ class MoviesPanel(
                     activity.runOnUiThread { CinemaToast.show(activity, if (done) "Cancelled ${item.title}" else "Couldn't cancel it right now", Toast.LENGTH_LONG); if (done) refresh() }
                 }
             }
+            if (item.canRemoveCompleted) actions += SheetAction("Remove download and files", "Delete the finished torrent and its downloaded files", primary = actions.isEmpty()) {
+                CinemaConfirm.show(infoSheet, activity, "REMOVE", item.title,
+                    "Deletes this finished torrent and its downloaded files from the download client. A copy already in your library is kept. This cannot be undone.", "Remove it") {
+                    worker.execute {
+                        val done = queueClient.removeCompleted(item)
+                        activity.runOnUiThread { CinemaToast.show(activity, if (done) "Removed ${item.title}" else "Couldn't remove it right now. Try again.", Toast.LENGTH_LONG); if (done) refresh() }
+                    }
+                }
+            }
             infoSheet.show("DOWNLOAD", item.title, item.detail, listOf(status), null, actions)
         }
         return row

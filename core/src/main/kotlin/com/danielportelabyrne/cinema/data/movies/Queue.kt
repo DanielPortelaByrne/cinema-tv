@@ -32,6 +32,16 @@ data class QueueItem(
     /** Completed copies awaiting import are kept even if an old queue snapshot still says downloading. */
     val canCancel: Boolean get() = status != "completed" && (sizeBytes <= 0 || sizeLeftBytes > 0)
 
+    /** Fully downloaded: the torrent is finished and only sits in the client (and queue) waiting to be imported or cleaned up. */
+    val isComplete: Boolean get() = status == "completed" || (sizeBytes > 0 && sizeLeftBytes <= 0)
+
+    /**
+     * A finished download whose torrent and files can be removed in one explicit step. Needs the torrent's own hash, and
+     * a single movie or episode: a season pack (several episodes sharing one torrent) is ambiguous, so it is refused.
+     */
+    val canRemoveCompleted: Boolean get() = isComplete && downloadId != null &&
+        if (source == QueueSource.SONARR) episodeIds.size == 1 else movieId != null
+
     /** 0..1 once bytes are known; null for something that has not started (its size is not known yet). */
     fun progress(): Float? = if (sizeBytes > 0) ((sizeBytes - sizeLeftBytes).toFloat() / sizeBytes).coerceIn(0f, 1f) else null
 }
@@ -236,6 +246,16 @@ class QueueClient(private val seerr: SeerrClient, platform: Platform) {
             if (matching.filter { it.canCancel }.any { arrCall(config, "DELETE", QueueApi.cancelPath(it.id)) == null }) return false
         }
         return seerr.cancelRequest(request.id)
+    }
+
+    /**
+     * Remove a finished download: Sonarr/Radarr drop the queue entry and ask the download client to delete the torrent
+     * with its data. Nothing is unmonitored and the library is not touched, so an imported copy stays.
+     */
+    fun removeCompleted(item: QueueItem): Boolean {
+        if (!item.canRemoveCompleted) return false
+        val c = (if (item.source == QueueSource.SONARR) sonarrConfig() else radarrConfig()) ?: return false
+        return arrCall(c, "DELETE", QueueApi.cancelPath(item.id)) != null
     }
 
     fun cancel(item: QueueItem): Boolean {
