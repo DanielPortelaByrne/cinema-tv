@@ -40,7 +40,8 @@ object NextEpisode {
         val last = streamed.maxByOrNull { it.atMs }
             ?: return inOrder.first().let { NextUp(it.first, it.second, continuing = false) }
         // The latest viewing decides, never the furthest point ever reached: a finished episode watched again and stopped is carried on.
-        if (!last.finishedLast) return NextUp(last.season, last.episode, continuing = last.resumeMs >= minResumeMs)
+        // An episode the listing does not have (a special, when only regular seasons are listed) cannot be carried on: it is passed over.
+        if (!last.finishedLast && (last.season to last.episode) in inOrder) return NextUp(last.season, last.episode, continuing = last.resumeMs >= minResumeMs)
         return following(inOrder, last.season, last.episode)?.let { NextUp(it.first, it.second, continuing = false) }
     }
 
