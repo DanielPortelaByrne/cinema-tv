@@ -66,7 +66,8 @@ class UpdatePrompt(private val activity: Activity, private val sheet: InfoSheet)
     }
 
     fun offer(u: AvailableUpdate) {
-        sheet.show("UPDATE", "Cinema build ${u.build} is ready", UpdateCheck.headline(u), listOfNotNull(
+        val changes = UpdateCheck.changes(u).map { "•  $it" }
+        sheet.show("UPDATE", "Cinema build ${u.build} is ready", UpdateCheck.headline(u), changes + listOfNotNull(
             "You're on build ${updater.currentBuild}. It downloads in a moment; then the TV asks you to confirm the install. " +
                 "Cinema closes while it updates: open it again from the home screen.",
             if (updater.auto) "After this one, updates install by themselves while Cinema isn't on screen." else null

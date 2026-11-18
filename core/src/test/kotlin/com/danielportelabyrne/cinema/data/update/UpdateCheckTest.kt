@@ -24,6 +24,19 @@ class UpdateCheckTest {
         assertEquals("Lighter drawing work for low-end TVs", UpdateCheck.headline(u))
     }
 
+    private fun withNotes(notes: String?) = AvailableUpdate(7, "Cinema build 7", "https://x/cinema-tv.apk", 1L, notes)
+
+    @Test fun changesAreTheNotesAfterTheHeadlineWithoutMarkdownOrTrailers() {
+        val u = withNotes("Faster Home\n\n## New\n- **Find services** finds `Tiny Pop`\n* Channels keep their order\n1. Numbered\nhttps://github.com/x/pull/1\nCo-Authored-By: Someone <a@b.c>\n🤖 Generated with a tool\nChannels keep their order")
+        assertEquals(listOf("New", "Find services finds Tiny Pop", "Channels keep their order", "Numbered"), UpdateCheck.changes(u))
+    }
+
+    @Test fun changesAreBoundedAndEmptyForAHeadlineOnlyOrMissingNotes() {
+        assertEquals(2, UpdateCheck.changes(withNotes("H\na\nb\nc\nd"), max = 2).size)
+        assertEquals(emptyList<String>(), UpdateCheck.changes(withNotes("Only a headline")))
+        assertEquals(emptyList<String>(), UpdateCheck.changes(withNotes(null)))
+    }
+
     @Test fun ignoresAnythingThatIsNotACinemaBuild() {
         assertNull(UpdateCheck.parse(release("v1.0")))
         assertNull(UpdateCheck.parse(release("build-312", asset = "other.apk")))

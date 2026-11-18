@@ -37,4 +37,18 @@ object UpdateCheck {
 
     /** The first line of a release's notes, for a one-line summary ("Lighter drawing work for low-end TVs"). */
     fun headline(update: AvailableUpdate): String? = update.notes?.lineSequence()?.map { it.trim() }?.firstOrNull { it.isNotEmpty() }
+
+    private val TRAILER = Regex("""^(co-authored-by|signed-off-by|generated with|🤖)""", RegexOption.IGNORE_CASE)
+
+    /**
+     * What a release changed, for the update sheet: the lines of its notes after the [headline], bullets, headings and
+     * emphasis taken off, at most [max]. Git trailers (Co-Authored-By) and bare links are left out. Empty when the notes are
+     * only a headline.
+     */
+    fun changes(update: AvailableUpdate, max: Int = 5): List<String> {
+        val lines = update.notes?.lineSequence()?.map { it.trim() }?.filter { it.isNotEmpty() }?.toList().orEmpty().drop(1)
+        return lines.map { it.replace(Regex("""^(#{1,6}\s+|[-*•]\s+|\d+[.)]\s+)"""), "").replace("**", "").replace("`", "").trim() }
+            .filter { it.isNotEmpty() && !TRAILER.containsMatchIn(it) && !it.startsWith("http") }
+            .distinct().take(max)
+    }
 }
