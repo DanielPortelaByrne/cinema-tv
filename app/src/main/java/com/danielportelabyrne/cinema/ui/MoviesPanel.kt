@@ -4223,6 +4223,10 @@ class MoviesPanel(
         val title = entry.title.copy(imdbId = knownImdb(entry) ?: entry.library?.imdbId)
         val slot = PlaylistSlot(title, entry.library?.id, start)
         fun add(playlist: BroadcastPlaylist) {
+            if (playlist.holds(title, entry.library?.id, start)) {
+                CinemaToast.show(activity, "${title.name} is already in ${playlist.name}", Toast.LENGTH_SHORT)
+                return
+            }
             playlists.update(playlist.id) { it.copy(slots = it.slots + slot) }
             CinemaToast.show(activity, "Added ${title.name} to ${playlist.name}", Toast.LENGTH_SHORT)
         }
@@ -7418,6 +7422,7 @@ class MoviesPanel(
         val t = e.title
         val actions = listOf(
             SheetAction("Open", t.name, primary = true, icon = R.drawable.ic_cin_info) { card.performClick() },
+            SheetAction("Add to a channel", if (t.kind == Kind.MOVIE) "Pick a channel" else "Choose where to start, then a channel", icon = R.drawable.ic_cin_plus) { choosePlaylistStart(e) },
             SheetAction("Hide from every list", "Gone from all lists on this TV. Bring it back in Settings", icon = R.drawable.ic_cin_x) { hideTitle(e, card) }
         )
         infoSheet.show("TITLE", t.name, listOfNotNull(t.year?.toString(), t.genres.firstOrNull()).joinToString(" · ").ifBlank { null }, emptyList(), null, actions)
