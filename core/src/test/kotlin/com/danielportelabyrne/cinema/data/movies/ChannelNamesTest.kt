@@ -1,10 +1,34 @@
 package com.danielportelabyrne.cinema.data.movies
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChannelNamesTest {
+    @Test fun channelNamedLikeANetworkResolvesToIt() {
+        assertEquals("Adult Swim", ChannelNames.brand("Adult Swim"))
+        assertEquals("Adult Swim", ChannelNames.brand("[adult swim]"))
+        assertEquals("Adult Swim", ChannelNames.brand("  ADULT   SWIM "))
+        assertEquals("Nicktoons", ChannelNames.brand("Nick Toonz"))
+        assertEquals("Nicktoons", ChannelNames.brand("NICKTOONS"))
+        assertEquals("Nicktoons", ChannelNames.brand("Nick Toons"))
+        assertEquals("Cartoon Network", ChannelNames.brand("cartoon network"))
+        assertEquals("Tiny Pop", ChannelNames.brand("TinyPop"))
+    }
+
+    @Test fun otherNamesAreNeverMatchedByPartOfTheName() {
+        assertNull(ChannelNames.brand("Adult Swim Nights")); assertNull(ChannelNames.brand("Pop Up Cinema"))
+        assertNull(ChannelNames.brand("Friday Night Films")); assertNull(ChannelNames.brand("")); assertNull(ChannelNames.brand("[]"))
+        assertNull(ChannelNames.brand("Nick Classics")) // a different era's mark: no match rather than the wrong network
+    }
+
+    @Test fun foundNetworkMustBeTheWholeBrand() {
+        assertTrue(ChannelNames.sameBrand("[adult swim]", "Adult Swim")); assertTrue(ChannelNames.sameBrand("Nick Toons", "Nicktoons"))
+        assertFalse(ChannelNames.sameBrand("Adult Swim Latin America", "Adult Swim"))
+    }
+
     @Test fun disneyAsksForTheDisneyNetworks() {
         val names = ChannelNames.expand("Disney")
         assertTrue(names.containsAll(listOf("Disney Channel", "Disney XD", "Disney Junior", "Playhouse Disney")))

@@ -32,6 +32,7 @@ import android.widget.EditText
 import android.app.AlertDialog
 import com.danielportelabyrne.cinema.data.movies.BroadcastPlaylist
 import com.danielportelabyrne.cinema.data.movies.ChannelGuide
+import com.danielportelabyrne.cinema.data.movies.ChannelNames
 import com.danielportelabyrne.cinema.data.movies.ChannelOrder
 import com.danielportelabyrne.cinema.data.movies.ChannelPreload
 import com.danielportelabyrne.cinema.data.movies.ListFocus
@@ -4379,6 +4380,11 @@ class MoviesPanel(
             tile.setOnClickListener { startChannel(c.id, tile) }
             r.inner.addView(tile, cardParams(i))
             channelTiles[c.id] = tile
+            // A channel named exactly like a network (Adult Swim, Nick Toonz) shows that network's logo; any other name keeps its type.
+            if (ChannelNames.brand(c.name) != null) slowPool.execute {
+                val logo = channelRepo.brandLogo(c.name) ?: return@execute
+                activity.runOnUiThread { images.load(logo, emptyMap(), maxWidth = Cinema.px(activity, 360), tag = pageTag) { b -> ChannelViews.showLogo(tile, b) } }
+            }
         }
         val more = ChannelViews.moreCard(activity, channels.isNotEmpty())
         more.onFocus = { lit -> if (lit) reveal(more) }

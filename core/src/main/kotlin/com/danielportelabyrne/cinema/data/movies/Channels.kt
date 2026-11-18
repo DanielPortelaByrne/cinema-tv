@@ -176,6 +176,23 @@ class ChannelRepository(platform: Platform, private val clock: () -> Long = Syst
         return ChannelData.channels(unique, counts).also { searches[key] = it }
     }
 
+    /**
+     * The logo Wikidata holds for the network a playlist is named after ("Adult Swim", "[adult swim]", "Nick Toonz"), or null
+     * when the name is not exactly a known network, Wikidata has no logo, or the network failed. Kept two weeks, including
+     * "none", so an ordinary channel name never asks twice. Blocking; call it off the main thread.
+     */
+    fun brandLogo(name: String): String? {
+        val brand = ChannelNames.brand(name) ?: return null
+        val file = File(File(dir, "brand"), brand.lowercase().replace(Regex("[^a-z0-9]+"), "-") + ".txt")
+        val cached = file.takeIf { it.exists() && clock() - it.lastModified() < FORTNIGHT_MS }?.let { runCatching { it.readText() }.getOrNull() }
+        if (cached != null) return cached.takeIf { it.isNotBlank() }
+        val reached = searches[brand.lowercase()] != null
+        val logo = search(brand).firstOrNull { ChannelNames.sameBrand(it.name, brand) && it.logo != null }?.logo
+        // An empty answer from a failed network is not remembered: only a search that found networks is.
+        if (logo != null || reached || searches[brand.lowercase()] != null) runCatching { file.parentFile?.mkdirs(); file.writeText(logo.orEmpty()); file.setLastModified(clock()) }
+        return logo
+    }
+
     /** A channel's shows, best known first: kept two weeks, and a stale copy is used when the network fails. */
     fun shows(channelId: String): List<ChannelShow> {
         val file = File(dir, "$channelId.json")
