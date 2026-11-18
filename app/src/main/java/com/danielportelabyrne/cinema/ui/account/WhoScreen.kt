@@ -50,7 +50,7 @@ class WhoScreen(
     /** Finds a person's favourite-title characters off the main thread and hands them back on it (see FavouriteCharacters). */
     private val favourites: (CinemaAccount, (List<Pair<String, String>>) -> Unit) -> Unit = { _, _ -> },
     /** Who has found Gold Mode (hold OK on a face for three seconds) and who has it on. */
-    private val gold: GoldProfiles = GoldProfiles.session,
+    private val gold: GoldProfiles = GoldProfiles.saved(activity),
     private val onChosen: (CinemaAccount) -> Unit
 ) {
     /** Forgets a three-second hold in progress (Back, or the face losing focus). */

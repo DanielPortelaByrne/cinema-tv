@@ -27,7 +27,36 @@ interface GoldProfiles {
     companion object {
         /** In memory, shared by every "Who's watching?" this run of Cinema shows. */
         val session: GoldProfiles = InMemoryGoldProfiles()
+
+        /** Saved on this device, per person, so Gold Mode is still found after Cinema is closed and reopened. */
+        fun saved(context: android.content.Context): GoldProfiles {
+            val prefs = context.applicationContext.getSharedPreferences("gold_profiles", android.content.Context.MODE_PRIVATE)
+            return StoredGoldProfiles(object : GoldFlagStore {
+                override fun get(key: String) = prefs.getBoolean(key, false)
+                override fun put(key: String, value: Boolean) { prefs.edit().putBoolean(key, value).apply() }
+            })
+        }
     }
+}
+
+/** Where [StoredGoldProfiles] keeps its flags: a string-keyed set of booleans (SharedPreferences on the device). */
+interface GoldFlagStore {
+    fun get(key: String): Boolean
+    fun put(key: String, value: Boolean)
+}
+
+/**
+ * Gold Mode flags saved per person (by Jellyfin user id) so they survive closing Cinema. Two separate flags per person,
+ * `goldUnlocked` and `goldEnabled`; nothing stored reads as locked and off, and "on" without "unlocked" is treated as off.
+ */
+class StoredGoldProfiles(private val store: GoldFlagStore) : GoldProfiles {
+    private fun unlockedKey(userId: String) = "gold.unlocked.$userId"
+    private fun enabledKey(userId: String) = "gold.enabled.$userId"
+
+    @Synchronized override fun isUnlocked(userId: String) = store.get(unlockedKey(userId))
+    @Synchronized override fun isEnabled(userId: String) = isUnlocked(userId) && store.get(enabledKey(userId))
+    @Synchronized override fun unlock(userId: String) = store.put(unlockedKey(userId), true)
+    @Synchronized override fun setEnabled(userId: String, on: Boolean) = store.put(enabledKey(userId), on && isUnlocked(userId))
 }
 
 class InMemoryGoldProfiles : GoldProfiles {
