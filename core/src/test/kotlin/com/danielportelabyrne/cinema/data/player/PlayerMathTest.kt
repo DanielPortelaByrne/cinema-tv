@@ -216,6 +216,15 @@ class CreditsStartTest {
         assertEquals(hour - 216_000L, PlayerMath.creditsStartMs(listOf(ch(0, "Chapter 1", 0), ch(1, "The showdown", 57)), hour))
     }
 
+    @Test fun credits_prompt_waits_ten_seconds_past_the_estimate_and_never_guesses() {
+        val hour = 60 * 60_000L
+        assertEquals(50 * 60_000L + 10_000L, PlayerMath.creditsPromptMs(50 * 60_000L, hour))
+        assertEquals(hour - 15_000L, PlayerMath.creditsPromptMs(hour - 25_000L, hour)) // exactly the margin
+        assertNull(PlayerMath.creditsPromptMs(hour - 24_999L, hour)) // too near the end: offered at completion instead
+        assertNull(PlayerMath.creditsPromptMs(null, hour))
+        assertNull(PlayerMath.creditsPromptMs(50 * 60_000L, 0L))
+    }
+
     @Test fun short_or_unknown_lengths_give_nothing() {
         assertNull(PlayerMath.creditsStartMs(emptyList(), 5 * 60_000L))
         assertNull(PlayerMath.creditsStartMs(emptyList(), 0L))
