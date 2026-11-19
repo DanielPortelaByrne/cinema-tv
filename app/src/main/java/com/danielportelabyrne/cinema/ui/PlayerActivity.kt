@@ -363,7 +363,7 @@ class PlayerActivity : AppCompatActivity() {
         recordHistory(credits = true)
         handler.removeCallbacks(autoplayTick); nextCard.hideCard(); cancelNext.isEnabled = false
         creditsCard = false
-        pendingEpisode = EpisodeRequest(imdb, series, next.season, next.episode)
+        pendingEpisode.put(EpisodeRequest(imdb, series, next.season, next.episode))
         finish()
     }
 
@@ -403,6 +403,8 @@ class PlayerActivity : AppCompatActivity() {
         items = parse(intent.getStringExtra(EXTRA_ITEMS))
         imdbId = intent.getStringExtra(EXTRA_IMDB)
         streamEpisode = intent.getStringExtra(EXTRA_EPISODE)?.split(":")?.takeIf { it.size == 2 }?.let { p -> p[0].toIntOrNull()?.let { s -> p[1].toIntOrNull()?.let { e -> s to e } } }
+        pendingEpisode.clear()   // this player is the answer to any earlier pick
+        Log.i(TAG, "Opened for episode ${streamEpisode?.let { "S${it.first}E${it.second}" } ?: "none"}, ${items.size} offered")
         live = intent.getBooleanExtra(EXTRA_LIVE, false)
         jf = com.danielportelabyrne.cinema.data.jellyfin.JellyfinReport.fromJson(intent.getStringExtra(EXTRA_JF))
         forcedStart = intent.getBooleanExtra(EXTRA_FROM_START, false)
@@ -858,7 +860,7 @@ class PlayerActivity : AppCompatActivity() {
             val listing = streamListing
             val e = listing?.episodes?.firstOrNull { "${it.season}:${it.episode}" == pick.key }
             if (listing != null && e != null) {
-                pendingEpisode = EpisodeRequest(imdb, listing.name.ifBlank { title.substringBefore(" · ") }, e.season, e.episode)
+                pendingEpisode.put(EpisodeRequest(imdb, listing.name.ifBlank { title.substringBefore(" · ") }, e.season, e.episode))
                 finish()
             }
         }
@@ -939,7 +941,8 @@ class PlayerActivity : AppCompatActivity() {
     private fun fail(reason: String) {
         if (releasingPlayer || isFinishing || isDestroyed) return
         handler.removeCallbacks(startupTimeout)
-        Log.w(TAG, "Attempt ${index + 1} failed: $reason")
+        Log.w(TAG, "Attempt ${index + 1} failed: $reason (episode ${streamEpisode?.let { "S${it.first}E${it.second}" } ?: "none"})")
+        pendingEpisode.clear()   // a failed stream never hands the page another episode to play
         val position = if (started) player.currentPosition else 0L
         record(failed = true)
         player.stop()
@@ -1774,10 +1777,11 @@ class PlayerActivity : AppCompatActivity() {
         /** Set by the Movies page: gets a channel's next programme ready, a few minutes before the one playing ends. */
         @Volatile var onUpcomingProgramme: ((PlaylistPlayback) -> Unit)? = null
 
-        @Volatile private var pendingEpisode: EpisodeRequest? = null
+        // Good for a minute, once: a pick left behind by a player that then failed must not be played on a later visit to the page.
+        private val pendingEpisode = com.danielportelabyrne.cinema.data.player.TimedHandoff<EpisodeRequest>(60_000L) { SystemClock.elapsedRealtime() }
 
-        /** The episode the viewer picked in the player, once; null when there is none. */
-        fun takeEpisodeRequest(): EpisodeRequest? = pendingEpisode.also { pendingEpisode = null }
+        /** The episode the viewer picked in the player, once and only just after; null when there is none. */
+        fun takeEpisodeRequest(): EpisodeRequest? = pendingEpisode.take()
 
         @Volatile private var pendingStreamAgain: StreamAgainRequest? = null
         @Volatile private var pendingStreamAgainAt = 0L
