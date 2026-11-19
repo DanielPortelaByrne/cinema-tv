@@ -140,6 +140,12 @@ class PlayerActivity : AppCompatActivity() {
     private val cancelNext = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() { cancelAutoplay() }
     }
+    /** The "Other streams" sheet over the player, and whether the copy now playing was picked from it (a failure then asks again). */
+    private var streamSheet: com.danielportelabyrne.cinema.ui.room.InfoSheet? = null
+    private var manualPick = false
+    private val closeStreamSheet = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() { hideStreamSheet() }
+    }
     private val captionPrefs by lazy { getSharedPreferences("player", MODE_PRIVATE) }
     /** Whether captions are wanted. Remembered, and on by default, as the player has always shown them. */
     private var captionsOn = true
@@ -552,6 +558,11 @@ class PlayerActivity : AppCompatActivity() {
         nextCard = NextEpisodeCard(this, play = { playNextNow() }, cancel = { cancelAutoplay() })
         root.addView(nextCard, FrameLayout.LayoutParams(-1, -1))
         onBackPressedDispatcher.addCallback(this, cancelNext)
+        // Added last, so it sits over everything; hidden until the viewer asks for another copy.
+        val sheetHost = FrameLayout(this).apply { visibility = View.GONE; isClickable = true }
+        root.addView(sheetHost, FrameLayout.LayoutParams(-1, -1))
+        streamSheet = com.danielportelabyrne.cinema.ui.room.InfoSheet(sheetHost)
+        onBackPressedDispatcher.addCallback(this, closeStreamSheet)
         if (live) {
             titleLabel = Type.text(this, title, Type.Style.TITLE).apply { textSize = 26f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END; visibility = View.GONE }
             root.addView(titleLabel, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(dp(48), dp(32), dp(48), 0) })
@@ -901,8 +912,9 @@ class PlayerActivity : AppCompatActivity() {
 
     // --- attempts ---------------------------------------------------------------------------------
 
-    private fun startAttempt(i: Int, play: Boolean = true) {
+    private fun startAttempt(i: Int, play: Boolean = true, picked: Boolean = false) {
         index = i
+        manualPick = picked
         if (i == 0) { audioFallbackQueued = false; beginCredits() }
         val item = items[i]
         started = false; ended = false; recorded = false; keepAwake()
@@ -943,13 +955,56 @@ class PlayerActivity : AppCompatActivity() {
         val position = if (started) player.currentPosition else 0L
         record(failed = true)
         player.stop()
-        if (index + 1 < items.size) {
-            // While the loading screen is up it says so itself; mid-film a short note is all there is room for.
-            loadingScreen?.takeIf { loadingView?.visibility == View.VISIBLE }?.message("Trying another version…")
-                ?: CinemaToast.show(this, "Trying another version…", Toast.LENGTH_SHORT)
-            startAttempt(index + 1)
-            if (position > 60_000) player.seekTo(position)
-        } else fallBackToStremio("no version could be played")
+        when (val next = com.danielportelabyrne.cinema.data.stream.StreamChoices.afterFailure(index, items.size, manualPick)) {
+            is com.danielportelabyrne.cinema.data.stream.AfterFailure.TryNext -> {
+                // While the loading screen is up it says so itself; mid-film a short note is all there is room for.
+                loadingScreen?.takeIf { loadingView?.visibility == View.VISIBLE }?.message("Trying another version…")
+                    ?: CinemaToast.show(this, "Trying another version…", Toast.LENGTH_SHORT)
+                startAttempt(next.index)
+                if (position > 60_000) player.seekTo(position)
+            }
+            // A copy the viewer picked never gives way silently to another one (or to Stremio): they choose again.
+            com.danielportelabyrne.cinema.data.stream.AfterFailure.AskAgain -> {
+                loadingView?.visibility = View.GONE
+                showStreamSheet("That copy would not play. Pick another.", resumeAt = position.takeIf { it > 0 } ?: pickedPosition)
+            }
+            com.danielportelabyrne.cinema.data.stream.AfterFailure.GiveUp -> fallBackToStremio("no version could be played")
+        }
+    }
+
+    /** Where the picture was when the viewer last switched copy, so a failed pick can be retried from the same place. */
+    private var pickedPosition = 0L
+
+    private fun hideStreamSheet() {
+        streamSheet?.hide()
+        closeStreamSheet.isEnabled = false
+    }
+
+    /** "Other streams": the copies this player holds, the one playing and the recommended one marked. Back leaves playback alone. */
+    private fun showStreamSheet(message: String?, resumeAt: Long? = null) {
+        val sheet = streamSheet ?: return
+        if (!com.danielportelabyrne.cinema.data.stream.StreamChoices.offered(items.size, live)) return
+        val rows = com.danielportelabyrne.cinema.data.stream.StreamChoices.rows(
+            items.map { com.danielportelabyrne.cinema.data.stream.StreamOption(it.label, it.provider, it.bitrateBps) }, index)
+        val actions = rows.map { r ->
+            com.danielportelabyrne.cinema.ui.room.SheetAction(r.title, listOfNotNull(r.tag, r.detail).joinToString(" · ").ifBlank { null }, primary = r.index == com.danielportelabyrne.cinema.data.stream.StreamChoices.RECOMMENDED_INDEX) {
+                hideStreamSheet()
+                if (r.index != index || message != null) chooseStream(r.index, resumeAt)
+            }
+        }
+        closeStreamSheet.isEnabled = true
+        sheet.show("Other streams", title.ifBlank { "This title" }, null,
+            listOfNotNull(message, "Same ${if (streamEpisode != null) "episode" else "film"}, another copy. Playback carries on from where it is.").take(2), actions = actions)
+    }
+
+    /** Plays copy [i] of this same title from the same place; if it fails the viewer is asked again rather than moved on. */
+    private fun chooseStream(i: Int, resumeAt: Long? = null) {
+        val here = resumeAt ?: com.danielportelabyrne.cinema.data.stream.StreamChoices.resumeAt(if (::player.isInitialized) player.currentPosition else 0L, started)
+        pickedPosition = here ?: 0L
+        handler.removeCallbacks(startupTimeout)
+        Log.i(TAG, "Viewer picked copy ${i + 1}/${items.size}: ${items[i].label} [${items[i].provider}]")
+        startAttempt(i, play = true, picked = true)
+        if (here != null) player.seekTo(here)
     }
 
     /**
@@ -1281,6 +1336,8 @@ class PlayerActivity : AppCompatActivity() {
         c.onPause = { player.pause() }
         c.onSeek = { ms -> seekChecked(ms) }
         c.onCaptions = { toggleCaptions() }
+        c.otherStreamsOffered = { com.danielportelabyrne.cinema.data.stream.StreamChoices.offered(items.size, live) }
+        c.onOtherStreams = { showStreamSheet(null) }
         c.onTracks = { type ->
             val label = when (type) { C.TRACK_TYPE_AUDIO -> "Audio"; C.TRACK_TYPE_VIDEO -> "Quality"; else -> "Subtitles" }
             runCatching {
@@ -1512,6 +1569,8 @@ class PlayerActivity : AppCompatActivity() {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) toggleCaptions()
             return true
         }
+        // The "Other streams" sheet has the remote while it is open.
+        if (streamSheet?.isVisible == true) return super.dispatchKeyEvent(event)
         // The Cinema chrome has the remote once the picture is up (the loading screen and the next-episode card keep theirs).
         val c = chrome
         if (c != null && started && loadingView?.visibility != View.VISIBLE && nextCard.visibility != View.VISIBLE && c.handleKey(event)) return true

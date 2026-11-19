@@ -79,6 +79,9 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     var streamHealth: () -> Pair<String, Boolean>? = { null }      // ("Healthy", true) / ("Buffering", false)
     var bitrateSamples: () -> List<Long> = { emptyList() }
     var chipLabels: () -> Triple<String?, String?, String?> = { Triple(null, null, null) }   // subtitles, audio, quality
+    /** Opens the list of other copies of this title; the chip shows only while [otherStreamsOffered] says there are some. */
+    var onOtherStreams: () -> Unit = {}
+    var otherStreamsOffered: () -> Boolean = { false }
 
     /** Set when this is a channel's programme: its (number, name) heads the controls, and NOW / NEXT replace the film's facts. */
     var station: Pair<Int?, String>? = null
@@ -116,6 +119,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
     private val subtitlesChip = chip(R.drawable.ic_cin_cc) { onCaptions(); refreshChips() }
     private val audioChip = chip(R.drawable.ic_cin_vol) { onTracks(androidx.media3.common.C.TRACK_TYPE_AUDIO) }
     private val qualityChip = chip(R.drawable.ic_cin_film) { onTracks(androidx.media3.common.C.TRACK_TYPE_VIDEO) }
+    private val streamsChip = chip(R.drawable.ic_cin_lib) { onOtherStreams() }
     private val slidersButton = roundButton(R.drawable.ic_cin_sliders, 54, 28) { onTracks(androidx.media3.common.C.TRACK_TYPE_TEXT) }
     // Scrubbing preview.
     private val preview = FrameLayout(context).apply { clipChildren = false }
@@ -283,7 +287,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         controls.addView(chapterLabel, LayoutParams(-1, -2).apply { topMargin = p(952) })
         place(controls, timeNow, 96, 946)
         controls.addView(timeLeft, LayoutParams(-2, -2, Gravity.END or Gravity.TOP).apply { rightMargin = p(96); topMargin = p(946) })
-        listOf(subtitlesChip, audioChip, qualityChip).forEachIndexed { i, c -> chips.addView(c, LinearLayout.LayoutParams(-2, p(54)).apply { if (i > 0) marginStart = p(16) }) }
+        listOf(subtitlesChip, audioChip, qualityChip, streamsChip).forEachIndexed { i, c -> chips.addView(c, LinearLayout.LayoutParams(-2, p(54)).apply { if (i > 0) marginStart = p(16) }) }
         controls.addView(chips, LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { leftMargin = p(96); bottomMargin = p(40) })
         controls.addView(slidersButton, LayoutParams(p(54), p(54), Gravity.BOTTOM or Gravity.END).apply { rightMargin = p(96); bottomMargin = p(40) })
 
@@ -778,6 +782,7 @@ class PlayerChrome(context: Context) : FrameLayout(context) {
         (subtitlesChip.getChildAt(1) as TextView).text = subs ?: "Subtitles · none"
         audio?.let { (audioChip.getChildAt(1) as TextView).text = it }; audioChip.visibility = if (audio == null) GONE else VISIBLE
         quality?.let { (qualityChip.getChildAt(1) as TextView).text = it }; qualityChip.visibility = if (quality == null) GONE else VISIBLE
+        (streamsChip.getChildAt(1) as TextView).text = "Other streams"; streamsChip.visibility = if (otherStreamsOffered()) VISIBLE else GONE
     }
 
     private fun refreshStream() {
