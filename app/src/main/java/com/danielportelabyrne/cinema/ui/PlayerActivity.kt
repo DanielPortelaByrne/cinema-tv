@@ -1543,9 +1543,11 @@ class PlayerActivity : AppCompatActivity() {
     private fun applyCaptions() {
         // Without a preferred language, unflagged tracks never auto-select.
         val locales = resources.configuration.locales
-        val languages = ((0 until locales.size()).map { locales[it].language } + "en").distinct()
+        val languages = com.danielportelabyrne.cinema.data.player.AudioLanguages.preferred((0 until locales.size()).map { locales[it].language })
         trackSelector.parameters = trackSelector.buildUponParameters()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !captionsOn)
+            // Soundtrack too: without it a file lists Italian first (or flags it default) and that is what plays.
+            .setPreferredAudioLanguages(*languages.toTypedArray())
             .setPreferredTextLanguages(*languages.toTypedArray())
             .setSelectUndeterminedTextLanguage(true)
             .build()
