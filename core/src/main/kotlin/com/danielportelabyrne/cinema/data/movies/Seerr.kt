@@ -386,6 +386,9 @@ class SeerrClient(platform: Platform) {
     /** TMDB's recommendations for a title, through Seerr (which also says what is already on the server). Null when unreachable. */
     fun recommendations(kind: Kind, tmdbId: Long): List<Suggestion>? = get(SeerrApi.path(kind, tmdbId) + "/recommendations?page=1")?.let { Picks.parseSuggestions(it) }
 
+    /** One page (1-based) of popular films: where Film Link looks for films to start from. Null when it could not be fetched. */
+    fun discoverMovies(page: Int): List<Suggestion>? = get("/api/v1/discover/movies?page=$page")?.let { Picks.parseSuggestions(it) }
+
     /** Free space where films are stored, in bytes, or null. */
     fun freeSpaceBytes(): Long? = get("/api/v1/service/radarr/0")?.let { SeerrRequests.parseFreeSpace(it) }
 

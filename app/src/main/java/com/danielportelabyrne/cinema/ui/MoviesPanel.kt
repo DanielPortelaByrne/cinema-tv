@@ -272,6 +272,8 @@ class MoviesPanel(
         object Settings : Dest()
         /** Not a page: the rail's person item goes back to "Who's watching?". */
         object Person : Dest()
+        /** Not a page: the rail's Film Link item opens the game over Cinema (see [FilmLinkScreen]). */
+        object FilmLink : Dest()
     }
 
     /** The rail item a page belongs to: a service or genre page is part of Home, every Letterboxd page of Letterboxd. */
@@ -329,6 +331,22 @@ class MoviesPanel(
     private var current: Dest = Dest.Home
     private val trail = ArrayDeque<Dest>()
     private var returnFocus: View? = null
+
+    /**
+     * Film Link (CIN-65): a game drawn over the whole app from the rail's Film Link item. It is a screen of its own, so it
+     * never touches the title pages, watch history or playback beneath it; closing it gives the page back as it was.
+     */
+    private var filmLinkScreen: FilmLinkScreen? = null
+    private val filmLink: FilmLinkScreen
+        get() = filmLinkScreen ?: FilmLinkScreen(activity, detail.parent as ViewGroup, seerr) { open ->
+            if (open) {
+                returnFocus = overlay.findFocus()
+                body.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS; body.visibility = View.INVISIBLE
+            } else {
+                body.visibility = View.VISIBLE; body.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                returnFocus?.takeIf { it.isAttachedToWindow }?.let { f -> f.post { f.requestFocus() } }
+            }
+        }.also { filmLinkScreen = it }
     private val tabs = LinkedHashMap<LinearLayout, Dest>()
     private val navigationLabels = LinkedHashMap<LinearLayout, Pair<ImageView, TextView>>()
     private var navigationExpanded = false
@@ -519,6 +537,7 @@ class MoviesPanel(
      * then lets the panel close. Back never opens the rail: only a fresh Left does.
      */
     fun back(): Boolean {
+        filmLinkScreen?.let { if (it.isOpen) return it.back() }
         layoutEditor?.let { it.back(); return true }
         if (PhoneInput.hideQr()) return true
         if (voiceActive) { voice?.cancel(); return true }
@@ -851,6 +870,7 @@ class MoviesPanel(
             Triple("Documentaries", R.drawable.ic_cin_doc, Dest.Docs),
             Triple("Letterboxd", R.drawable.ic_cin_lb, Dest.Letterboxd),
             Triple("Music", R.drawable.ic_cin_music, Dest.Music),
+            Triple("Film Link", R.drawable.ic_cin_link, Dest.FilmLink),
             Triple("My library", R.drawable.ic_cin_lib, Dest.Library),
             Triple("History", R.drawable.ic_cin_history, Dest.History),
             Triple("Downloads", R.drawable.ic_cin_dl, Dest.Downloads)
@@ -927,6 +947,7 @@ class MoviesPanel(
             when {
                 dest === Dest.Settings -> onOpenSettings()
                 dest === Dest.Person -> onSwitchPerson()
+                dest === Dest.FilmLink -> filmLink.open()
                 current !== dest -> { go(dest); enterChosenPage() }
                 else -> focusContent()   // the page already shown: just back to it
             }
@@ -1378,7 +1399,7 @@ class MoviesPanel(
             Dest.Music -> buildMusic(gen)
             is Dest.MusicAlbum -> buildMusicAlbum(d.id, gen)
             is Dest.MusicArtist -> buildMusicArtist(d.id, d.name, gen)
-            Dest.Settings, Dest.Person -> Unit
+            Dest.Settings, Dest.Person, Dest.FilmLink -> Unit
         }
         syncRailAway(immediate = true)
         Perf.took("movies.build (main thread)", Perf.now() - buildStart)
@@ -1393,7 +1414,7 @@ class MoviesPanel(
         Dest.Library, Dest.Watchlist, Dest.History, Dest.Playlists, is Dest.Playlist -> AmbientBackground.LIBRARY
         Dest.Downloads -> AmbientBackground.DOWNLOADS
         Dest.Search -> AmbientBackground.SEARCH
-        Dest.Settings, Dest.Person -> AmbientBackground.SETTINGS
+        Dest.Settings, Dest.Person, Dest.FilmLink -> AmbientBackground.SETTINGS
         Dest.Letterboxd, Dest.LbSearch, Dest.LbFollow, is Dest.LbPerson, is Dest.LbListPage -> AmbientBackground.LETTERBOXD
         Dest.Music, is Dest.MusicAlbum, is Dest.MusicArtist -> AmbientBackground.MUSIC
         // A service's page takes the service's own colour; a genre's, the colour of its tile.
