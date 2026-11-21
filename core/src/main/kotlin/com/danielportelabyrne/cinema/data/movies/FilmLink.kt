@@ -1,0 +1,156 @@
+package com.danielportelabyrne.cinema.data.movies
+
+import kotlin.random.Random
+
+/*
+ * Film Link (CIN-64 design, CIN-65): start at one film, reach another only by hopping through "More films like this".
+ *
+ * Everything here is plain Kotlin with no Android and no network, so the rules can be tested exactly. A run is one
+ * object holding all of its own state, so one run can never touch another run, the watch history or the app's normal
+ * browsing.
+ */
+
+/** A film in a Film Link run: just enough to show it and to recognise it again. */
+data class LinkFilm(
+    val tmdbId: Long, val name: String, val year: Int?,
+    val posterPath: String?, val backdropPath: String?, val overview: String?
+) {
+    companion object {
+        fun of(s: Suggestion) = LinkFilm(s.tmdbId, s.name, s.year, s.posterPath, s.backdropPath, s.overview)
+    }
+}
+
+/** Where the connected films of a film come from. Pairs are checked and runs are played against the same source. */
+fun interface FilmGraph {
+    /** The films [id] connects to, or null when they could not be fetched (a failure, not an empty list). */
+    fun neighbours(id: Long): List<LinkFilm>?
+}
+
+/** What counts as a connection: exactly the films the title page's "More films like this" row shows. */
+object FilmLinkRules {
+    /** The row's length on the title page. */
+    const val ROW_SIZE = 16
+
+    /** The films a TMDB recommendation list connects [of] to: films only, never itself, no repeats, the first [ROW_SIZE]. */
+    fun connected(of: Long, suggestions: List<Suggestion>): List<LinkFilm> =
+        suggestions.filter { it.kind == Kind.MOVIE && it.tmdbId != of }.distinctBy { it.tmdbId }.take(ROW_SIZE).map(LinkFilm::of)
+}
+
+/** A start and a target at least [shortest] hops apart by routes found while checking (an upper bound on the true shortest). */
+data class LinkPair(val start: LinkFilm, val target: LinkFilm, val shortest: Int)
+
+object FilmLinkPairs {
+    /** Never a pair one hop apart (trivial); never beyond [MAX_HOPS] (too long to be fun). */
+    const val MIN_HOPS = 2
+    const val MAX_HOPS = 4
+    /** The most connection lookups spent finding one pair, and the most starting films tried. */
+    const val CALL_BUDGET = 30
+    const val ATTEMPTS = 6
+
+    /**
+     * Picks a random start from [seeds] and a random target reachable from it in [minHops]..[maxHops] hops, found by
+     * a breadth-first search over [graph] that makes at most [budget] lookups per start. A pair is therefore solvable
+     * by construction, with its route known. Returns null when no seed gives one (no connections, or too few); the
+     * caller then says so instead of starting a run that cannot be won. [random] makes the choice repeatable.
+     */
+    fun generate(
+        seeds: List<LinkFilm>, graph: FilmGraph, random: Random,
+        minHops: Int = MIN_HOPS, maxHops: Int = MAX_HOPS, budget: Int = CALL_BUDGET, attempts: Int = ATTEMPTS
+    ): LinkPair? {
+        val pool = seeds.distinctBy { it.tmdbId }.shuffled(random)
+        for (start in pool.take(attempts)) {
+            val depths = explore(start, graph, maxHops, budget)
+            val candidates = depths.filter { (film, depth) -> depth >= minHops && film.tmdbId != start.tmdbId }.keys.toList()
+            if (candidates.isEmpty()) continue
+            val target = candidates[random.nextInt(candidates.size)]
+            return LinkPair(start, target, depths.getValue(target))
+        }
+        return null
+    }
+
+    /** Every film reached from [start] within [maxDepth] hops, with the fewest hops found. At most [budget] lookups. */
+    internal fun explore(start: LinkFilm, graph: FilmGraph, maxDepth: Int, budget: Int): Map<LinkFilm, Int> {
+        val depth = LinkedHashMap<Long, Int>().apply { put(start.tmdbId, 0) }
+        val films = LinkedHashMap<Long, LinkFilm>().apply { put(start.tmdbId, start) }
+        val queue = ArrayDeque<LinkFilm>().apply { add(start) }
+        var calls = 0
+        while (queue.isNotEmpty() && calls < budget) {
+            val film = queue.removeFirst()
+            val d = depth.getValue(film.tmdbId)
+            if (d >= maxDepth) continue
+            calls++
+            val next = graph.neighbours(film.tmdbId) ?: continue
+            for (n in next) {
+                if (depth.containsKey(n.tmdbId)) continue
+                depth[n.tmdbId] = d + 1; films[n.tmdbId] = n; queue.add(n)
+            }
+        }
+        return films.values.associateWith { depth.getValue(it.tmdbId) }
+    }
+}
+
+enum class LinkMode { UNTIMED, TIMED }
+enum class LinkPhase { PLAYING, COMPLETE, GAVE_UP }
+
+/** What a hop did. Only [COUNTED] and [COMPLETED] add to the hop count. */
+enum class HopOutcome { COUNTED, COMPLETED, NOT_CONNECTED, ALREADY_ON_ROUTE, FINISHED }
+
+/**
+ * One playthrough. The route starts at the start film with zero hops. [offer] says which films the current page
+ * connects to; [hop] only accepts one of those, counts it exactly once, and completes the run exactly once when the
+ * target is reached. [back] returns to the previous film for free and does not undo a hop. The clock only runs while
+ * the run is playing and not paused, and is only shown when [mode] is TIMED.
+ */
+class FilmLinkRun(val start: LinkFilm, val target: LinkFilm, val mode: LinkMode, private val clock: () -> Long) {
+    init { require(start.tmdbId != target.tmdbId) { "A run needs two different films" } }
+
+    private val path = ArrayList<LinkFilm>().apply { add(start) }
+    private var offered: Set<Long> = emptySet()
+    private var elapsed = 0L
+    private var runningSince: Long? = clock()
+
+    var hops = 0; private set
+    var phase = LinkPhase.PLAYING; private set
+
+    /** The films visited so far, in order, ending at the one on screen. */
+    val route: List<LinkFilm> get() = path.toList()
+    val current: LinkFilm get() = path.last()
+    val timed: Boolean get() = mode == LinkMode.TIMED
+    val finished: Boolean get() = phase != LinkPhase.PLAYING
+
+    /** The films the page now on screen connects to. Replaces any earlier offer. */
+    fun offer(films: List<LinkFilm>) { offered = films.map { it.tmdbId }.toSet() }
+
+    fun isOnRoute(film: LinkFilm) = path.any { it.tmdbId == film.tmdbId }
+
+    fun hop(to: LinkFilm): HopOutcome {
+        if (finished) return HopOutcome.FINISHED
+        if (isOnRoute(to)) return HopOutcome.ALREADY_ON_ROUTE
+        if (to.tmdbId !in offered) return HopOutcome.NOT_CONNECTED
+        path.add(to); hops++; offered = emptySet()
+        if (to.tmdbId == target.tmdbId) {
+            phase = LinkPhase.COMPLETE; stopClock()
+            return HopOutcome.COMPLETED
+        }
+        return HopOutcome.COUNTED
+    }
+
+    /** Back to the previous film. Free: the hop count stays. False at the start, or once the run has ended. */
+    fun back(): Boolean {
+        if (finished || path.size < 2) return false
+        path.removeAt(path.size - 1); offered = emptySet()
+        return true
+    }
+
+    /** Ends the run without a win; the route so far stays for the summary. */
+    fun giveUp() { if (!finished) { phase = LinkPhase.GAVE_UP; stopClock() } }
+
+    /** Stops the clock while the app is in the background; [resume] starts it again. */
+    fun pause() { runningSince?.let { elapsed += clock() - it; runningSince = null } }
+    fun resume() { if (!finished && runningSince == null) runningSince = clock() }
+
+    /** Milliseconds played so far, whether or not they are shown. */
+    fun elapsedMs(): Long = elapsed + (runningSince?.let { clock() - it } ?: 0L)
+
+    private fun stopClock() { pause() }
+}
