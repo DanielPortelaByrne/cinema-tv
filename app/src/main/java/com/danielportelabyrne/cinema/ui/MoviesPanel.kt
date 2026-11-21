@@ -446,7 +446,9 @@ class MoviesPanel(
         game?.detach()
         detail.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         gameOrigin = from
-        val gm = FilmLinkGame(activity, detail.parent as ViewGroup, pair, mode, startedHere, graph)
+        // The start film's own poster, for the summary when Seerr's copy of it had none (the film the game began on).
+        val startPoster = from?.takeIf { startedHere }?.let { e -> e.title.posterUrl?.let { it to e.posterHeaders } }
+        val gm = FilmLinkGame(activity, detail.parent as ViewGroup, pair, mode, startedHere, graph, startPoster)
         game = gm; gm.attach()
         filmLinkOpen(pair.start)
     }
@@ -6260,8 +6262,12 @@ class MoviesPanel(
                     list.isEmpty() -> moreRow.inner.addView(Cinema.text(activity, "Dead end: no films connect to this one. Go back, or give up.", 26, Cinema.MUTED))
                     else -> list.forEachIndexed { i, f ->
                         val onRoute = gm.run.isOnRoute(f)
+                        // Visited covers every film landed on, not only those still on the route: one backed out of (a dead end) shows it too.
+                        val visited = gm.run.hasVisited(f)
+                        val backs = gm.run.backsFrom(f)
                         val c = card(entry(linkTitle(f)), emptyList(), small = true, nested = false, badge = false,
-                            note = if (onRoute) "On your route" else "+1 hop", chip = if (onRoute) "Visited" else null, star = false, onSelect = { filmLinkHop(f) })
+                            note = if (onRoute) "On your route" else "+1 hop", chip = if (visited) "Visited" else null, star = false, onSelect = { filmLinkHop(f) })
+                        if (backs > 0) (c as? PosterCard)?.backMark(backs)
                         if (onRoute) c.alpha = 0.55f
                         moreRow.inner.addView(c, cardParams(i, small = true))
                     }

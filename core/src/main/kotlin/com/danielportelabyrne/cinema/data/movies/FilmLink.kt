@@ -202,7 +202,7 @@ enum class HopOutcome { COUNTED, COMPLETED, NOT_CONNECTED, ALREADY_ON_ROUTE, FIN
 /**
  * One playthrough. The route starts at the start film with zero hops. [offer] says which films the current page
  * connects to; [hop] only accepts one of those, counts it exactly once, and completes the run exactly once when the
- * target is reached. [back] returns to the previous film for free and does not undo a hop. The clock only runs while
+ * target is reached. [back] returns to the previous film, does not undo a hop, and is tallied in [backs]. The clock only runs while
  * the run is playing and not paused, and is only shown when [mode] is TIMED.
  */
 class FilmLinkRun(val start: LinkFilm, val target: LinkFilm, val mode: LinkMode, private val clock: () -> Long) {
@@ -213,7 +213,14 @@ class FilmLinkRun(val start: LinkFilm, val target: LinkFilm, val mode: LinkMode,
     private var elapsed = 0L
     private var runningSince: Long? = clock()
 
+    /** Every film landed on at any point, so a film backed out of (a dead end) still counts as visited. */
+    private val seen = HashSet<Long>().apply { add(start.tmdbId) }
+    /** How many times Back was pressed to leave each film (film id -> presses), so a dead end stands out. */
+    private val backCounts = HashMap<Long, Int>()
+
     var hops = 0; private set
+    /** How many times Back was pressed to leave a film along the route. The aim is a win with none, and as few hops as possible. */
+    var backs = 0; private set
     var phase = LinkPhase.PLAYING; private set
 
     /** The films visited so far, in order, ending at the one on screen. */
@@ -227,11 +234,17 @@ class FilmLinkRun(val start: LinkFilm, val target: LinkFilm, val mode: LinkMode,
 
     fun isOnRoute(film: LinkFilm) = path.any { it.tmdbId == film.tmdbId }
 
+    /** Whether the player has landed on [film] at any point, on the route now or backed out of since. */
+    fun hasVisited(film: LinkFilm) = film.tmdbId in seen
+
+    /** How many times Back was pressed to leave [film] after landing on it. */
+    fun backsFrom(film: LinkFilm): Int = backCounts[film.tmdbId] ?: 0
+
     fun hop(to: LinkFilm): HopOutcome {
         if (finished) return HopOutcome.FINISHED
         if (isOnRoute(to)) return HopOutcome.ALREADY_ON_ROUTE
         if (to.tmdbId !in offered) return HopOutcome.NOT_CONNECTED
-        path.add(to); hops++; offered = emptySet()
+        path.add(to); seen.add(to.tmdbId); hops++; offered = emptySet()
         if (to.tmdbId == target.tmdbId) {
             phase = LinkPhase.COMPLETE; stopClock()
             return HopOutcome.COMPLETED
@@ -242,7 +255,8 @@ class FilmLinkRun(val start: LinkFilm, val target: LinkFilm, val mode: LinkMode,
     /** Back to the previous film. Free: the hop count stays. False at the start, or once the run has ended. */
     fun back(): Boolean {
         if (finished || path.size < 2) return false
-        path.removeAt(path.size - 1); offered = emptySet()
+        val left = path.removeAt(path.size - 1); offered = emptySet(); backs++
+        backCounts[left.tmdbId] = (backCounts[left.tmdbId] ?: 0) + 1
         return true
     }
 
