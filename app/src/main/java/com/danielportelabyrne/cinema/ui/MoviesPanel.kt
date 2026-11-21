@@ -377,13 +377,21 @@ class MoviesPanel(
         val here = from.title.takeIf { it.kind == Kind.MOVIE }
         detail.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         val menu = FilmLinkMenu(activity, detail.parent as ViewGroup,
-            here?.let { FilmLinkMenu.Here(it.name, it.year, it.posterUrl, from.posterHeaders) },
-            onPlay = { startHere, choose, timed ->
+            here?.let { FilmLinkMenu.Here(it.name, it.year, it.posterUrl, from.posterHeaders, it.tmdbId?.toLongOrNull(), it.overview) },
+            loadSeeds = { done ->
+                slowPool.execute {
+                    val films = runCatching {
+                        com.danielportelabyrne.cinema.data.movies.FilmLinkSeeds.collect({ seerr.discoverMovies(it) }, kotlin.random.Random(System.nanoTime()), pages = 3)
+                    }.getOrNull().orEmpty()
+                    activity.runOnUiThread { done(films) }
+                }
+            },
+            onPlay = { start, startedHere, finish, choose, timed ->
                 closeFilmLinkMenu()
                 val mode = if (timed) com.danielportelabyrne.cinema.data.movies.LinkMode.TIMED else com.danielportelabyrne.cinema.data.movies.LinkMode.UNTIMED
-                if (startHere && here != null) filmLinkResolve(here) { f ->
-                    if (f == null) CinemaToast.show(activity, "Couldn’t find this film’s connections", Toast.LENGTH_LONG) else filmLinkGo(from, f, choose, mode)
-                } else filmLinkGo(from, null, choose, mode)
+                if (startedHere && here != null) filmLinkResolve(here) { f ->
+                    if (f == null) CinemaToast.show(activity, "Couldn’t find this film’s connections", Toast.LENGTH_LONG) else filmLinkGo(from, f, true, finish, choose, mode)
+                } else filmLinkGo(from, start, false, finish, choose, mode)
             },
             onCancel = { closeFilmLinkMenu() })
         filmLinkMenu = menu
@@ -405,14 +413,15 @@ class MoviesPanel(
         }
     }
 
-    private fun filmLinkGo(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, choose: Boolean, mode: com.danielportelabyrne.cinema.data.movies.LinkMode) {
-        if (!choose) { filmLinkBegin(from, start, null, mode); return }
+    private fun filmLinkGo(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, startedHere: Boolean, finish: com.danielportelabyrne.cinema.data.movies.LinkFilm?,
+                           choose: Boolean, mode: com.danielportelabyrne.cinema.data.movies.LinkMode) {
+        if (!choose) { filmLinkBegin(from, start, finish, mode, startedHere); return }
         // The finish is picked in Search: OK on a film there chooses it instead of opening it.
         filmLinkPick = { e ->
             if (e.title.kind != Kind.MOVIE) CinemaToast.show(activity, "Pick a film, not a series", Toast.LENGTH_SHORT)
             else {
                 filmLinkPick = null
-                filmLinkResolve(e.title) { f -> if (f == null) CinemaToast.show(activity, "Couldn’t find ${e.title.name}", Toast.LENGTH_LONG) else filmLinkBegin(from, start, f, mode) }
+                filmLinkResolve(e.title) { f -> if (f == null) CinemaToast.show(activity, "Couldn’t find ${e.title.name}", Toast.LENGTH_LONG) else filmLinkBegin(from, start, f, mode, startedHere) }
             }
         }
         if (detailOpen) closeDetail(restoreFocus = false)
@@ -421,16 +430,14 @@ class MoviesPanel(
     }
 
     /** Works out the pair (a start and a finish a few hops apart) and starts, or says it could not. */
-    private fun filmLinkBegin(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, target: com.danielportelabyrne.cinema.data.movies.LinkFilm?, mode: com.danielportelabyrne.cinema.data.movies.LinkMode) {
+    private fun filmLinkBegin(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, target: com.danielportelabyrne.cinema.data.movies.LinkFilm?,
+                              mode: com.danielportelabyrne.cinema.data.movies.LinkMode, startedHere: Boolean) {
         CinemaToast.show(activity, "Finding a route…", Toast.LENGTH_SHORT)
-        FilmLinkGame.plan(activity, seerr, start, target) { pair, graph, unverified ->
-            when {
-                pair == null -> CinemaToast.show(activity, "Couldn’t find a route just now. Try again.", Toast.LENGTH_LONG)
-                unverified -> CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "No route found in a quick look", listOf(
-                    CinemaChoiceSheet.Choice("Start anyway") { filmLinkRun(from, pair, graph, mode, start != null) },
-                    CinemaChoiceSheet.Choice("Never mind") { }))
-                else -> filmLinkRun(from, pair, graph, mode, start != null)
-            }
+        FilmLinkGame.plan(activity, seerr, start, target) { pair, graph, planted ->
+            if (pair == null) { CinemaToast.show(activity, "Couldn’t find a route just now. Try again.", Toast.LENGTH_LONG); return@plan }
+            // No natural route between a start and finish the player chose: the finish is linked into the pages of films it is really associated with.
+            if (planted) CinemaToast.show(activity, "No natural route found, so ${pair.target.name} is linked into the pages of films it is really associated with, for this game.", Toast.LENGTH_LONG)
+            filmLinkRun(from, pair, graph, mode, startedHere)
         }
     }
 
@@ -470,7 +477,7 @@ class MoviesPanel(
     private fun filmLinkFinished(gm: FilmLinkGame) {
         detail.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         gm.showEnd(
-            onAgain = { val mode = gm.mode; filmLinkDetach(gm); filmLinkBegin(null, null, null, mode) },
+            onAgain = { val mode = gm.mode; filmLinkDetach(gm); filmLinkBegin(null, null, null, mode, false) },
             onSame = { val p = gm.pair; val g = gm.graph; val m = gm.mode; val here = gm.startedHere; val origin = gameOrigin; filmLinkDetach(gm); filmLinkRun(origin, p, g, m, here) },
             onExit = { filmLinkEnd(leave = true) })
     }
@@ -6183,6 +6190,13 @@ class MoviesPanel(
             val controls = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
             val find = CinemaButton(activity, CinemaButton.Kind.PRIMARY, "Find a link")
             controls.addView(find, LinearLayout.LayoutParams(-2, h).apply { marginEnd = gap })
+            controls.addView(CinemaButton(activity, CinemaButton.Kind.GLASS, "Hint").also { b ->
+                b.setOnClickListener {
+                    gm.hint { next ->
+                        CinemaToast.show(activity, if (next != null) "Hint: try ${next.name}" else "No route to ${gm.pair.target.name} from here. Press Back to go back a film.", Toast.LENGTH_LONG)
+                    }
+                }
+            }, LinearLayout.LayoutParams(-2, h).apply { marginEnd = gap })
             controls.addView(CinemaButton(activity, CinemaButton.Kind.GLASS, "Give up").also { b ->
                 b.label.setTextColor(Cinema.DANGER_TEXT)
                 b.setOnClickListener { gm.giveUp(); filmLinkFinished(gm) }
