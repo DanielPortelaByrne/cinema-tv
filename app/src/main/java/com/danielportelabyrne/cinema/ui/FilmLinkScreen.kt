@@ -210,11 +210,12 @@ class FilmLinkScreen(
             LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 22) })
         page.addView(head, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = Cinema.px(activity, 96); topMargin = Cinema.px(activity, 80) })
 
-        val posters = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
+        // Top-aligned, so the two posters line up whatever length the film names are.
+        val posters = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP; clipChildren = false; clipToPadding = false }
         posters.addView(poster(p.start, "Start", Cinema.SAFFRON))
-        posters.addView(Cinema.text(activity, "→", 80, Cinema.MUTED, serif = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 48); marginEnd = Cinema.px(activity, 48) })
+        posters.addView(Cinema.text(activity, "→", 80, Cinema.MUTED, serif = true), LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 48); marginEnd = Cinema.px(activity, 48); topMargin = Cinema.px(activity, 190) })
         posters.addView(poster(p.target, "Target", Cinema.TEAL))
-        page.addView(posters, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = Cinema.px(activity, 96); topMargin = Cinema.px(activity, 350) })
+        page.addView(posters, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = Cinema.px(activity, 96); topMargin = Cinema.px(activity, 384) })
 
         val side = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
         side.addView(Cinema.text(activity, "Mode", 21, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
@@ -399,7 +400,8 @@ class FilmLinkScreen(
         films.forEachIndexed { i, f ->
             val col = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
             val isTarget = f.tmdbId == r.target.tmdbId
-            col.addView(posterCard(f, 300, 450).apply { if (isTarget && !won) alpha = 0.6f })
+            // An explicit size: left to match its column, Android squeezes the card to the width of the caption and the poster spills over the next film.
+            col.addView(posterCard(f, 300, 450).apply { if (isTarget && !won) alpha = 0.6f }, LinearLayout.LayoutParams(-2, -2))
             col.addView(Cinema.text(activity, f.name, 32, Cinema.CREAM, serif = true, weight = 600).apply { maxLines = 2; maxWidth = Cinema.px(activity, 300); ellipsize = TextUtils.TruncateAt.END },
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) })
             val sub = when { i == 0 -> "Start"; isTarget -> if (won) "Target" else "Target, not reached"; else -> null }
