@@ -71,10 +71,12 @@ data class PlaylistPlayback(
     /** The channel's number (its place in the list), shown on the tune-in screen and the station label. */
     val number: Int? = null,
     /** True for the first programme after tuning in, which opens with the channel's own ident. */
-    val tuneIn: Boolean = false
+    val tuneIn: Boolean = false,
+    /** True when there is another channel to change to, so CH+/CH- do something. */
+    val canSurf: Boolean = false
 ) {
     fun encode(): String = JSONObject().put("playlist", playlistId).put("slot", slotId).put("episode", episode?.json())
-        .put("station", station).put("nextTitle", nextTitle).put("number", number).put("tuneIn", tuneIn).toString()
+        .put("station", station).put("nextTitle", nextTitle).put("number", number).put("tuneIn", tuneIn).put("canSurf", canSurf).toString()
 
     companion object {
         fun decode(raw: String?): PlaylistPlayback? = raw?.let {
@@ -82,7 +84,7 @@ data class PlaylistPlayback(
                 val value = JSONObject(it)
                 PlaylistPlayback(value.getString("playlist"), value.getString("slot"), PlaylistEpisode.read(value.optJSONArray("episode")),
                     value.optString("station").ifBlank { null }, value.optString("nextTitle").ifBlank { null },
-                    value.optInt("number").takeIf { it > 0 }, value.optBoolean("tuneIn"))
+                    value.optInt("number").takeIf { it > 0 }, value.optBoolean("tuneIn"), value.optBoolean("canSurf"))
             }.getOrNull()
         }
     }

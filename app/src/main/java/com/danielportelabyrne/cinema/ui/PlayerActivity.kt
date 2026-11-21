@@ -1570,6 +1570,14 @@ class PlayerActivity : AppCompatActivity() {
             }
             return true
         }
+        // CH+ / CH- change channel from anywhere in a channel's player; one switch at a time.
+        if (event.keyCode == KeyEvent.KEYCODE_CHANNEL_UP || event.keyCode == KeyEvent.KEYCODE_CHANNEL_DOWN) {
+            if (playlistPlayback?.canSurf == true && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !ended && !isFinishing) {
+                setResult(if (event.keyCode == KeyEvent.KEYCODE_CHANNEL_UP) PLAYLIST_CHANNEL_UP else PLAYLIST_CHANNEL_DOWN)
+                finish()
+            }
+            return true
+        }
         if (event.keyCode == KeyEvent.KEYCODE_CAPTIONS) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) toggleCaptions()
             return true
@@ -1790,6 +1798,9 @@ class PlayerActivity : AppCompatActivity() {
         const val PLAYLIST_REQUEST = 801
         const val PLAYLIST_UNAVAILABLE = Activity.RESULT_FIRST_USER
         const val PLAYLIST_SKIPPED = Activity.RESULT_FIRST_USER + 1
+        /** The viewer pressed CH+ / CH-: leave this programme unfinished and tune the next / previous channel. */
+        const val PLAYLIST_CHANNEL_UP = Activity.RESULT_FIRST_USER + 2
+        const val PLAYLIST_CHANNEL_DOWN = Activity.RESULT_FIRST_USER + 3
 
         /** Provider name for films from the home stream service. */
         const val STREAM_PROVIDER = "Stream"
