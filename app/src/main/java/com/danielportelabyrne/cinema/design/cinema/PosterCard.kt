@@ -88,6 +88,18 @@ class PosterCard(context: Context, posterW: Int, posterH: Int, titled: Boolean =
         }, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply { setMargins(Cinema.px(context, 10), Cinema.px(context, 10), 0, 0) })
     }
 
+    /** Film Link: a small dark pill top right with a back arrow and how many times Back was pressed to leave this film. */
+    fun backMark(count: Int) {
+        val pill = LinearLayout(context).apply {
+            orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(Cinema.px(context, 9), Cinema.px(context, 5), Cinema.px(context, 11), Cinema.px(context, 5))
+            background = GradientDrawable().apply { cornerRadius = Cinema.pxf(context, 16); setColor(0xC70C0806.toInt()) }
+        }
+        pill.addView(Cinema.icon(context, R.drawable.ic_cin_back, Cinema.CREAM), LayoutParams(Cinema.px(context, 16), Cinema.px(context, 16)).apply { marginEnd = Cinema.px(context, 6) })
+        pill.addView(Cinema.text(context, count.toString(), 16, Cinema.CREAM, weight = 700))
+        poster.addView(pill, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, Cinema.px(context, 10), Cinema.px(context, 10), 0) })
+    }
+
     /** The "IN LIBRARY" badge (`.badge`): dark glass pill, saffron tracked capitals and a check, bottom left. */
     fun badge() {
         val pill = LinearLayout(context).apply {

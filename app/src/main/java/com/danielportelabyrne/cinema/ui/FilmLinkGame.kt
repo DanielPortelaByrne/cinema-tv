@@ -48,7 +48,9 @@ class FilmLinkGame(
     val mode: LinkMode,
     /** Whether the player turned the game on from this film's own page, so ending it leaves them on that page. */
     val startedHere: Boolean,
-    val graph: CachedFilmGraph
+    val graph: CachedFilmGraph,
+    /** The start film's poster as the page knew it (url and headers), for when the film's own TMDB poster is missing. */
+    private val startPoster: Pair<String, Map<String, String>>? = null
 ) {
     val run = FilmLinkRun(pair.start, pair.target, mode) { SystemClock.elapsedRealtime() }
     private val images = RemoteImages.shared(activity)
@@ -242,21 +244,29 @@ class FilmLinkGame(
             FrameLayout.LayoutParams(-2, -2).apply { leftMargin = Cinema.px(activity, 96); topMargin = Cinema.px(activity, 338) })
         val strip = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false; setPadding(Cinema.px(activity, 96), 0, Cinema.px(activity, 96), 0) }
         val films = run.route + if (won) emptyList() else listOf(run.target)
+        // The cards take focus so Left and Right can walk the whole route: the scroller moves to the focused card itself
+        // (CalmHorizontalScrollView does not follow focus on its own).
+        val scroller = CalmHorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; isFocusable = false }
         films.forEachIndexed { i, f ->
             val col = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
             val isTarget = f.tmdbId == run.target.tmdbId
             // An explicit size: left to match its column, Android squeezes the card to the width of the caption.
-            col.addView(posterCard(f, 300, 450).apply { if (isTarget && !won) alpha = 0.6f }, LinearLayout.LayoutParams(-2, -2))
+            col.addView(posterCard(f, 300, 450).apply {
+                if (isTarget && !won) alpha = 0.6f
+                isFocusable = true
+                onFocus = { has -> if (has) scroller.smoothScrollTo(maxOf(0, col.left - Cinema.px(activity, 96)), 0) }
+            }, LinearLayout.LayoutParams(-2, -2))
             col.addView(Cinema.text(activity, f.name, 32, Cinema.CREAM, serif = true, weight = 600).apply { maxLines = 2; maxWidth = Cinema.px(activity, 300); ellipsize = TextUtils.TruncateAt.END },
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 18) })
             val sub = when { i == 0 -> "Start"; isTarget -> if (won) "Target" else "Target, not reached"; else -> null }
-            col.addView(Cinema.text(activity, listOfNotNull(sub, f.year?.toString()).joinToString(" · "), 22, if (isTarget) Cinema.TEAL else Cinema.MUTED),
+            val backs = run.backsFrom(f).takeIf { it > 0 }?.let { "Back ×$it" }
+            col.addView(Cinema.text(activity, listOfNotNull(sub, f.year?.toString(), backs).joinToString(" · "), 22, if (isTarget) Cinema.TEAL else Cinema.MUTED),
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 4) })
             if (i > 0) strip.addView(Cinema.text(activity, if (i < run.route.size) "→" else "⋯", 64, Cinema.TEAL, serif = true).apply { gravity = Gravity.CENTER },
                 LinearLayout.LayoutParams(Cinema.px(activity, 112), Cinema.px(activity, 450)))
             strip.addView(col, LinearLayout.LayoutParams(-2, -2))
         }
-        val scroller = CalmHorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false; clipChildren = false; clipToPadding = false; isFocusable = false; addView(strip) }
+        scroller.addView(strip)
         page.addView(scroller, FrameLayout.LayoutParams(-1, -2).apply { topMargin = Cinema.px(activity, 392) })
 
         val buttons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
@@ -280,8 +290,13 @@ class FilmLinkGame(
         val c = PosterCard(activity, w, h, titled = false)
         c.contentDescription = f.name
         c.isFocusable = false; c.isClickable = false
-        if (f.posterPath == null) c.placeholder(f.name)
-        else images.loadShadedPoster("https://image.tmdb.org/t/p/w342${f.posterPath}", emptyMap(), 332, tag) { b -> c.setShadedPoster(b) }
+        // The start film can arrive without a TMDB poster; the page it began on still has one, so use that before initials.
+        val own = if (f.posterPath == null && f.tmdbId == pair.start.tmdbId) startPoster else null
+        when {
+            f.posterPath != null -> images.loadShadedPoster("https://image.tmdb.org/t/p/w342${f.posterPath}", emptyMap(), 332, tag) { b -> c.setShadedPoster(b) }
+            own != null -> images.loadShadedPoster(own.first, own.second, 332, tag) { b -> c.setShadedPoster(b) }
+            else -> c.placeholder(f.name)
+        }
         return c
     }
 

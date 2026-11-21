@@ -157,6 +157,21 @@ class FilmLinkTest {
         assertTrue(r.back()); assertEquals(1, r.backs); assertEquals(1, r.hops)
     }
 
+    @Test fun aFilmBackedOutOfStaysVisitedAndRemembersHowOftenBackLeftIt() {
+        val r = run()
+        assertTrue(r.hasVisited(film(1)))      // the start counts as landed on
+        assertFalse(r.hasVisited(film(2)))
+        r.offer(listOf(film(2), film(3))); r.hop(film(2))
+        assertTrue(r.hasVisited(film(2))); assertEquals(0, r.backsFrom(film(2)))
+        r.back()                                // out of the dead end
+        assertFalse(r.isOnRoute(film(2)))
+        assertTrue(r.hasVisited(film(2))); assertEquals(1, r.backsFrom(film(2)))
+        r.offer(listOf(film(2), film(3))); r.hop(film(2)); r.back()   // and again
+        assertEquals(2, r.backsFrom(film(2))); assertEquals(2, r.backs)
+        assertEquals(0, r.backsFrom(film(1))); assertEquals(0, r.backsFrom(film(3)))   // only the film left counts
+        assertFalse(r.hasVisited(film(3)))
+    }
+
     @Test fun afterBackAFilmLeftTheRouteSoHoppingToItAgainCountsAgain() {
         val r = run()
         r.offer(listOf(film(2), film(3))); r.hop(film(2)); r.back()
