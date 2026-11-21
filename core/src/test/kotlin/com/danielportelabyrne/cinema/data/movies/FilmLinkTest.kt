@@ -317,3 +317,59 @@ class FilmLinkChosenPairsTest {
         assertNull(FilmLinkRules.matchFilm(listOf(sug(3, "Heat", 2022, Kind.SHOW)), "Heat", 2022))   // series are not films
     }
 }
+
+class FilmLinkPlantTest {
+    private fun sug(id: Long) = Suggestion(id, Kind.MOVIE, "T$id", 2000 + (id % 20).toInt(), null, "/p$id", null, emptyList(), null, false)
+    private fun film(id: Long) = LinkFilm(id, "T$id", 2000 + (id % 20).toInt(), "/p$id", null, null)
+
+    /** A line 1-2-3-4-5-6 (both ways) and a target 99 that nothing recommends, though it recommends 3, 4 and 5 itself. */
+    private fun graph(): CachedFilmGraph {
+        val edges = HashMap<Long, MutableList<Long>>()
+        (1L..5L).forEach { a -> edges.getOrPut(a) { mutableListOf() }.add(a + 1); edges.getOrPut(a + 1) { mutableListOf() }.add(a) }
+        edges[99] = mutableListOf(3, 4, 5)
+        return CachedFilmGraph { id -> edges[id]?.map(::sug) }
+    }
+
+    @Test fun aTargetWithNoRouteIsPlantedAtFilmsItIsAssociatedWith() {
+        val g = graph()
+        assertNull(FilmLinkPairs.check(film(1), film(99), g))
+        val pair = FilmLinkPairs.plant(film(1), film(99), g, Random(3))
+        assertNotNull(pair)
+        val sites = g.plants.keys
+        assertTrue(sites.size >= FilmLinkPairs.MIN_PLANTS - 0 && sites.all { it in setOf(3L, 4L, 5L, 2L, 6L) })
+        assertTrue(sites.containsAll(setOf(3L)))   // reachable and associated
+        assertTrue(pair!!.shortest in 2..FilmLinkPairs.PLANT_DEPTH + 1)
+        // and the planted game now has a route, of exactly the hops reported
+        assertEquals(pair.shortest, FilmLinkPairs.check(film(1), film(99), g))
+    }
+
+    @Test fun manyFilmsLeadToThePlantSoOneWrongTurnIsNotTheEnd() {
+        val g = graph()
+        FilmLinkPairs.plant(film(1), film(99), g, Random(1))
+        // from any film at the planted depth the target is within a hop or two
+        assertTrue(g.plants.size >= 3)
+        assertTrue(FilmLinkPairs.route(film(1), film(99), g)!!.last().tmdbId == 99L)
+    }
+
+    @Test fun plantsLeaveTheRecommendationsAloneAndCanBeTakenAway() {
+        val g = graph()
+        val before = g.neighbours(3)!!.map { it.tmdbId }
+        FilmLinkPairs.plant(film(1), film(99), g, Random(2))
+        assertTrue(g.neighbours(3)!!.any { it.tmdbId == 99L })
+        g.unplant()
+        assertEquals(before, g.neighbours(3)!!.map { it.tmdbId })
+        assertNull(FilmLinkPairs.check(film(1), film(99), g))
+    }
+
+    @Test fun nothingIsPlantedWhenTheStartIsCutOff() {
+        val g = CachedFilmGraph { _ -> emptyList() }
+        assertNull(FilmLinkPairs.plant(film(1), film(99), g, Random(1)))
+    }
+
+    @Test fun aHintNamesTheNextFilmOnTheShortestRoute() {
+        val g = graph(); g.plant(3, film(99))
+        val route = FilmLinkPairs.route(film(1), film(99), g)!!
+        assertEquals(listOf(2L, 3L, 99L), route.map { it.tmdbId })
+        assertNull(FilmLinkPairs.route(film(1), film(50), g))
+    }
+}

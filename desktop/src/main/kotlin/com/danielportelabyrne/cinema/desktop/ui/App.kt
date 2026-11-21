@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.input.key.Key
@@ -115,7 +116,8 @@ class Dispatcher(private val model: CinemaModel, val hub: FocusHub) {
         }
         // The stream loading screen has nothing to select: only Back, which cancels.
         if (model.streamLoading != null) { if (action == NavAction.BACK) model.back(); return }
-        if (model.keyboard == null && model.sheet == null && screenKey(action)) return
+        if (model.keyboard == null && model.sheet == null && !model.filmLink.menuOpen && model.filmLink.onKey(action)) return
+        if (model.keyboard == null && model.sheet == null && !model.filmLink.menuOpen && screenKey(action)) return
         when (action) {
             NavAction.UP -> move(FocusDirection.Up)
             NavAction.DOWN -> move(FocusDirection.Down)
@@ -202,11 +204,16 @@ fun CinemaApp(model: CinemaModel, dispatcher: Dispatcher) {
     CompositionLocalProvider(LocalFocusHub provides hub, LocalImages provides model.images) {
         DeckScale {
             Box(Modifier.fillMaxSize().focusRequester(rootFocus).focusTarget()) {
-                when (val route = model.route) {
-                    Route.Setup -> SetupScreen(model)
-                    Route.Browse -> BrowseScreen(model, art)
-                    is Route.Title -> TitleScreen(model, route, art)
+                // Under the Film Link menu or summary the page is out of reach of the D-pad.
+                val overlay = model.filmLink.menuOpen || model.filmLink.game?.finished == true
+                Box(Modifier.fillMaxSize().then(if (overlay) Modifier.focusProperties { canFocus = false } else Modifier)) {
+                    when (val route = model.route) {
+                        Route.Setup -> SetupScreen(model)
+                        Route.Browse -> BrowseScreen(model, art)
+                        is Route.Title -> TitleScreen(model, route, art)
+                    }
                 }
+                FilmLinkLayer(model)
                 PlayerOverlay(model)
                 model.keyboard?.let { req -> KeyboardSheet(req) { req.onDone(it) } }
                 if (model.confirmQuit) Dialog("Quit Cinema?", null, "Quit" to { model.quit() }, "Stay" to { model.confirmQuit = false })

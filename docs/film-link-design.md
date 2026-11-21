@@ -119,3 +119,19 @@ the Cinema language has no outlines.
 
 The mockup shows Alien, Blade Runner, Blade Runner 2049, Arrival. Those titles and links are illustrative and have not
 been checked against real TMDB recommendations. The real-data run above is what proves a valid route.
+
+## On the Steam Deck (desktop)
+
+The same Easter egg on a film's page (D-pad or keyboard arrows, each press within 2.5 seconds). The rules are core's, shared
+with the TV; the screens are Compose (`desktop/.../FilmLinkModel.kt`, `ui/FilmLinkUi.kt`): the start menu, the game on the
+app's own title pages with the HUD, a Hint button and the summary.
+
+- **Random film** is a button with a shuffle icon in the Start and Finish rows. Pressing it runs through random poster
+  images on that card and lands on a film; press again to reshuffle. Each card shows its film's name and a short
+  description, and the HUD's target panel shows the target's description too, so a film you don't know can still be
+  imagined.
+- **No route found** (a start and a finish both chosen): the finish is *planted* (`FilmLinkPairs.plant`) as a connection of
+  3 to 5 films reachable from the start, 1 to 3 hops out, preferring films the finish's own recommendations include, then
+  the nearest in release year. Several films, not one, so a single wrong turn can't make the game unwinnable. The plants
+  live only in the game's own graph copy (`CachedFilmGraph.plant`), never in Seerr or TMDB, and are cleared when the game
+  ends (kept for "Same pair, new try"). **Hint** names the next film on the shortest route (`FilmLinkPairs.route`).

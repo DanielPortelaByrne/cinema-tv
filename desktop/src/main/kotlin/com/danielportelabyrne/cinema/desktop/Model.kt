@@ -116,6 +116,10 @@ sealed class Route {
         val rows = HashMap<String, LazyListState>()
         /** Bumped to redraw the page's buttons and seasons (after a request, a delete, playback). */
         var version by mutableIntStateOf(0)
+        /** Set when the page belongs to a Film Link game: the film it shows, and the films it connects to once fetched. */
+        var linkFilm by mutableStateOf<com.danielportelabyrne.cinema.data.movies.LinkFilm?>(null)
+        var linkRow by mutableStateOf<List<com.danielportelabyrne.cinema.data.movies.LinkFilm>?>(null)
+        var linkFailed by mutableStateOf(false)
     }
 }
 
@@ -196,6 +200,8 @@ class CinemaModel(
     /** Names of the connected game controllers, for Settings. */
     var pads: () -> List<String> = { emptyList() }
     var onQuit: () -> Unit = {}
+
+    val filmLink = FilmLinkController(this)
 
     val setup = SetupModel(this)
     /** Cinema updating itself from its GitHub releases (see DeckUpdates). */
@@ -314,6 +320,8 @@ class CinemaModel(
 
     /** Opens a title's page (`openDetail`). [related] are the titles of the row it came from, for "More like this". */
     fun open(e: Entry, related: List<Title> = emptyList()) {
+        // Choosing a Film Link finish: the card picks the film instead of opening it.
+        if (filmLink.pick != null) { filmLink.picked(e); return }
         stack += Route.Title(e, related)
         // A library copy may have watch state newer than the list it came from.
         e.library?.let { lib -> bg({ client.item(lib.id) }) { fresh -> if (fresh != null) e.library = fresh } }
@@ -328,6 +336,9 @@ class CinemaModel(
         when {
             keyboard != null -> keyboard = null
             sheet != null -> sheet = null
+            filmLink.menuOpen -> filmLink.cancelMenu()
+            filmLink.game != null -> filmLink.back()
+            filmLink.pick != null -> { filmLink.pick = null; return back() }
             streamLoading != null -> closeStreamLoading()
             confirmQuit -> confirmQuit = false
             playerState is PlayerState.Failed -> playerState = PlayerState.Idle
