@@ -281,10 +281,13 @@ class QueueClient(private val seerr: SeerrClient, platform: Platform) {
 private val arrReachability = ConcurrentHashMap<String, Reachability>()
 private const val ARR_BACKOFF_MS = 60_000L
 
+/** Why the last [arrCall] to fail did, in a few words, so a caller can tell the user more than "couldn't". Null before any failure. */
+@Volatile internal var arrLastFailure: String? = null
+
 /** One call to Sonarr or Radarr with their key. Returns the body (or "{}" for an empty one), or null on any failure. */
 internal fun arrCall(c: SonarrConfig, method: String, path: String, body: String? = null): String? {
     val gate = arrReachability.getOrPut(c.baseUrl) { Reachability(ARR_BACKOFF_MS) }
-    if (gate.backingOff) return null
+    if (gate.backingOff) { arrLastFailure = "Sonarr was unreachable a moment ago"; return null }
     var connected = false
     val at = Perf.now()
     return try {
@@ -297,9 +300,15 @@ internal fun arrCall(c: SonarrConfig, method: String, path: String, body: String
             if (body != null) conn.outputStream.use { it.write(body.toByteArray()) }
             val code = conn.responseCode
             Perf.took("arr $method ${path.substringBefore('?')} -> $code", Perf.now() - at)
-            if (code in 200..299) (conn.inputStream.bufferedReader().use { it.readText() }.ifBlank { "{}" }) else { Log.w(TAG, "$method ${path.substringBefore('?')} -> HTTP $code"); null }
+            if (code in 200..299) (conn.inputStream.bufferedReader().use { it.readText() }.ifBlank { "{}" }) else {
+                Log.w(TAG, "$method ${path.substringBefore('?')} -> HTTP $code")
+                val said = try { conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(120)?.replace(Regex("\\s+"), " ") } catch (_: Exception) { null }
+                arrLastFailure = "HTTP $code" + if (said.isNullOrBlank()) "" else ": $said"
+                null
+            }
         }
     } catch (e: Exception) {
+        arrLastFailure = "${e.javaClass.simpleName} reaching Sonarr"
         val unreachable = gate.failed(e, duringConnect = !connected)
         Log.w(TAG, "$method ${c.baseUrl}${path.substringBefore('?')} failed: ${e.javaClass.simpleName} after ${Perf.now() - at} ms" +
             if (unreachable) " (unreachable, skipped for ${ARR_BACKOFF_MS / 1000} s)" else "")
