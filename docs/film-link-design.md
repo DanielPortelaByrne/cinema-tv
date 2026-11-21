@@ -130,8 +130,10 @@ app's own title pages with the HUD, a Hint button and the summary.
   images on that card and lands on a film; press again to reshuffle. Each card shows its film's name and a short
   description, and the HUD's target panel shows the target's description too, so a film you don't know can still be
   imagined.
-- **No route found** (a start and a finish both chosen): the finish is *planted* (`FilmLinkPairs.plant`) as a connection of
-  3 to 5 films reachable from the start, 1 to 3 hops out, preferring films the finish's own recommendations include, then
-  the nearest in release year. Several films, not one, so a single wrong turn can't make the game unwinnable. The plants
-  live only in the game's own graph copy (`CachedFilmGraph.plant`), never in Seerr or TMDB, and are cleared when the game
-  ends (kept for "Same pair, new try"). **Hint** names the next film on the shortest route (`FilmLinkPairs.route`).
+- **No route found** (a start and a finish both chosen): the finish is *planted* (`FilmLinkPairs.plant`) on every page
+  where it makes sense: the "more films like this" row of every film in the finish's own TMDB recommendations, wherever
+  the player meets one, however far from the start, so every player has the same chance to stumble on it. A page that
+  already lists it is not planted again, and the start page never is (so the game is at least 2 hops). If none of those
+  films is within 3 hops of the start, 3 nearby films (nearest in release year) are planted too. The plants live only in
+  the game's own graph copy (`CachedFilmGraph.plant`), never in Seerr or TMDB, and are cleared when the game ends (kept
+  for "Same pair, new try"). **Hint** names the next film on the shortest route (`FilmLinkPairs.route`).

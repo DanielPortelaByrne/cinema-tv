@@ -373,3 +373,47 @@ class FilmLinkPlantTest {
         assertNull(FilmLinkPairs.route(film(1), film(50), g))
     }
 }
+
+class FilmLinkPlantEverywhereTest {
+    private fun sug(id: Long) = Suggestion(id, Kind.MOVIE, "T$id", 2000, null, "/p$id", null, emptyList(), null, false)
+    private fun film(id: Long) = LinkFilm(id, "T$id", 2000, "/p$id", null, null)
+
+    /** A line 1-2-...-8 both ways; target 99 recommends 3 and 7 (7 is five hops out, beyond the planting depth). */
+    private fun graph(extra: Map<Long, List<Long>> = emptyMap()): CachedFilmGraph {
+        val edges = HashMap<Long, MutableList<Long>>()
+        (1L..7L).forEach { a -> edges.getOrPut(a) { mutableListOf() }.add(a + 1); edges.getOrPut(a + 1) { mutableListOf() }.add(a) }
+        edges[99] = mutableListOf(3, 7)
+        extra.forEach { (k, v) -> edges.getOrPut(k) { mutableListOf() }.addAll(v) }
+        return CachedFilmGraph { id -> edges[id]?.map(::sug) }
+    }
+
+    @Test fun theTargetIsOfferedOnEveryPageItIsReallyAssociatedWithNotJustOne() {
+        val g = graph()
+        FilmLinkPairs.plant(film(1), film(99), g, Random(1))
+        assertEquals(setOf(3L, 7L), g.plants.keys)
+        assertTrue(g.neighbours(3)!!.any { it.tmdbId == 99L })
+        assertTrue(g.neighbours(7)!!.any { it.tmdbId == 99L })   // however far the player has wandered
+        assertFalse(g.neighbours(4)!!.any { it.tmdbId == 99L })  // never on a page it has no real connection to
+    }
+
+    @Test fun aPageThatAlreadyListsTheTargetIsNotPlantedAgain() {
+        val g = graph(mapOf(3L to listOf(99L)))
+        FilmLinkPairs.plant(film(1), film(99), g, Random(1))
+        assertEquals(1, g.neighbours(3)!!.count { it.tmdbId == 99L })
+    }
+
+    @Test fun theStartPageIsNeverPlantedSoTheGameIsAtLeastTwoHops() {
+        val g = graph(mapOf(99L to listOf(1L)))   // 99 also recommends the start itself
+        val pair = FilmLinkPairs.plant(film(1), film(99), g, Random(1))!!
+        assertFalse(1L in g.plants.keys)
+        assertTrue(pair.shortest >= 2)
+    }
+
+    @Test fun aNearbyAssociatedFilmIsPlantedAlongsideFarOnes() {
+        val g = graph()   // 99 is associated with 3 and 7; start at 8, next to 7
+        val pair = FilmLinkPairs.plant(film(8), film(99), g, Random(1))
+        assertNotNull(pair)
+        assertTrue(g.plants.keys.containsAll(setOf(3L, 7L)))
+        assertTrue(pair!!.shortest in 2..FilmLinkPairs.PLANT_DEPTH + 1)
+    }
+}
