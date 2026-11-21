@@ -59,6 +59,7 @@ class FilmLinkGame(
 
     private var layer: Layer? = null
     private var hudHops: TextView? = null
+    private var hudBacks: TextView? = null
     private var hudTime: TextView? = null
     private var trailHolder: FrameLayout? = null
     private var summary: View? = null
@@ -95,7 +96,7 @@ class FilmLinkGame(
         epoch++; images.cancel(tag); ui.removeCallbacksAndMessages(null)
         hideEnd()
         layer?.let { (it.parent as? ViewGroup)?.removeView(it) }
-        layer = null; hudHops = null; hudTime = null; trailHolder = null
+        layer = null; hudHops = null; hudBacks = null; hudTime = null; trailHolder = null
     }
 
     /** The page for [film] is on screen: show the route so far and the numbers. */
@@ -125,8 +126,8 @@ class FilmLinkGame(
         return outcome
     }
 
-    /** Back: the previous film (free), or null at the start. */
-    fun stepBack(): LinkFilm? = if (run.back()) run.current else null
+    /** Back: the previous film (tallied as a back press, no hop refunded), or null at the start. */
+    fun stepBack(): LinkFilm? = if (run.back()) run.current.also { updateHud() } else null
 
     fun giveUp() { run.giveUp(); stopTick(); updateHud() }
 
@@ -165,6 +166,11 @@ class FilmLinkGame(
         hops.addView(Cinema.text(activity, "Hops", 18, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
         hudHops = Cinema.text(activity, "0", 64, Cinema.CREAM, serif = true, weight = 600).also { hops.addView(it) }
         panel.addView(hops)
+        divider()
+        val backs = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        backs.addView(Cinema.text(activity, "Backs", 18, Cinema.MUTED, weight = 600, tracking = 0.2f, caps = true))
+        hudBacks = Cinema.text(activity, "0", 64, Cinema.CREAM, serif = true, weight = 600).also { backs.addView(it) }
+        panel.addView(backs)
         if (run.timed) {
             divider()
             val time = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
@@ -177,6 +183,7 @@ class FilmLinkGame(
 
     private fun updateHud() {
         hudHops?.text = run.hops.toString()
+        hudBacks?.text = run.backs.toString()
         hudTime?.text = clock(run.elapsedMs())
     }
 
@@ -227,6 +234,7 @@ class FilmLinkGame(
             stats.addView(box, LinearLayout.LayoutParams(-2, -2).apply { if (stats.childCount > 0) marginStart = Cinema.px(activity, 28) })
         }
         stat("Hops", run.hops.toString())
+        stat("Backs", run.backs.toString())
         if (run.timed) stat("Time", clock(run.elapsedMs()))
         page.addView(stats, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { rightMargin = Cinema.px(activity, 96); topMargin = Cinema.px(activity, 90) })
 

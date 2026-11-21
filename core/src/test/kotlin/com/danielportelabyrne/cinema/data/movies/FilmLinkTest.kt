@@ -149,6 +149,14 @@ class FilmLinkTest {
         assertFalse(r.back())   // already at the start
     }
 
+    @Test fun everyBackThatLeavesAFilmIsTalliedButNotOnesThatCannotGoBack() {
+        val r = run()
+        assertEquals(0, r.backs)
+        assertFalse(r.back()); assertEquals(0, r.backs)   // at the start there is nothing to go back to
+        r.offer(listOf(film(2))); r.hop(film(2)); assertEquals(0, r.backs)
+        assertTrue(r.back()); assertEquals(1, r.backs); assertEquals(1, r.hops)
+    }
+
     @Test fun afterBackAFilmLeftTheRouteSoHoppingToItAgainCountsAgain() {
         val r = run()
         r.offer(listOf(film(2), film(3))); r.hop(film(2)); r.back()
