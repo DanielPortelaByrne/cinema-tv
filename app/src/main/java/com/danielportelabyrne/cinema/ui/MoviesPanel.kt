@@ -34,6 +34,7 @@ import com.danielportelabyrne.cinema.data.movies.BroadcastPlaylist
 import com.danielportelabyrne.cinema.data.movies.ChannelGuide
 import com.danielportelabyrne.cinema.data.movies.ChannelNames
 import com.danielportelabyrne.cinema.data.movies.ChannelOrder
+import com.danielportelabyrne.cinema.data.movies.ChannelSurf
 import com.danielportelabyrne.cinema.data.movies.ChannelPreload
 import com.danielportelabyrne.cinema.data.movies.ListFocus
 import com.danielportelabyrne.cinema.data.movies.ScheduleKnowledge
@@ -4559,6 +4560,17 @@ class MoviesPanel(
 
     fun onPlaylistResult(result: Int) {
         val run = broadcast ?: return
+        if (result == PlayerActivity.PLAYLIST_CHANNEL_UP || result == PlayerActivity.PLAYLIST_CHANNEL_DOWN) {
+            // CH+ / CH-: the programme left is not finished, so it is not counted and the channel's own order is untouched.
+            run.playing = null
+            val to = ChannelSurf.destination(playlists.all().map { it.id }, run.playlistId, up = result == PlayerActivity.PLAYLIST_CHANNEL_UP)
+            if (to == null) { ui.post { playNextSlot(run) }; return }
+            val next = BroadcastRun(to, emptyList<PlaylistSlot>().iterator(), run.focus, queueFor(to))
+            broadcast = next
+            playlists.lastTuned = to
+            ui.post { playNextSlot(next) }
+            return
+        }
         if (result == Activity.RESULT_OK || result == PlayerActivity.PLAYLIST_UNAVAILABLE || result == PlayerActivity.PLAYLIST_SKIPPED) {
             if (result == Activity.RESULT_OK) run.playing?.let { run.queue?.completed(it) }
             run.playing = null
@@ -4625,7 +4637,8 @@ class MoviesPanel(
                 }
                 val episode = scheduled.episode
                 val label = if (episode == null) slot.title.name else "${slot.title.name} · S${episode.season} E${episode.number}"
-                val playback = PlaylistPlayback(run.playlistId, slot.id, episode, playlist?.name, channel?.peek(slots)?.title?.name, number, firstProgramme)
+                val canSurf = channel != null && playlists.all().size > 1
+                val playback = PlaylistPlayback(run.playlistId, slot.id, episode, playlist?.name, channel?.peek(slots)?.title?.name, number, firstProgramme, canSurf)
                 run.playing = playback
                 run.tunedIn = true
                 playlists.queue(playback)
