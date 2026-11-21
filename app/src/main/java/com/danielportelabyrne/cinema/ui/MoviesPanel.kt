@@ -5125,20 +5125,31 @@ class MoviesPanel(
         e.title.imdbId?.let { com.danielportelabyrne.cinema.data.movies.StreamProgress.forSeries(streamProgress(), it) }.orEmpty()
 
     /** Deletes one episode's file: through Sonarr when it holds the series, else from Jellyfin. [done] runs on the UI thread. */
-    private fun deleteEpisodeFiles(tmdb: Long?, season: Int, number: Int, mine: JellyfinItem?, done: (Boolean) -> Unit) {
+    private fun deleteEpisodeFiles(tmdb: Long?, season: Int, number: Int, mine: JellyfinItem?, done: (Boolean, String?) -> Unit) {
         slowPool.execute {
-            val managed = tmdb != null && sonarr.managesSeries(tmdb) && sonarr.deleteEpisodeFiles(tmdb, season, listOf(number))
-            val removed = managed || (mine != null && jellyfin.deleteItem(mine.id))
+            // What went wrong, step by step, so the message can say more than "couldn't".
+            val why = ArrayList<String>()
+            val managed = when {
+                tmdb == null -> { why += "this title has no TMDB id"; false }
+                !sonarr.managesSeries(tmdb) -> { why += sonarr.whyNotManaged(); false }
+                sonarr.deleteEpisodeFiles(tmdb, season, listOf(number)) -> true
+                else -> { why += sonarr.deleteFailure ?: "Sonarr said no"; false }
+            }
+            val removed = managed || when {
+                mine == null -> { why += "Jellyfin doesn't list this episode"; false }
+                jellyfin.deleteItem(mine.id) -> true
+                else -> { why += "Jellyfin wouldn't delete it"; false }
+            }
             if (removed) jellyfin.refreshLibrary()
-            activity.runOnUiThread { done(removed) }
+            activity.runOnUiThread { done(removed, if (removed) null else why.joinToString("; ")) }
         }
     }
 
     private fun confirmDeleteEpisode(e: Entry, tmdb: Long?, season: Int, number: Int, mine: JellyfinItem?, after: (Boolean) -> Unit) {
         CinemaConfirm.show(infoSheet, activity, "DELETE", "${e.title.name} · S$season E$number",
             "Removes this episode's file from disk. The rest of the season stays. This cannot be undone.", "Delete this episode") {
-            deleteEpisodeFiles(tmdb, season, number, mine) { removed ->
-                CinemaToast.show(activity, if (removed) "Deleted S$season E$number" else "Couldn't delete it right now", Toast.LENGTH_LONG)
+            deleteEpisodeFiles(tmdb, season, number, mine) { removed, why ->
+                CinemaToast.show(activity, if (removed) "Deleted S$season E$number" else "Couldn't delete it: $why", Toast.LENGTH_LONG)
                 after(removed)
             }
         }
@@ -5151,16 +5162,29 @@ class MoviesPanel(
             slowPool.execute {
                 val here = owned.filter { it.season == season.number }
                 val numbers = (here.mapNotNull { it.episode } + known).distinct()
-                if (tmdb != null && sonarr.managesSeries(tmdb)) sonarr.deleteEpisodeFiles(tmdb, season.number, numbers)
-                here.forEach { jellyfin.deleteItem(it.id) }
-                val request = if (tmdb != null && seerr.isSignedIn) seerr.requests().firstOrNull { it.kind == Kind.SHOW && it.tmdbId == tmdb && it.seasons == listOf(season.number) } else null
+                val why = ArrayList<String>()
+                // Sonarr first (it stops wanting the episodes too), then whatever Jellyfin still lists.
+                val viaSonarr = if (tmdb != null && sonarr.managesSeries(tmdb)) {
+                    sonarr.deleteEpisodeFiles(tmdb, season.number, numbers).also { ok -> if (!ok) why += sonarr.deleteFailure ?: "Sonarr said no" }
+                } else { why += if (tmdb == null) "this title has no TMDB id" else sonarr.whyNotManaged(); false }
+                val jellyfinLeft = here.count { !jellyfin.deleteItem(it.id) }
+                if (jellyfinLeft > 0) why += "Jellyfin wouldn't delete $jellyfinLeft of ${here.size}"
+                // Done when Sonarr cleared every file, or Sonarr isn't involved and Jellyfin removed everything it listed.
+                val filesGone = (viaSonarr || here.isNotEmpty()) && jellyfinLeft == 0
+                val request = if (filesGone && tmdb != null && seerr.isSignedIn) seerr.requests().firstOrNull { it.kind == Kind.SHOW && it.tmdbId == tmdb && it.seasons == listOf(season.number) } else null
                 val cancelled = request?.let { seerr.cancelRequest(it.id) } ?: true
                 jellyfin.refreshLibrary()
                 seerr.forgetTitles()
                 activity.runOnUiThread {
-                    season.availability = Availability.NONE
-                    if (tmdb != null) deletedSeasons += tmdb to season.number
-                    CinemaToast.show(activity, if (cancelled) "Deleted ${season.name}" else "Deleted ${season.name}, but its request is still there", Toast.LENGTH_LONG)
+                    if (filesGone) {
+                        season.availability = Availability.NONE
+                        if (tmdb != null) deletedSeasons += tmdb to season.number
+                    }
+                    CinemaToast.show(activity, when {
+                        !filesGone -> "Couldn't delete ${season.name}: ${why.joinToString("; ")}"
+                        cancelled -> "Deleted ${season.name}"
+                        else -> "Deleted ${season.name}, but its request is still there"
+                    }, Toast.LENGTH_LONG)
                     after()
                 }
             }

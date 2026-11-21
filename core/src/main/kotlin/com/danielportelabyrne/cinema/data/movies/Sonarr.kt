@@ -183,21 +183,36 @@ class SonarrClient(private val seerr: SeerrClient) {
     /** Whether Sonarr holds this series, so its episodes can be deleted through Sonarr. */
     fun managesSeries(tmdbId: Long): Boolean = config()?.let { seriesId(it, tmdbId) } != null
 
+    /** Why [managesSeries] is false, for a message: Sonarr's address isn't known to this TV, or Sonarr has no such series. */
+    fun whyNotManaged(): String = if (config() == null) "this TV can't find Sonarr's address" else "Sonarr has no series with this TMDB id"
+
     /**
      * Deletes the files of the given episodes of one season and stops Sonarr wanting them, so they are not fetched again.
      * True when every file that was there is gone (an episode with no file counts as gone). Never throws.
      */
     fun deleteEpisodeFiles(tmdbId: Long, season: Int, numbers: List<Int>): Boolean {
-        val c = config() ?: return false
-        val id = seriesId(c, tmdbId) ?: return false
-        val json = call(c, "GET", "/api/v3/episode?seriesId=$id") ?: return false
+        deleteFailure = null
+        fun fail(why: String): Boolean { deleteFailure = why; return false }
+        fun failed(step: String) = fail("$step: ${arrLastFailure ?: "no answer"}")
+        val c = config() ?: return fail("Sonarr's address isn't known to this TV")
+        val id = seriesId(c, tmdbId) ?: return fail("Sonarr doesn't list this series")
+        val json = call(c, "GET", "/api/v3/episode?seriesId=$id") ?: return failed("Sonarr's episode list")
         val files = SonarrApi.episodeFiles(json, season, numbers)
         episodeLists.forget("${c.baseUrl}#$id")
         if (files.isEmpty()) return true
         // Unmonitor first: a file deleted while still wanted would be searched for and grabbed again.
-        if (!unwant(files.map { it.first })) return false
-        return files.all { (_, fileId) -> call(c, "DELETE", "/api/v3/episodefile/$fileId") != null }
+        if (!unwant(files.map { it.first })) return failed("Sonarr wouldn't stop wanting it")
+        var gone = 0
+        for ((_, fileId) in files) {
+            if (call(c, "DELETE", "/api/v3/episodefile/$fileId") == null) return failed("Sonarr wouldn't delete the file" + if (gone > 0) " ($gone of ${files.size} done)" else "")
+            gone++
+        }
+        return true
     }
+
+    /** Why the last [deleteEpisodeFiles] returned false, for the message the viewer sees. Null after a success. */
+    @Volatile var deleteFailure: String? = null
+        private set
 
     /** Stops wanting the given episodes of one season (an episode asked for before it aired). */
     fun unwantEpisodes(tmdbId: Long, season: Int, numbers: List<Int>): Boolean {
