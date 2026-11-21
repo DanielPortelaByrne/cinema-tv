@@ -34,6 +34,17 @@ object FilmLinkRules {
     /** The films a TMDB recommendation list connects [of] to: films only, never itself, no repeats, the first [ROW_SIZE]. */
     fun connected(of: Long, suggestions: List<Suggestion>): List<LinkFilm> =
         suggestions.filter { it.kind == Kind.MOVIE && it.tmdbId != of }.distinctBy { it.tmdbId }.take(ROW_SIZE).map(LinkFilm::of)
+
+    /**
+     * The film in a Seerr search for [name] that the player meant: a film whose title matches (ignoring case) and whose
+     * year is within one of [year] when both are known; else the first film whose title matches; else null.
+     */
+    fun matchFilm(results: List<Suggestion>, name: String, year: Int?): LinkFilm? {
+        val films = results.filter { it.kind == Kind.MOVIE }
+        val named = films.filter { it.name.equals(name.trim(), ignoreCase = true) }
+        val pick = named.firstOrNull { year != null && it.year != null && kotlin.math.abs(it.year - year) <= 1 } ?: named.firstOrNull()
+        return pick?.let(LinkFilm::of)
+    }
 }
 
 /** A start and a target at least [shortest] hops apart by routes found while checking (an upper bound on the true shortest). */
@@ -67,6 +78,41 @@ object FilmLinkPairs {
         }
         return null
     }
+
+    /**
+     * A random target [minHops]..[maxHops] hops from a start the player is already on (the film whose page they turned
+     * the game on from), found like [generate]. Null when nothing that far is connected.
+     */
+    fun pickTarget(start: LinkFilm, graph: FilmGraph, random: Random, minHops: Int = MIN_HOPS, maxHops: Int = MAX_HOPS, budget: Int = CALL_BUDGET): LinkPair? {
+        val depths = explore(start, graph, maxHops, budget)
+        val candidates = depths.filter { (film, depth) -> depth >= minHops && film.tmdbId != start.tmdbId }.keys.toList()
+        if (candidates.isEmpty()) return null
+        val target = candidates[random.nextInt(candidates.size)]
+        return LinkPair(start, target, depths.getValue(target))
+    }
+
+    /**
+     * A random start from which the player's chosen [target] can be reached in [minHops]..[maxHops] hops. Films near the
+     * target (by the same connections) are the candidates, and each is checked going forward, so the pair is solvable by
+     * construction. At most [attempts] candidates are checked. Null when none works.
+     */
+    fun pickStart(target: LinkFilm, graph: FilmGraph, random: Random, minHops: Int = MIN_HOPS, maxHops: Int = MAX_HOPS, budget: Int = CALL_BUDGET, attempts: Int = ATTEMPTS): LinkPair? {
+        val near = explore(target, graph, maxHops, budget)
+        val candidates = near.filter { (film, depth) -> depth >= minHops && film.tmdbId != target.tmdbId }.keys.shuffled(random).take(attempts)
+        for (candidate in candidates) {
+            val forward = explore(candidate, graph, maxHops, budget)
+            val hops = forward.entries.firstOrNull { it.key.tmdbId == target.tmdbId }?.value ?: continue
+            if (hops >= minHops) return LinkPair(candidate, target, hops)
+        }
+        return null
+    }
+
+    /**
+     * How many hops a quick look finds from [start] to a [target] the player chose, or null when it finds no route (it
+     * may still exist: the look is bounded to [budget] lookups and [maxHops] hops).
+     */
+    fun check(start: LinkFilm, target: LinkFilm, graph: FilmGraph, maxHops: Int = MAX_HOPS + 1, budget: Int = CALL_BUDGET + 10): Int? =
+        explore(start, graph, maxHops, budget).entries.firstOrNull { it.key.tmdbId == target.tmdbId }?.value?.takeIf { it > 0 }
 
     /** Every film reached from [start] within [maxDepth] hops, with the fewest hops found. At most [budget] lookups. */
     internal fun explore(start: LinkFilm, graph: FilmGraph, maxDepth: Int, budget: Int): Map<LinkFilm, Int> {

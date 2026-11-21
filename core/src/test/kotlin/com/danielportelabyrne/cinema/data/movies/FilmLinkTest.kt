@@ -254,3 +254,66 @@ class FilmLinkSourceTest {
         assertTrue(FilmLinkSeeds.collect({ null }, kotlin.random.Random(1)).isEmpty())
     }
 }
+
+class FilmLinkChosenPairsTest {
+    private fun film(id: Long) = LinkFilm(id, "Film $id", 2000, null, null, null)
+
+    /** A graph where every connection works both ways, like most recommendation graphs: edges as given plus their reverse. */
+    private class TwoWay(edges: List<Pair<Long, Long>>) : FilmGraph {
+        private val map = HashMap<Long, MutableList<Long>>().also { m -> edges.forEach { (a, b) -> m.getOrPut(a) { mutableListOf() }.add(b); m.getOrPut(b) { mutableListOf() }.add(a) } }
+        var calls = 0
+        override fun neighbours(id: Long): List<LinkFilm>? { calls++; return map[id].orEmpty().map { LinkFilm(it, "Film $it", 2000, null, null, null) } }
+    }
+
+    // 1-2-3-4-5-6-7, a straight line
+    private val line = TwoWay((1L..6L).map { it to it + 1 })
+
+    @Test fun aTargetIsPickedTwoToFourHopsFromTheStartTheyAreOn() {
+        val pair = FilmLinkPairs.pickTarget(film(4), line, Random(5))
+        assertNotNull(pair)
+        assertEquals(4L, pair!!.start.tmdbId)
+        assertTrue(pair.shortest in 2..4)
+        assertTrue(pair.target.tmdbId !in setOf(3L, 5L, 4L))   // never a neighbour, never itself
+    }
+
+    @Test fun noTargetWhenTheStartHasNothingTwoHopsAway() {
+        assertNull(FilmLinkPairs.pickTarget(film(1), TwoWay(listOf(1L to 2L)), Random(1)))
+    }
+
+    @Test fun aStartIsFoundFromWhichTheChosenTargetCanBeReached() {
+        val pair = FilmLinkPairs.pickStart(film(4), line, Random(2))
+        assertNotNull(pair)
+        assertEquals(4L, pair!!.target.tmdbId)
+        assertTrue(pair.start.tmdbId != 4L && pair.shortest in 2..4)
+        // checked going forward over the same graph
+        assertEquals(pair.shortest, FilmLinkPairs.check(pair.start, pair.target, TwoWay((1L..6L).map { it to it + 1 })))
+    }
+
+    @Test fun noStartWhenTheTargetIsCutOffFromTheRest() {
+        assertNull(FilmLinkPairs.pickStart(film(99), line, Random(1)))
+        assertNull(FilmLinkPairs.pickStart(film(1), TwoWay(listOf(1L to 2L)), Random(1)))
+    }
+
+    @Test fun aQuickCheckReportsTheHopsToAChosenTargetOrNothing() {
+        assertEquals(3, FilmLinkPairs.check(film(1), film(4), line))
+        assertNull(FilmLinkPairs.check(film(1), film(99), line))
+        assertNull(FilmLinkPairs.check(film(1), film(1), line))   // the same film is not a route
+    }
+
+    @Test fun checkingIsBounded() {
+        val endless = object : FilmGraph { var calls = 0; override fun neighbours(id: Long): List<LinkFilm>? { calls++; return (1L..16L).map { film(id * 100 + it) } } }
+        FilmLinkPairs.check(film(1), film(-1), endless, budget = 12)
+        assertTrue("calls=${endless.calls}", endless.calls <= 12)
+    }
+
+    private fun sug(id: Long, name: String, year: Int?, kind: Kind = Kind.MOVIE) = Suggestion(id, kind, name, year, null, "/p$id", null, emptyList(), null, false)
+
+    @Test fun aSearchResultIsMatchedByTitleAndYear() {
+        val results = listOf(sug(1, "Heat", 1986), sug(2, "Heat", 1995), sug(3, "Heat", 2022, Kind.SHOW))
+        assertEquals(2L, FilmLinkRules.matchFilm(results, "heat", 1995)!!.tmdbId)
+        assertEquals(1L, FilmLinkRules.matchFilm(results, "Heat", null)!!.tmdbId)   // no year: the first film of that name
+        assertEquals(2L, FilmLinkRules.matchFilm(results, " Heat ", 1996)!!.tmdbId)   // a year out by one still matches
+        assertNull(FilmLinkRules.matchFilm(results, "Something else", 1995))
+        assertNull(FilmLinkRules.matchFilm(listOf(sug(3, "Heat", 2022, Kind.SHOW)), "Heat", 2022))   // series are not films
+    }
+}

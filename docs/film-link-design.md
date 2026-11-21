@@ -14,7 +14,7 @@ and target reveal, and the completion screen).
   target while a run is on. The game is its own screen over the app, so normal Cinema navigation is out of reach.
 - **Hops.** A run starts at zero. A hop to a film the current page connects to counts exactly once, including the
   final hop onto the target. Focus changes, retries and failed loads never count.
-- **Back** returns to the previous film, is free, and does not undo a hop. At the start film, Back leaves the game.
+- **Back** returns to the previous film, is free, and does not undo a hop. At the start film, Back ends the game.
 - **Revisits.** The route is the path from the start. A film already on the route cannot be chosen again (it is dimmed
   and marked "Visited"). After Back, the film left is off the route again, so hopping to it again counts again.
 - **Dead ends.** A film with no connections shows "Dead end", with Back and Give up still available.
@@ -44,35 +44,54 @@ All state of a run lives in one `FilmLinkRun` object (core, plain Kotlin): start
 phase, mode and clock. Nothing is saved: closing the game discards the run, and no scores or history are kept (single
 player, local; no leaderboard). The game never writes watch history, playback progress, the watchlist or settings.
 
-## Screens (as approved)
+## Entry point: an Easter egg on the film info screens
 
-1. **Reveal:** start and target posters, one line of rules, Untimed or Timed, Begin, New pair.
-2. **Film page:** the title page look with Find a link, Back to the previous film and Give up in place of Stream,
-   Trailer and Watchlist; the route so far top left; the "More films like this" row.
-3. **Row:** moving down slides the page up, quietens the details and shows the remote hints; visited films are dimmed;
-   a focused card says "+1 hop".
-4. **HUD** (top right, every film page): target poster and title, hops, and time when timed. A thin teal edge along the
-   top marks that the game is on.
-5. **Completion:** the route with a hop count between films, hops, time when timed, Play again, Same pair new try, Exit.
+There is no menu item. On any film's (or series') info screen, pressing **Up, Up, Down, Down, Left, Right, Left,
+Right** (each within 2.5 seconds of the last) opens the Film Link start menu. A series page can start a game too, but
+only from a random film, since the game is films only.
+
+The **start menu** is a full-screen "now showing" title screen: a marquee of lights, film-strip edges, the title over
+Cinema's stripe ribbon, a Start and Finish pair of posters that follows the choices, and three option rows with Play
+focused (so OK alone starts a game on the defaults):
+
+- **Start:** this film (default, only when the page is a film) or a random film.
+- **Finish:** a random film (default) or a film the player chooses. Choosing takes them to Search, where OK on a film
+  picks it instead of opening it; Back cancels.
+- **Clock:** no clock (default) or timed.
+
+A random finish from a chosen start, or a random start for a chosen finish, is found so it is solvable by
+construction (`pickTarget`, `pickStart`). When both are chosen, a quick bounded check (`check`) looks for a route; if it
+finds none the player is asked whether to start anyway.
+
+## The game on the info screens
+
+Each film hopped to is the app's real info page, built in a game mode inside `openDetail`: the page's own buttons
+(streaming, downloads, delete, the watchlist, favourites) and its Letterboxd sections are out of play and its stream
+warm-up is skipped; "Find a link" and "Give up" take their place, and the row "More films like this" is fed from the
+game's own connections. A HUD (target poster and title, hops, and time when timed) and the route so far sit over the
+page, with a thin teal edge along the top marking that the game is on.
+
+- **Back** goes to the previous film along the route. At the start film it ends the game: a game that began on this
+  film leaves the player on this film's page as normal; one that began on a random film closes that page.
+- **Row:** a focused card says "+1 hop"; a film already on the route is dimmed and tagged "Visited".
+- **Summary** (target reached or gave up): the route with a hop count between films, hops, time when timed, Play again,
+  Same pair new try, Exit. Back there is Exit.
 
 Deviation from the mockup: focus on a card is Cinema's own soft saffron glow (`PosterCard`), not a drawn ring, because
 the Cinema language has no outlines.
-
-## Entry point
-
-A "Film Link" item in the rail, between Music and My library, with its own icon. It opens the game over the app.
 
 ## Touchpoints
 
 | File | Change |
 |---|---|
-| `core/.../data/movies/FilmLink.kt` | `LinkFilm`, `FilmGraph`, `FilmLinkRules`, `FilmLinkPairs`, `FilmLinkRun` |
+| `core/.../data/movies/FilmLink.kt` | `LinkFilm`, `FilmGraph`, `FilmLinkRules`, `FilmLinkPairs` (random, `pickTarget`, `pickStart`, `check`), `FilmLinkRun` |
 | `core/.../data/movies/FilmLinkSource.kt` | `CachedFilmGraph`, `FilmLinkSeeds` |
-| `core/.../data/movies/Seerr.kt` | `SeerrClient.discoverMovies(page)` |
-| `app/.../ui/FilmLinkScreen.kt` | the game screens, HUD and timer |
-| `app/.../ui/MoviesPanel.kt` | the `Dest.FilmLink` rail item, its click, and Back routing |
-| `app/src/main/res/drawable/ic_cin_link.xml` | the rail icon |
-| `core/src/test/.../FilmLinkTest.kt` | pair generation, legal moves, hops, timer, completion, restart, isolation, cache |
+| `core/.../data/movies/Seerr.kt` | `SeerrClient.discoverMovies(page)`, `findFilm(name, year)` |
+| `app/.../ui/FilmLinkMenu.kt` | the start menu |
+| `app/.../ui/FilmLinkGame.kt` | the run, HUD, route, clock, summary and pair planning |
+| `app/.../ui/MoviesPanel.kt` | the Easter-egg code, the questions' flow, the finish picker (Search), the game mode of `openDetail`, and Back |
+| `app/.../CinemaActivity.kt` | passes remote keys to the Easter-egg detector |
+| `core/src/test/.../FilmLinkTest.kt` | pair generation (random, chosen start, chosen finish, check), legal moves, hops, timer, completion, restart, isolation, cache, film matching |
 
 ## Scope and trade-offs
 
@@ -88,10 +107,13 @@ A "Film Link" item in the rail, between Music and My library, with its own icon.
 - **Automated:** `FilmLinkTest` (pair generation and reachability, bounded effort, legal moves, exact hop counting,
   completion once, back, revisits, timer with pause and resume, restart, session isolation, cached graph).
 - **Gate:** `./gradlew :core:test testDebugUnitTest assembleDebug`.
-- **On a TV or the Android TV emulator with a real Seerr:** one complete run with the D-pad (reveal, Begin, hop through
-  the row, Back, completion, Play again), a timed run with the app sent to the background, a dead end, Seerr signed out,
-  and a check that the title pages, history and playback are unchanged afterwards. Not part of the automated gate:
-  it needs a real Seerr and TMDB data.
+- **On a TV or the Android TV emulator with a real Seerr:** the Easter-egg code on an info screen, the start menu with
+  each option, a run with the D-pad (Play, hop through the row, Back along the route, Back at the start ending the
+  game, completion, Play again), choosing a finish in Search, a timed run with the app sent to the background, a dead
+  end, Seerr signed out, and a check that the title pages, history and playback are unchanged afterwards. Not part of
+  the automated gate: it needs a real Seerr and TMDB data. Done on a Chromecast so far: menu, Play on defaults, hopping,
+  Back along the route and Back at the start. Not yet done on a TV: choosing a finish, the timed clock, dead ends,
+  Seerr failures and the completion screen of this flow.
 
 ## Example route (to be confirmed)
 
