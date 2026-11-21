@@ -130,6 +130,15 @@ class FilmLinkGame(
 
     fun giveUp() { run.giveUp(); stopTick(); updateHud() }
 
+    /** The next film on the shortest route from the film on screen to the target (planted links included), or null when none is found. [done] runs on the UI thread. */
+    fun hint(done: (LinkFilm?) -> Unit) {
+        val from = run.current
+        pool.execute {
+            val next = FilmLinkPairs.route(from, pair.target, graph)?.firstOrNull()
+            ui.post { done(next) }
+        }
+    }
+
     // ---- the HUD and its clock --------------------------------------------------------------------------
 
     private fun buildHud(): View {
@@ -143,6 +152,11 @@ class FilmLinkGame(
         words.addView(Cinema.text(activity, "Target", 18, Cinema.TEAL, weight = 600, tracking = 0.2f, caps = true))
         words.addView(Cinema.text(activity, run.target.name, 36, Cinema.CREAM, serif = true, weight = 600).apply { maxLines = 1; maxWidth = Cinema.px(activity, 340); ellipsize = TextUtils.TruncateAt.END })
         run.target.year?.let { words.addView(Cinema.text(activity, it.toString(), 20, Cinema.MUTED)) }
+        // So a film you don't know can still be imagined: what it is about.
+        run.target.overview?.takeIf { it.isNotBlank() }?.let { o ->
+            words.addView(Cinema.text(activity, o, 16, Cinema.READING).apply { maxLines = 3; maxWidth = Cinema.px(activity, 340); ellipsize = TextUtils.TruncateAt.END; setLineSpacing(0f, 1.15f) },
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 4) })
+        }
         panel.addView(words, LinearLayout.LayoutParams(-2, -2).apply { marginStart = Cinema.px(activity, 20) })
         fun divider() = panel.addView(View(activity).apply { setBackgroundColor(Cinema.alpha(Cinema.CREAM, 0.14f)) },
             LinearLayout.LayoutParams(Cinema.px(activity, 2), Cinema.px(activity, 96)).apply { marginStart = Cinema.px(activity, 26); marginEnd = Cinema.px(activity, 26) })
@@ -280,7 +294,8 @@ class FilmLinkGame(
                     start != null && target != null -> {
                         val hops = FilmLinkPairs.check(start, target, graph)
                         unverified = hops == null
-                        if (start.tmdbId == target.tmdbId) null else LinkPair(start, target, hops ?: 0)
+                        // No route in a quick look: plant the finish on every page it is really associated with, for this game only.
+                        if (start.tmdbId == target.tmdbId) null else if (hops != null) LinkPair(start, target, hops) else FilmLinkPairs.plant(start, target, graph, random)
                     }
                     start != null -> FilmLinkPairs.pickTarget(start, graph, random)
                     target != null -> FilmLinkPairs.pickStart(target, graph, random)
