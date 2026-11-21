@@ -389,6 +389,11 @@ class SeerrClient(platform: Platform) {
     /** One page (1-based) of popular films: where Film Link looks for films to start from. Null when it could not be fetched. */
     fun discoverMovies(page: Int): List<Suggestion>? = get("/api/v1/discover/movies?page=$page")?.let { Picks.parseSuggestions(it) }
 
+    /** The film Seerr finds for [name] (and [year] when known), as Film Link's id for it. Null when none matches or Seerr is unreachable. */
+    fun findFilm(name: String, year: Int?): LinkFilm? =
+        get("/api/v1/search?query=" + java.net.URLEncoder.encode(name.trim(), "UTF-8") + "&page=1")
+            ?.let { Picks.parseSuggestions(it) }?.let { FilmLinkRules.matchFilm(it, name, year) }
+
     /** Free space where films are stored, in bytes, or null. */
     fun freeSpaceBytes(): Long? = get("/api/v1/service/radarr/0")?.let { SeerrRequests.parseFreeSpace(it) }
 

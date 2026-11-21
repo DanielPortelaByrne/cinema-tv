@@ -272,8 +272,6 @@ class MoviesPanel(
         object Settings : Dest()
         /** Not a page: the rail's person item goes back to "Who's watching?". */
         object Person : Dest()
-        /** Not a page: the rail's Film Link item opens the game over Cinema (see [FilmLinkScreen]). */
-        object FilmLink : Dest()
     }
 
     /** The rail item a page belongs to: a service or genre page is part of Home, every Letterboxd page of Letterboxd. */
@@ -332,21 +330,174 @@ class MoviesPanel(
     private val trail = ArrayDeque<Dest>()
     private var returnFocus: View? = null
 
+    // --- Film Link (CIN-65): an Easter egg on the film info screens ----------------------------------------------
+
     /**
-     * Film Link (CIN-65): a game drawn over the whole app from the rail's Film Link item. It is a screen of its own, so it
-     * never touches the title pages, watch history or playback beneath it; closing it gives the page back as it was.
+     * The game on now, or null. It runs on the real info screens: each film hopped to is an info page built in a game
+     * mode (see [openDetail]), so only "More films like this" can be used and nothing a page normally offers (streaming,
+     * downloads, delete, the watchlist) is on offer while it runs. Nothing is saved: a game leaves no trace.
      */
-    private var filmLinkScreen: FilmLinkScreen? = null
-    private val filmLink: FilmLinkScreen
-        get() = filmLinkScreen ?: FilmLinkScreen(activity, detail.parent as ViewGroup, seerr) { open ->
-            if (open) {
-                returnFocus = overlay.findFocus()
-                body.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS; body.visibility = View.INVISIBLE
-            } else {
-                body.visibility = View.VISIBLE; body.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-                returnFocus?.takeIf { it.isAttachedToWindow }?.let { f -> f.post { f.requestFocus() } }
+    private var game: FilmLinkGame? = null
+    /** The info page the game was turned on from, so ending it can give that page back as it was. */
+    private var gameOrigin: Entry? = null
+    /** While the player picks their finish in Search: what to do with the film they choose. */
+    private var filmLinkPick: ((Entry) -> Unit)? = null
+    private val eggKeys = ArrayList<Int>()
+    private var eggAt = 0L
+    private val egg = listOf(
+        android.view.KeyEvent.KEYCODE_DPAD_UP, android.view.KeyEvent.KEYCODE_DPAD_UP, android.view.KeyEvent.KEYCODE_DPAD_DOWN, android.view.KeyEvent.KEYCODE_DPAD_DOWN,
+        android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_DPAD_RIGHT, android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_DPAD_RIGHT)
+
+    /**
+     * Up, Up, Down, Down, Left, Right, Left, Right on an info screen turns Film Link on. Called with each key the remote
+     * sends; true for the last key of the code, which is then used up.
+     */
+    fun filmLinkKey(keyCode: Int): Boolean {
+        if (!detailOpen || game != null || filmLinkPick != null || detailEntry == null) { eggKeys.clear(); return false }
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - eggAt > 2500) eggKeys.clear()
+        eggAt = now
+        eggKeys += keyCode
+        while (eggKeys.size > egg.size) eggKeys.removeAt(0)
+        if (eggKeys != egg) return false
+        eggKeys.clear()
+        detailEntry?.let { startFilmLink(it) }
+        return true
+    }
+
+    private fun linkTitle(f: com.danielportelabyrne.cinema.data.movies.LinkFilm): Title = suggestionTitle(
+        com.danielportelabyrne.cinema.data.movies.Suggestion(f.tmdbId, Kind.MOVIE, f.name, f.year, f.overview, f.posterPath, f.backdropPath, emptyList(), null, false))
+
+    /** Question 1: start on this film (when it is a film) or on a random one. */
+    private fun startFilmLink(from: Entry) {
+        if (!seerr.isSignedIn) { CinemaToast.show(activity, "Film Link needs Seerr", Toast.LENGTH_LONG); return }
+        val here = from.title.takeIf { it.kind == Kind.MOVIE }
+        if (here == null) { filmLinkAskFinish(from, null); return }
+        CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "Where do you start?", listOf(
+            CinemaChoiceSheet.Choice("This film: ${here.name}") {
+                filmLinkResolve(here) { f -> if (f == null) CinemaToast.show(activity, "Couldn’t find this film’s connections", Toast.LENGTH_LONG) else filmLinkAskFinish(from, f) }
+            },
+            CinemaChoiceSheet.Choice("A random film") { filmLinkAskFinish(from, null) }))
+    }
+
+    /** Seerr's TMDB id (with artwork) for a title, which is what the game's connections are keyed by. */
+    private fun filmLinkResolve(t: Title, done: (com.danielportelabyrne.cinema.data.movies.LinkFilm?) -> Unit) {
+        slowPool.execute {
+            val found = runCatching { seerr.findFilm(t.name, t.year) }.getOrNull()
+            val film = found ?: t.tmdbId?.toLongOrNull()?.let { com.danielportelabyrne.cinema.data.movies.LinkFilm(it, t.name, t.year, null, null, t.overview) }
+            activity.runOnUiThread { done(film) }
+        }
+    }
+
+    /** Question 2: finish on a random film or one the player chooses. */
+    private fun filmLinkAskFinish(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?) {
+        CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "Where do you finish?", listOf(
+            CinemaChoiceSheet.Choice("A random film") { filmLinkAskClock(from, start, choose = false) },
+            CinemaChoiceSheet.Choice("A film I choose") { filmLinkAskClock(from, start, choose = true) }))
+    }
+
+    /** Question 3: play against the clock or not. */
+    private fun filmLinkAskClock(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, choose: Boolean) {
+        CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "Against the clock?", listOf(
+            CinemaChoiceSheet.Choice("No clock") { filmLinkGo(from, start, choose, com.danielportelabyrne.cinema.data.movies.LinkMode.UNTIMED) },
+            CinemaChoiceSheet.Choice("Timed") { filmLinkGo(from, start, choose, com.danielportelabyrne.cinema.data.movies.LinkMode.TIMED) }))
+    }
+
+    private fun filmLinkGo(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, choose: Boolean, mode: com.danielportelabyrne.cinema.data.movies.LinkMode) {
+        if (!choose) { filmLinkBegin(from, start, null, mode); return }
+        // The finish is picked in Search: OK on a film there chooses it instead of opening it.
+        filmLinkPick = { e ->
+            if (e.title.kind != Kind.MOVIE) CinemaToast.show(activity, "Pick a film, not a series", Toast.LENGTH_SHORT)
+            else {
+                filmLinkPick = null
+                filmLinkResolve(e.title) { f -> if (f == null) CinemaToast.show(activity, "Couldn’t find ${e.title.name}", Toast.LENGTH_LONG) else filmLinkBegin(from, start, f, mode) }
             }
-        }.also { filmLinkScreen = it }
+        }
+        if (detailOpen) closeDetail(restoreFocus = false)
+        go(Dest.Search)
+        CinemaToast.show(activity, "Search for your finish and press OK on a film. Back to cancel.", Toast.LENGTH_LONG)
+    }
+
+    /** Works out the pair (a start and a finish a few hops apart) and starts, or says it could not. */
+    private fun filmLinkBegin(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, target: com.danielportelabyrne.cinema.data.movies.LinkFilm?, mode: com.danielportelabyrne.cinema.data.movies.LinkMode) {
+        CinemaToast.show(activity, "Finding a route…", Toast.LENGTH_SHORT)
+        FilmLinkGame.plan(activity, seerr, start, target) { pair, graph, unverified ->
+            when {
+                pair == null -> CinemaToast.show(activity, "Couldn’t find a route just now. Try again.", Toast.LENGTH_LONG)
+                unverified -> CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "No route found in a quick look", listOf(
+                    CinemaChoiceSheet.Choice("Start anyway") { filmLinkRun(from, pair, graph, mode, start != null) },
+                    CinemaChoiceSheet.Choice("Never mind") { }))
+                else -> filmLinkRun(from, pair, graph, mode, start != null)
+            }
+        }
+    }
+
+    private fun filmLinkRun(from: Entry?, pair: com.danielportelabyrne.cinema.data.movies.LinkPair, graph: com.danielportelabyrne.cinema.data.movies.CachedFilmGraph,
+                            mode: com.danielportelabyrne.cinema.data.movies.LinkMode, startedHere: Boolean) {
+        game?.detach()
+        detail.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        gameOrigin = from
+        val gm = FilmLinkGame(activity, detail.parent as ViewGroup, pair, mode, startedHere, graph)
+        game = gm; gm.attach()
+        filmLinkOpen(pair.start)
+    }
+
+    /** Shows [f]'s info page in game mode, in place of the page that is open (Back returns along the route, not to a page). */
+    private fun filmLinkOpen(f: com.danielportelabyrne.cinema.data.movies.LinkFilm) {
+        val gm = game ?: return
+        val shown = if (gm.startedHere && f.tmdbId == gm.pair.start.tmdbId) (gameOrigin ?: entry(linkTitle(f))) else entry(linkTitle(f))
+        val keep = if (detailOpen) returnFocus else null
+        if (detailOpen) closeDetail(restoreFocus = false)
+        openDetail(shown, emptyList())
+        if (keep != null) returnFocus = keep
+        gm.showFilm(f)
+    }
+
+    private fun filmLinkHop(f: com.danielportelabyrne.cinema.data.movies.LinkFilm) {
+        val gm = game ?: return
+        when (gm.hop(f)) {
+            com.danielportelabyrne.cinema.data.movies.HopOutcome.COUNTED -> filmLinkOpen(f)
+            com.danielportelabyrne.cinema.data.movies.HopOutcome.COMPLETED -> filmLinkFinished(gm)
+            com.danielportelabyrne.cinema.data.movies.HopOutcome.ALREADY_ON_ROUTE -> CinemaToast.show(activity, "You’ve already been to ${f.name}", Toast.LENGTH_SHORT)
+            com.danielportelabyrne.cinema.data.movies.HopOutcome.NOT_CONNECTED -> CinemaToast.show(activity, "${f.name} isn’t connected from here", Toast.LENGTH_SHORT)
+            com.danielportelabyrne.cinema.data.movies.HopOutcome.FINISHED -> Unit
+        }
+    }
+
+    /** The summary, over the page, which stays where it is underneath. */
+    private fun filmLinkFinished(gm: FilmLinkGame) {
+        detail.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        gm.showEnd(
+            onAgain = { val mode = gm.mode; filmLinkDetach(gm); filmLinkBegin(null, null, null, mode) },
+            onSame = { val p = gm.pair; val g = gm.graph; val m = gm.mode; val here = gm.startedHere; val origin = gameOrigin; filmLinkDetach(gm); filmLinkRun(origin, p, g, m, here) },
+            onExit = { filmLinkEnd(leave = true) })
+    }
+
+    private fun filmLinkDetach(gm: FilmLinkGame) {
+        gm.detach(); game = null; detail.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+    }
+
+    /** Back: the previous film along the route; at the start it ends the game (and stays on this page when the game began here). */
+    private fun filmLinkBack(gm: FilmLinkGame): Boolean {
+        if (gm.endShowing) { filmLinkEnd(leave = true); return true }
+        val previous = gm.stepBack()
+        if (previous != null) filmLinkOpen(previous) else filmLinkEnd(leave = false)
+        return true
+    }
+
+    /**
+     * Ends the game. [leave] closes the info page too; otherwise a game that began on a page leaves the player on that page,
+     * rebuilt as normal, and a game that began on a random film closes it.
+     */
+    private fun filmLinkEnd(leave: Boolean) {
+        val gm = game ?: return
+        val here = gm.startedHere; val origin = gameOrigin
+        filmLinkDetach(gm); gameOrigin = null
+        if (!detailOpen) return
+        if (leave || !here || origin == null) closeDetail(restoreFocus = true)
+        else { val keep = returnFocus; closeDetail(restoreFocus = false); openDetail(origin, emptyList()); returnFocus = keep }
+    }
+
     private val tabs = LinkedHashMap<LinearLayout, Dest>()
     private val navigationLabels = LinkedHashMap<LinearLayout, Pair<ImageView, TextView>>()
     private var navigationExpanded = false
@@ -537,7 +688,9 @@ class MoviesPanel(
      * then lets the panel close. Back never opens the rail: only a fresh Left does.
      */
     fun back(): Boolean {
-        filmLinkScreen?.let { if (it.isOpen) return it.back() }
+        // Choosing a finish in Search: any Back cancels the choosing (and then goes back as usual).
+        filmLinkPick = null
+        game?.let { return filmLinkBack(it) }
         layoutEditor?.let { it.back(); return true }
         if (PhoneInput.hideQr()) return true
         if (voiceActive) { voice?.cancel(); return true }
@@ -870,7 +1023,6 @@ class MoviesPanel(
             Triple("Documentaries", R.drawable.ic_cin_doc, Dest.Docs),
             Triple("Letterboxd", R.drawable.ic_cin_lb, Dest.Letterboxd),
             Triple("Music", R.drawable.ic_cin_music, Dest.Music),
-            Triple("Film Link", R.drawable.ic_cin_link, Dest.FilmLink),
             Triple("My library", R.drawable.ic_cin_lib, Dest.Library),
             Triple("History", R.drawable.ic_cin_history, Dest.History),
             Triple("Downloads", R.drawable.ic_cin_dl, Dest.Downloads)
@@ -947,7 +1099,6 @@ class MoviesPanel(
             when {
                 dest === Dest.Settings -> onOpenSettings()
                 dest === Dest.Person -> onSwitchPerson()
-                dest === Dest.FilmLink -> filmLink.open()
                 current !== dest -> { go(dest); enterChosenPage() }
                 else -> focusContent()   // the page already shown: just back to it
             }
@@ -1399,7 +1550,7 @@ class MoviesPanel(
             Dest.Music -> buildMusic(gen)
             is Dest.MusicAlbum -> buildMusicAlbum(d.id, gen)
             is Dest.MusicArtist -> buildMusicArtist(d.id, d.name, gen)
-            Dest.Settings, Dest.Person, Dest.FilmLink -> Unit
+            Dest.Settings, Dest.Person -> Unit
         }
         syncRailAway(immediate = true)
         Perf.took("movies.build (main thread)", Perf.now() - buildStart)
@@ -1414,7 +1565,7 @@ class MoviesPanel(
         Dest.Library, Dest.Watchlist, Dest.History, Dest.Playlists, is Dest.Playlist -> AmbientBackground.LIBRARY
         Dest.Downloads -> AmbientBackground.DOWNLOADS
         Dest.Search -> AmbientBackground.SEARCH
-        Dest.Settings, Dest.Person, Dest.FilmLink -> AmbientBackground.SETTINGS
+        Dest.Settings, Dest.Person -> AmbientBackground.SETTINGS
         Dest.Letterboxd, Dest.LbSearch, Dest.LbFollow, is Dest.LbPerson, is Dest.LbListPage -> AmbientBackground.LETTERBOXD
         Dest.Music, is Dest.MusicAlbum, is Dest.MusicArtist -> AmbientBackground.MUSIC
         // A service's page takes the service's own colour; a genre's, the colour of its tile.
@@ -5443,7 +5594,7 @@ class MoviesPanel(
             LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 5) })
         card.addView(text, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = Cinema.px(activity, 22) })
         card.addView(Cinema.icon(activity, R.drawable.ic_cin_chev, Cinema.DIM), LinearLayout.LayoutParams(Cinema.px(activity, 26), Cinema.px(activity, 26)))
-        card.setOnClickListener { openDetail(e, related) }
+        card.setOnClickListener { filmLinkPick?.let { it(e) } ?: openDetail(e, related) }
         return card
     }
 
@@ -5858,7 +6009,7 @@ class MoviesPanel(
     // --- Title page --------------------------------------------------------------------------------
 
     private fun openDetail(e: Entry, related: List<Title>) {
-        markFeaturedOpened(e.title.key)
+        if (game == null) markFeaturedOpened(e.title.key)
         returnFocus = overlay.findFocus()
         // Rebuilding a Letterboxd title can move focus while the old page is being removed.
         detailFocusListener?.let { if (detail.viewTreeObserver.isAlive) detail.viewTreeObserver.removeOnGlobalFocusChangeListener(it) }
@@ -5997,6 +6148,20 @@ class MoviesPanel(
         if (inLibrary) buttons.addView(CinemaButton(activity, CinemaButton.Kind.DANGER, "Delete", R.drawable.ic_cin_trash).apply { setOnClickListener { confirmDelete(e) } },
             LinearLayout.LayoutParams(-2, h).apply { marginStart = gap })
         text.addView(buttons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 34) })
+        // Film Link: this page is one stop of a game. Its own buttons (streaming, downloads, delete, the watchlist) are out of
+        // play; what is left is the row below, a way to give up, and Back.
+        val gameFind: CinemaButton? = game?.let { gm ->
+            buttons.visibility = View.GONE
+            val controls = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
+            val find = CinemaButton(activity, CinemaButton.Kind.PRIMARY, "Find a link")
+            controls.addView(find, LinearLayout.LayoutParams(-2, h).apply { marginEnd = gap })
+            controls.addView(CinemaButton(activity, CinemaButton.Kind.GLASS, "Give up").also { b ->
+                b.label.setTextColor(Cinema.DANGER_TEXT)
+                b.setOnClickListener { gm.giveUp(); filmLinkFinished(gm) }
+            }, LinearLayout.LayoutParams(-2, h))
+            text.addView(controls, LinearLayout.LayoutParams(-2, -2).apply { topMargin = Cinema.px(activity, 34) })
+            find
+        }
         topRow.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
 
         // A film's poster stands on the right, with its Letterboxd rating and followed members in small under it; a series
@@ -6024,7 +6189,7 @@ class MoviesPanel(
             seasonSection(holder, e, primary, nextStream)
             seasonsBox = holder
         }
-        lbFilmSection(column, e, aside)
+        if (game == null) lbFilmSection(column, e, aside)
         // More like this: TMDB's recommendations for the title (through Seerr) once they arrive; until then, or without
         // them, the titles of the same kind from the row the page was opened from.
         val noun = if (t.kind == Kind.SHOW) "series" else "films"
@@ -6037,14 +6202,42 @@ class MoviesPanel(
             moreRow.scroller.visibility = moreHeading.visibility
             list.map { entry(it) }.forEachIndexed { i, m -> moreRow.inner.addView(card(m, list, small = true, nested = false), cardParams(i, small = true)) }
         }
-        fillMore(related.filter { it.key != t.key && it.kind == t.kind }.take(14))
-        t.tmdbId?.toLongOrNull()?.takeIf { seerr.isSignedIn }?.let { id ->
-            worker.execute {
-                val recs = runCatching { seerr.recommendations(t.kind, id) }.getOrNull().orEmpty()
-                    .filter { it.kind == t.kind && it.tmdbId != id }.take(16).map { suggestionTitle(it) }
-                activity.runOnUiThread {
-                    // Never swap the row out from under the viewer while they are in it.
-                    if (recs.isNotEmpty() && detailOpen && moreRow.scroller.isAttachedToWindow && !moreRow.scroller.hasFocus()) fillMore(recs)
+        val gm = game
+        if (gm != null) {
+            // Film Link: the row is exactly the films this one connects to in the game (the same list the pairs were checked
+            // against). Choosing one is a hop; a film already on the route is dimmed and cannot be chosen again.
+            val film = gm.run.current
+            fun fillGame(list: List<com.danielportelabyrne.cinema.data.movies.LinkFilm>?) {
+                moreRow.inner.removeAllViews()
+                when {
+                    list == null -> {
+                        moreRow.inner.addView(Cinema.text(activity, "Couldn’t load the connected films.", 26, Cinema.MUTED), LinearLayout.LayoutParams(-2, -2).apply { marginEnd = Cinema.px(activity, 32) })
+                        moreRow.inner.addView(CinemaButton(activity, CinemaButton.Kind.PRIMARY, "Try again", small = true).also { b -> b.setOnClickListener { gm.neighbours(film) { fillGame(it) } } },
+                            LinearLayout.LayoutParams(-2, Cinema.px(activity, 60)))
+                    }
+                    list.isEmpty() -> moreRow.inner.addView(Cinema.text(activity, "Dead end: no films connect to this one. Go back, or give up.", 26, Cinema.MUTED))
+                    else -> list.forEachIndexed { i, f ->
+                        val onRoute = gm.run.isOnRoute(f)
+                        val c = card(entry(linkTitle(f)), emptyList(), small = true, nested = false, badge = false,
+                            note = if (onRoute) "On your route" else "+1 hop", chip = if (onRoute) "Visited" else null, star = false, onSelect = { filmLinkHop(f) })
+                        if (onRoute) c.alpha = 0.55f
+                        moreRow.inner.addView(c, cardParams(i, small = true))
+                    }
+                }
+                gameFind?.setOnClickListener { moreRow.inner.getChildAt(0)?.requestFocus() }
+            }
+            moreRow.inner.addView(Cinema.text(activity, "Finding connected films…", 26, Cinema.MUTED))
+            gm.neighbours(film) { fillGame(it) }
+        } else {
+            fillMore(related.filter { it.key != t.key && it.kind == t.kind }.take(14))
+            t.tmdbId?.toLongOrNull()?.takeIf { seerr.isSignedIn }?.let { id ->
+                worker.execute {
+                    val recs = runCatching { seerr.recommendations(t.kind, id) }.getOrNull().orEmpty()
+                        .filter { it.kind == t.kind && it.tmdbId != id }.take(16).map { suggestionTitle(it) }
+                    activity.runOnUiThread {
+                        // Never swap the row out from under the viewer while they are in it.
+                        if (recs.isNotEmpty() && detailOpen && moreRow.scroller.isAttachedToWindow && !moreRow.scroller.hasFocus()) fillMore(recs)
+                    }
                 }
             }
         }
@@ -6059,9 +6252,11 @@ class MoviesPanel(
         // Room below the row, so the page can slide it up near the top of the screen.
         column.setPadding(column.paddingLeft, column.paddingTop, column.paddingRight, Cinema.px(activity, 520))
         detailScrolledState(scroll, moreHeading, moreRow.scroller, t, topRow, seasonsBox)
-        setupPrimary(primary, e, clearStale, restart) { openDetail(e, related) }
+        gameFind?.setOnFocusChangeListener { _, f -> if (f) scroll.post { scroll.smoothScrollTo(0, 0) } }
+        // In a game this page does nothing but sit in the route: no availability checks, no stream warm-up.
+        if (game == null) setupPrimary(primary, e, clearStale, restart) { openDetail(e, related) }
         // A film that can only be streamed: have the stream service search for it now, so Stream now starts quicker.
-        if (!inLibrary && t.kind == Kind.MOVIE && seerr.isSignedIn) {
+        if (game == null && !inLibrary && t.kind == Kind.MOVIE && seerr.isSignedIn) {
             slowPool.execute { seerr.prepareStream(t.name, t.year, runtimeMin = t.runtimeMin) }
             // and ask the add-ons now, as Stremio does when a page opens (a title from the Home spotlight has no IMDb id yet: found first)
             slowPool.execute { imdbOf(e)?.let { addonAnswersFor(it, null) } }
@@ -6070,12 +6265,13 @@ class MoviesPanel(
         }
         detailEntry = e
         // A series' progress lives on its episode cards, so its page is drawn again; a film just redoes its buttons.
-        detailButtons = if (t.kind == Kind.SHOW) ({ val back = returnFocus; closeDetail(restoreFocus = false); openDetail(e, related); returnFocus = back })
+        detailButtons = if (game != null) ({ })
+            else if (t.kind == Kind.SHOW) ({ val back = returnFocus; closeDetail(restoreFocus = false); openDetail(e, related); returnFocus = back })
             else ({ setupPrimary(primary, e, clearStale, restart) { openDetail(e, related) } })
         // The title page covers the screen, so the page beneath it is not drawn at all while it is open (it keeps its
         // place and its scroll position, so Back returns to exactly where it was).
         body.visibility = View.INVISIBLE
-        requestFocusRobust(detail, if (stream.visibility == View.VISIBLE) stream else primary)
+        requestFocusRobust(detail, gameFind ?: if (stream.visibility == View.VISIBLE) stream else primary)
     }
 
     private var detailFocusListener: android.view.ViewTreeObserver.OnGlobalFocusChangeListener? = null
@@ -7608,7 +7804,12 @@ class MoviesPanel(
         if (star) { trackFavourite(card, e); if (chip == null) trackNewEpisode(card, e) }
         hideable(card, e)
         card.onFocus = { lit -> if (lit) { reveal(card); if (onSelect == null) prefetchOnRest(card, e) } }
-        card.setOnClickListener { if (onSelect != null) onSelect() else if (nested) openDetail(e, related) else { closeDetail(restoreFocus = false); openDetail(e, related) } }
+        card.setOnClickListener {
+            val choosing = filmLinkPick
+            if (onSelect != null) onSelect()
+            else if (choosing != null) choosing(e)   // Film Link: choosing a finish, not opening the film
+            else if (nested) openDetail(e, related) else { closeDetail(restoreFocus = false); openDetail(e, related) }
+        }
         return card
     }
 

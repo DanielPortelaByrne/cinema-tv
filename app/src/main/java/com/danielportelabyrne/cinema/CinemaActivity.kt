@@ -569,6 +569,9 @@ class CinemaActivity : AppCompatActivity() {
             if (::moviesPanel.isInitialized && moviesPanel.isVisible && !infoSheet.isVisible && !setup.isVisible &&
                 moviesPanel.voiceKey(event.action == KeyEvent.ACTION_DOWN, event.repeatCount)) return true
         }
+        // Film Link, an Easter egg on the film info screens: a short run of D-pad presses (see MoviesPanel.filmLinkKey).
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && ::moviesPanel.isInitialized && moviesPanel.isVisible &&
+            !infoSheet.isVisible && !setup.isVisible && moviesPanel.filmLinkKey(event.keyCode)) return true
         val direction = when (event.keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> View.FOCUS_UP
             KeyEvent.KEYCODE_DPAD_DOWN -> View.FOCUS_DOWN
