@@ -87,11 +87,12 @@ fun TitleScreen(model: CinemaModel, route: Route.Title, art: Art) {
                     TitleMeta(t, Modifier.padding(top = 24.dp))
                     Provider(t.services, Modifier.padding(top = 22.dp))
                     T(t.overview ?: e.library?.overview ?: "No description yet.", synopsisStyle(26), maxLines = 3, modifier = Modifier.padding(top = 22.dp).width(1040.dp))
-                    Buttons(model, route, primary)
+                    if (route.linkFilm != null && model.filmLink.game != null) LinkButtons(model, route, primary) else Buttons(model, route, primary)
                 }
                 StripePoster(t.posterUrl, t.name, Modifier.padding(start = 48.dp).offset(y = (-12).dp))
             }
             if (t.kind == Kind.SHOW) Seasons(model, route, art)
+            else if (route.linkFilm != null && model.filmLink.game != null) LinkRow(model, route)
             else {
                 LetterboxdFilmSection(model, route)
                 MoreLikeThis(model, route, art)

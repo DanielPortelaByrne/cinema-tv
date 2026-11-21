@@ -10,15 +10,29 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class CachedFilmGraph(private val recommendations: (Long) -> List<Suggestion>?) : FilmGraph {
     private val kept = ConcurrentHashMap<Long, List<LinkFilm>>()
+    /** Films added to a page's connections for this game only (film id -> the planted film): see [FilmLinkPairs.plant]. */
+    private val planted = ConcurrentHashMap<Long, LinkFilm>()
 
     override fun neighbours(id: Long): List<LinkFilm>? {
-        kept[id]?.let { return it }
+        kept[id]?.let { return withPlant(id, it) }
         val fetched = recommendations(id) ?: return null
-        return FilmLinkRules.connected(id, fetched).also { kept[id] = it }
+        return withPlant(id, FilmLinkRules.connected(id, fetched).also { kept[id] = it })
     }
 
     /** What is already known about [id], without a lookup. */
-    fun known(id: Long): List<LinkFilm>? = kept[id]
+    fun known(id: Long): List<LinkFilm>? = kept[id]?.let { withPlant(id, it) }
+
+    /** Makes [film] one of [at]'s connections in this session only; the recommendations themselves are never touched. */
+    fun plant(at: Long, film: LinkFilm) { planted[at] = film }
+
+    /** Where each plant sits (film id -> the film planted there), empty when nothing is planted. */
+    val plants: Map<Long, LinkFilm> get() = planted.toMap()
+
+    /** Takes every plant away (the game is over). */
+    fun unplant() { planted.clear() }
+
+    private fun withPlant(id: Long, list: List<LinkFilm>): List<LinkFilm> =
+        planted[id]?.takeIf { p -> list.none { it.tmdbId == p.tmdbId } }?.let { list + it } ?: list
 }
 
 object FilmLinkSeeds {

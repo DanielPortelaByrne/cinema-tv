@@ -114,6 +114,64 @@ object FilmLinkPairs {
     fun check(start: LinkFilm, target: LinkFilm, graph: FilmGraph, maxHops: Int = MAX_HOPS + 1, budget: Int = CALL_BUDGET + 10): Int? =
         explore(start, graph, maxHops, budget).entries.firstOrNull { it.key.tmdbId == target.tmdbId }?.value?.takeIf { it > 0 }
 
+    /** The furthest from the start a target is planted: [PLANT_DEPTH] + 1 hops in all, so a planted game is never long. */
+    const val PLANT_DEPTH = 3
+
+    /** How many films a target is planted at, at most, and the fewest (so one dead-end wander can't miss them all). */
+    const val PLANTS = 5
+    const val MIN_PLANTS = 3
+
+    /**
+     * For a chosen pair with no route found: plants [target] as a connection of several films the player can reach from
+     * [start], for this game only. One planted film among thousands of possible paths would make the game unwinnable in
+     * practice, so up to [PLANTS] are planted, at least [MIN_PLANTS] when that many are reachable, spread over 1 to
+     * [PLANT_DEPTH] hops from the start. Each is chosen to make sense: films the target's own recommendations include (really
+     * associated), then the nearest in release year. The target is then 2 to [PLANT_DEPTH] + 1 hops away by the shortest
+     * plant. The plants live in [graph] (the session's own copy), never in Seerr or TMDB, so the recommendations are
+     * untouched and they are gone with the game ([CachedFilmGraph.unplant] clears them earlier). Null when nothing is
+     * reachable to plant at.
+     */
+    fun plant(start: LinkFilm, target: LinkFilm, graph: CachedFilmGraph, random: Random): LinkPair? {
+        val depths = explore(start, graph, PLANT_DEPTH, CALL_BUDGET)
+        val associated = graph.neighbours(target.tmdbId).orEmpty().map { it.tmdbId }.toSet()
+        val candidates = depths.entries.filter { it.value >= 1 && it.key.tmdbId != target.tmdbId }.shuffled(random)
+        if (candidates.isEmpty()) return null
+        val related = candidates.filter { it.key.tmdbId in associated }
+        val year = target.year
+        val others = candidates.filter { it.key.tmdbId !in associated }
+            .sortedBy { val y = it.key.year; if (y != null && year != null) kotlin.math.abs(y - year) else 999 }
+        val chosen = related.take(PLANTS) + others.take((MIN_PLANTS - related.size).coerceAtLeast(0))
+        chosen.forEach { graph.plant(it.key.tmdbId, target) }
+        return LinkPair(start, target, chosen.minOf { it.value } + 1)
+    }
+
+    /**
+     * The fewest-hops route from [from] to [to] the connections show (planted ones included), as the films after [from]
+     * in order, or null when a bounded look finds none. The first film is the hint for what to open next.
+     */
+    fun route(from: LinkFilm, to: LinkFilm, graph: FilmGraph, maxDepth: Int = MAX_HOPS + 1, budget: Int = CALL_BUDGET + 10): List<LinkFilm>? {
+        val parent = HashMap<Long, LinkFilm?>().apply { put(from.tmdbId, null) }
+        val queue = ArrayDeque<Pair<LinkFilm, Int>>().apply { add(from to 0) }
+        var calls = 0
+        while (queue.isNotEmpty() && calls < budget) {
+            val (film, d) = queue.removeFirst()
+            if (d >= maxDepth) continue
+            calls++
+            for (n in graph.neighbours(film.tmdbId).orEmpty()) {
+                if (parent.containsKey(n.tmdbId)) continue
+                parent[n.tmdbId] = film
+                if (n.tmdbId == to.tmdbId) {
+                    val path = ArrayList<LinkFilm>()
+                    var at: LinkFilm? = n
+                    while (at != null && at.tmdbId != from.tmdbId) { path.add(0, at); at = parent[at.tmdbId] }
+                    return path
+                }
+                queue.add(n to d + 1)
+            }
+        }
+        return null
+    }
+
     /** Every film reached from [start] within [maxDepth] hops, with the fewest hops found. At most [budget] lookups. */
     internal fun explore(start: LinkFilm, graph: FilmGraph, maxDepth: Int, budget: Int): Map<LinkFilm, Int> {
         val depth = LinkedHashMap<Long, Int>().apply { put(start.tmdbId, 0) }
