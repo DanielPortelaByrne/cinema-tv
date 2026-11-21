@@ -353,7 +353,7 @@ class MoviesPanel(
      * sends; true for the last key of the code, which is then used up.
      */
     fun filmLinkKey(keyCode: Int): Boolean {
-        if (!detailOpen || game != null || filmLinkPick != null || detailEntry == null) { eggKeys.clear(); return false }
+        if (!detailOpen || game != null || filmLinkPick != null || filmLinkMenu != null || detailEntry == null) { eggKeys.clear(); return false }
         val now = android.os.SystemClock.uptimeMillis()
         if (now - eggAt > 2500) eggKeys.clear()
         eggAt = now
@@ -368,16 +368,32 @@ class MoviesPanel(
     private fun linkTitle(f: com.danielportelabyrne.cinema.data.movies.LinkFilm): Title = suggestionTitle(
         com.danielportelabyrne.cinema.data.movies.Suggestion(f.tmdbId, Kind.MOVIE, f.name, f.year, f.overview, f.posterPath, f.backdropPath, emptyList(), null, false))
 
-    /** Question 1: start on this film (when it is a film) or on a random one. */
+    /** The start menu, while it is up (see [FilmLinkMenu]). */
+    private var filmLinkMenu: FilmLinkMenu? = null
+
+    /** Opens the Film Link start menu over the info page: where to start, where to finish, the clock, then Play. */
     private fun startFilmLink(from: Entry) {
         if (!seerr.isSignedIn) { CinemaToast.show(activity, "Film Link needs Seerr", Toast.LENGTH_LONG); return }
         val here = from.title.takeIf { it.kind == Kind.MOVIE }
-        if (here == null) { filmLinkAskFinish(from, null); return }
-        CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "Where do you start?", listOf(
-            CinemaChoiceSheet.Choice("This film: ${here.name}") {
-                filmLinkResolve(here) { f -> if (f == null) CinemaToast.show(activity, "Couldn’t find this film’s connections", Toast.LENGTH_LONG) else filmLinkAskFinish(from, f) }
+        detail.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        val menu = FilmLinkMenu(activity, detail.parent as ViewGroup,
+            here?.let { FilmLinkMenu.Here(it.name, it.year, it.posterUrl, from.posterHeaders) },
+            onPlay = { startHere, choose, timed ->
+                closeFilmLinkMenu()
+                val mode = if (timed) com.danielportelabyrne.cinema.data.movies.LinkMode.TIMED else com.danielportelabyrne.cinema.data.movies.LinkMode.UNTIMED
+                if (startHere && here != null) filmLinkResolve(here) { f ->
+                    if (f == null) CinemaToast.show(activity, "Couldn’t find this film’s connections", Toast.LENGTH_LONG) else filmLinkGo(from, f, choose, mode)
+                } else filmLinkGo(from, null, choose, mode)
             },
-            CinemaChoiceSheet.Choice("A random film") { filmLinkAskFinish(from, null) }))
+            onCancel = { closeFilmLinkMenu() })
+        filmLinkMenu = menu
+        menu.show()
+    }
+
+    private fun closeFilmLinkMenu() {
+        filmLinkMenu?.dismiss(); filmLinkMenu = null
+        detail.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        detail.post { detail.requestFocus() }
     }
 
     /** Seerr's TMDB id (with artwork) for a title, which is what the game's connections are keyed by. */
@@ -387,20 +403,6 @@ class MoviesPanel(
             val film = found ?: t.tmdbId?.toLongOrNull()?.let { com.danielportelabyrne.cinema.data.movies.LinkFilm(it, t.name, t.year, null, null, t.overview) }
             activity.runOnUiThread { done(film) }
         }
-    }
-
-    /** Question 2: finish on a random film or one the player chooses. */
-    private fun filmLinkAskFinish(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?) {
-        CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "Where do you finish?", listOf(
-            CinemaChoiceSheet.Choice("A random film") { filmLinkAskClock(from, start, choose = false) },
-            CinemaChoiceSheet.Choice("A film I choose") { filmLinkAskClock(from, start, choose = true) }))
-    }
-
-    /** Question 3: play against the clock or not. */
-    private fun filmLinkAskClock(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, choose: Boolean) {
-        CinemaChoiceSheet.show(infoSheet, activity, "FILM LINK", "Against the clock?", listOf(
-            CinemaChoiceSheet.Choice("No clock") { filmLinkGo(from, start, choose, com.danielportelabyrne.cinema.data.movies.LinkMode.UNTIMED) },
-            CinemaChoiceSheet.Choice("Timed") { filmLinkGo(from, start, choose, com.danielportelabyrne.cinema.data.movies.LinkMode.TIMED) }))
     }
 
     private fun filmLinkGo(from: Entry?, start: com.danielportelabyrne.cinema.data.movies.LinkFilm?, choose: Boolean, mode: com.danielportelabyrne.cinema.data.movies.LinkMode) {
@@ -690,6 +692,8 @@ class MoviesPanel(
     fun back(): Boolean {
         // Choosing a finish in Search: any Back cancels the choosing (and then goes back as usual).
         filmLinkPick = null
+        // The Film Link menu is up: Back closes it and nothing more.
+        if (filmLinkMenu != null) { closeFilmLinkMenu(); return true }
         game?.let { return filmLinkBack(it) }
         layoutEditor?.let { it.back(); return true }
         if (PhoneInput.hideQr()) return true
