@@ -117,32 +117,32 @@ object FilmLinkPairs {
     /** The furthest from the start a target is planted: [PLANT_DEPTH] + 1 hops in all, so a planted game is never long. */
     const val PLANT_DEPTH = 3
 
-    /** How many films a target is planted at, at most, and the fewest (so one dead-end wander can't miss them all). */
-    const val PLANTS = 5
+    /** The fewest films the target is planted at when none of its real associations are within reach of the start. */
     const val MIN_PLANTS = 3
 
     /**
-     * For a chosen pair with no route found: plants [target] as a connection of several films the player can reach from
-     * [start], for this game only. One planted film among thousands of possible paths would make the game unwinnable in
-     * practice, so up to [PLANTS] are planted, at least [MIN_PLANTS] when that many are reachable, spread over 1 to
-     * [PLANT_DEPTH] hops from the start. Each is chosen to make sense: films the target's own recommendations include (really
-     * associated), then the nearest in release year. The target is then 2 to [PLANT_DEPTH] + 1 hops away by the shortest
-     * plant. The plants live in [graph] (the session's own copy), never in Seerr or TMDB, so the recommendations are
-     * untouched and they are gone with the game ([CachedFilmGraph.unplant] clears them earlier). Null when nothing is
-     * reachable to plant at.
+     * For a chosen pair with no route found: plants [target] for this game only, on every page where it makes sense, so
+     * each player has the same chance to stumble on it however they wander. The rule is a real connection: the target
+     * appears in the "more films like this" row of every film in the target's own recommendations (the films TMDB itself
+     * associates with it), wherever the player meets one, however far from the start. [CachedFilmGraph] adds it to a page
+     * only when that page doesn't already list it. If none of those films is within [PLANT_DEPTH] hops of the start, so the
+     * player might never meet one, [MIN_PLANTS] reachable films nearest in release year are planted too. The start page
+     * is never planted, so the target is at least 2 hops away, and at most [PLANT_DEPTH] + 1 by the shortest plant. The
+     * plants live in [graph] (the session's own copy), never in Seerr or TMDB, so the recommendations are untouched and
+     * they are gone with the game ([CachedFilmGraph.unplant] clears them earlier). Null when nothing is plantable.
      */
     fun plant(start: LinkFilm, target: LinkFilm, graph: CachedFilmGraph, random: Random): LinkPair? {
         val depths = explore(start, graph, PLANT_DEPTH, CALL_BUDGET)
-        val associated = graph.neighbours(target.tmdbId).orEmpty().map { it.tmdbId }.toSet()
+        val associated = graph.neighbours(target.tmdbId).orEmpty().map { it.tmdbId }.filter { it != start.tmdbId && it != target.tmdbId }.toSet()
         val candidates = depths.entries.filter { it.value >= 1 && it.key.tmdbId != target.tmdbId }.shuffled(random)
-        if (candidates.isEmpty()) return null
-        val related = candidates.filter { it.key.tmdbId in associated }
+        val reachableAssociated = candidates.filter { it.key.tmdbId in associated }
         val year = target.year
-        val others = candidates.filter { it.key.tmdbId !in associated }
-            .sortedBy { val y = it.key.year; if (y != null && year != null) kotlin.math.abs(y - year) else 999 }
-        val chosen = related.take(PLANTS) + others.take((MIN_PLANTS - related.size).coerceAtLeast(0))
-        chosen.forEach { graph.plant(it.key.tmdbId, target) }
-        return LinkPair(start, target, chosen.minOf { it.value } + 1)
+        val fillers = if (reachableAssociated.isNotEmpty()) emptyList() else candidates
+            .sortedBy { val y = it.key.year; if (y != null && year != null) kotlin.math.abs(y - year) else 999 }.take(MIN_PLANTS)
+        val nearest = (reachableAssociated + fillers).minOfOrNull { it.value } ?: return null
+        associated.forEach { graph.plant(it, target) }
+        fillers.forEach { graph.plant(it.key.tmdbId, target) }
+        return LinkPair(start, target, nearest + 1)
     }
 
     /**

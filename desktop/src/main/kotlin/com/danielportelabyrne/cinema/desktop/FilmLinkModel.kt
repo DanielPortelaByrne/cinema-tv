@@ -143,7 +143,7 @@ class FilmLinkController(private val model: CinemaModel) {
             planning = false
             val pair = r?.first
             if (pair == null) { model.toast("Couldn't find two films to link right now. Try again"); return@bg }
-            if (r.second) model.toast("No natural route found, so ${pair.target.name} is linked to a few related films for this game")
+            if (r.second) model.toast("No natural route found, so ${pair.target.name} is linked into the pages of films it is really associated with, for this game")
             begin(pair, mode, graph, startedHere)
         }
     }
