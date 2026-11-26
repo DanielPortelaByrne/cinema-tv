@@ -147,6 +147,7 @@ object RemoteServer {
                 val profile = LifeOsHistoryExport.resolveAuthorizedProfile(accountsPrefs, r.query["profileId"])
                     ?: return 403 to "Unknown or unauthorised profile"
                 val sinceMs = r.query["since"]?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+                val isOriginal = accounts.all().isEmpty() || profile.userId == accounts.originalUserId
                 val scoped = if (profile.userId == "default" && accounts.all().isEmpty()) base
                     else base.forPerson(profile.userId, profile.userId == accounts.originalUserId)
                 val json = LifeOsHistoryExport.historyJson(
@@ -157,6 +158,7 @@ object RemoteServer {
                     profile.userId,
                     profile.name,
                     sinceMs,
+                    legacySettingsPrefs = if (isOriginal) base.preferences("cinema_settings") else null,
                 )
                 200 to json
             }

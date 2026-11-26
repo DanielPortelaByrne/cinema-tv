@@ -67,4 +67,51 @@ class LifeOsHistoryExportTest {
         )
         assertEquals(0, incremental.getJSONArray("entries").length())
     }
+
+    @Test
+    fun exportsFavouritesAtTimestampAndLegacyWatchlistFallbackOnlyWhenProvided() {
+        val platform = MemoryPlatform()
+        val favPrefs = platform.preferences("favourites~u_dan")
+        favPrefs.edit().putString(
+            "favs_local",
+            Favourites.toJson(
+                listOf(Favourite(Kind.MOVIE, "123", "tt0123456", null, "Spirited Away", 2001, null, null, 1_780_000_123_000L))
+            )
+        ).commit()
+
+        val legacyPrefs = platform.preferences("cinema_settings")
+        legacyPrefs.edit().putString(
+            "watchlist_films",
+            Watchlist.toJson(listOf(WatchlistFilm("tt0245429", "Spirited Away", 2001, null, Kind.MOVIE)))
+        ).commit()
+
+        val originalOut = JSONObject(
+            LifeOsHistoryExport.historyJson(
+                platform.preferences("play_history~u_dan"),
+                platform.preferences("cinema_personal~u_dan"),
+                favPrefs,
+                platform.preferences("continue_watching~u_dan"),
+                "u_dan",
+                "Daniel",
+                legacySettingsPrefs = legacyPrefs,
+            )
+        )
+        assertEquals(1, originalOut.getJSONArray("favourites").length())
+        assertEquals(1_780_000_123_000L, originalOut.getJSONArray("favourites").getJSONObject(0).getLong("addedAt"))
+        assertEquals(1, originalOut.getJSONArray("watchlist").length())
+        assertEquals("Spirited Away", originalOut.getJSONArray("watchlist").getJSONObject(0).getString("title"))
+
+        val nonOriginalOut = JSONObject(
+            LifeOsHistoryExport.historyJson(
+                platform.preferences("play_history~u_eva"),
+                platform.preferences("cinema_personal~u_eva"),
+                platform.preferences("favourites~u_eva"),
+                platform.preferences("continue_watching~u_eva"),
+                "u_eva",
+                "Eva",
+                legacySettingsPrefs = null,
+            )
+        )
+        assertEquals(0, nonOriginalOut.getJSONArray("watchlist").length())
+    }
 }

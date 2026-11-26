@@ -49,6 +49,7 @@ object LifeOsHistoryExport {
         profileName: String,
         sinceMs: Long = 0L,
         nowMs: Long = System.currentTimeMillis(),
+        legacySettingsPrefs: Preferences? = null,
     ): String {
         val allEntries = ArrayList<PlayedEntry>()
         for (k in playHistoryPrefs.all.keys) {
@@ -90,7 +91,9 @@ object LifeOsHistoryExport {
         }
 
         val watchlistArr = JSONArray()
-        for (w in Watchlist.parse(personalPrefs.getString("watchlist_films", null))) {
+        val watchlistRaw = personalPrefs.getString("watchlist_films", null)
+            ?: legacySettingsPrefs?.getString("watchlist_films", null)
+        for (w in Watchlist.parse(watchlistRaw)) {
             watchlistArr.put(
                 JSONObject()
                     .put("id", w.imdbId)
@@ -109,11 +112,12 @@ object LifeOsHistoryExport {
                 val o = arr.optJSONObject(i) ?: continue
                 val name = o.optString("name")
                 if (name.isBlank()) continue
+                val addedAt = o.optLong("at", 0L).takeIf { it > 0L } ?: o.optLong("addedAt", 0L)
                 favArr.put(
                     JSONObject()
                         .put("title", name)
                         .put("kind", if (o.optString("kind") == "SHOW") "show" else "film")
-                        .put("addedAt", o.optLong("addedAt", 0L))
+                        .put("addedAt", addedAt)
                 )
             }
         }
