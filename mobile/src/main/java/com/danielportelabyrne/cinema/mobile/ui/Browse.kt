@@ -115,14 +115,24 @@ fun HomeScreen(model: Model) {
     PullToRefreshBox(isRefreshing = model.loading, onRefresh = { model.refresh(force = true) }) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
             item { Hero(model, rows) }
-            if (model.offlineMode) item {
-                Column(Modifier.padding(16.dp).fillMaxWidth().glass(18.dp).padding(16.dp)) {
-                    Text("Can't reach your Jellyfin server", style = MaterialTheme.typography.titleMedium, color = Palette.ivory)
-                    Text("Away from home? Your offline copies are under More → On this phone.", style = MaterialTheme.typography.bodyMedium, color = Palette.ivoryMuted)
-                }
-            }
+            if (model.offlineMode || model.unreachable) item { OfflineNotice(model) }
             layoutSections(model, LayoutPage.HOME)
         }
+    }
+}
+
+/** Shown with no server: the way straight to what is on the phone. */
+@Composable
+private fun OfflineNotice(model: Model) {
+    val ready = model.offline.copies.count { it.complete }
+    Column(Modifier.padding(16.dp).fillMaxWidth().glass(18.dp).padding(16.dp)) {
+        Text("Can't reach your Jellyfin server", style = MaterialTheme.typography.titleMedium, color = Palette.ivory)
+        Text(
+            if (ready == 0) "Nothing is on this phone yet. Download films while you're connected, to watch them anywhere."
+            else "$ready ${if (ready == 1) "download is" else "downloads are"} ready to watch on this phone.",
+            style = MaterialTheme.typography.bodyMedium, color = Palette.ivoryMuted,
+        )
+        if (ready > 0) CreamButton("Watch downloads", Icons.Filled.PlayArrow, Modifier.padding(top = 12.dp)) { model.push(Screen.Offline) }
     }
 }
 

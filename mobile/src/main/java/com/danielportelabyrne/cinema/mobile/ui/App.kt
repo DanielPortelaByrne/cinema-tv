@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,11 +42,14 @@ import com.danielportelabyrne.cinema.mobile.Model
 import com.danielportelabyrne.cinema.mobile.R
 import com.danielportelabyrne.cinema.mobile.Screen
 import com.danielportelabyrne.cinema.mobile.Tab
+import kotlinx.coroutines.delay
 
 @Composable
 fun CinemaApp(model: Model) {
     var splash by rememberSaveable { mutableStateOf(true) }
     val top = model.stack.lastOrNull()
+    // Every page shows whether a title is on the phone, so downloads are followed from here, not from one page.
+    LaunchedEffect(Unit) { while (true) { model.offline.poll(); delay(2000) } }
     val ground = when {
         model.needsSetup -> Grounds.HOME
         top is Screen.TitlePage -> if (top.title.kind == Kind.SHOW) Grounds.SERIES else Grounds.FILMS

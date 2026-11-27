@@ -2,6 +2,7 @@ package com.danielportelabyrne.cinema.mobile
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -116,6 +117,8 @@ class Model(val context: Context) {
     var library by mutableStateOf<List<JellyfinItem>>(emptyList())
     var loading by mutableStateOf(false)
     var offlineMode by mutableStateOf(false)
+    /** A request could not reach Jellyfin, and none has since. A saved library can fill the pages all the same. */
+    var unreachable by mutableStateOf(false)
     var toast by mutableStateOf<String?>(null)
 
     /** Catalogue rows per page key ("home", "films", "series", "svc:nfx"...). */
@@ -129,7 +132,13 @@ class Model(val context: Context) {
         Catalog.country = settings.region
         Catalog.followed = settings.followedServices
         Catalog.followedChannels = settings.followedChannels
-        client.onReachabilityChanged = { ok -> scope.launch { toast(if (ok) "Jellyfin is back" else "Can't reach the Jellyfin server") } }
+        client.onReachabilityChanged = { ok ->
+            scope.launch {
+                unreachable = !ok
+                toast(if (ok) "Jellyfin is back" else "Can't reach the Jellyfin server")
+                if (ok) keepPosters()
+            }
+        }
         client.onLibraryChanged = { val latest = client.loadedLibrary(); scope.launch { library = latest } }
         if (!needsSetup) { refresh(); client.startLibraryPolling(); pullProfile() }
     }
@@ -210,10 +219,23 @@ class Model(val context: Context) {
             val loaded = withContext(Dispatchers.IO) { runCatching { shelvesApi.load(force) }.getOrDefault(HomeShelves()) }
             val lib = withContext(Dispatchers.IO) { client.loadedLibrary() }
             loading = false
-            offlineMode = loaded.isEmpty && lib.isEmpty()
+            offlineMode = !online() || (loaded.isEmpty && lib.isEmpty())
             shelves = loaded; library = lib
+            if (!offlineMode) keepPosters()
         }
     }
+
+    /** Whether the phone has any network at all (none in flight mode). */
+    private fun online(): Boolean = context.getSystemService(ConnectivityManager::class.java)?.activeNetwork != null
+
+    // --- Offline copies ------------------------------------------------------------------------
+
+    fun download(item: JellyfinItem) {
+        toast(offline.download(item))
+        keepPosters()
+    }
+
+    private fun keepPosters() = bg({ offline.savePosters() })
 
     fun libraryTitle(item: JellyfinItem): Title {
         val base = JellyfinApi.cleanBase(client.server)
@@ -276,13 +298,15 @@ class Model(val context: Context) {
     // --- Playing -------------------------------------------------------------------------------
 
     fun play(item: JellyfinItem, fromStart: Boolean = false) {
-        offline.find(item.id)?.let { copy -> if (copy.complete) { playOffline(copy.id); return } }
+        offline.poll()   // it may have finished since anything last looked
+        offline.find(item.id)?.let { copy -> if (copy.complete) { playOffline(copy.id, fromStart); return } }
         context.startActivity(Intent(context, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra(PlayerActivity.ITEM, item.id).putExtra(PlayerActivity.FROM_START, fromStart))
     }
 
-    fun playOffline(id: String) {
-        context.startActivity(Intent(context, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(PlayerActivity.OFFLINE, id))
+    fun playOffline(id: String, fromStart: Boolean = false) {
+        context.startActivity(Intent(context, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(PlayerActivity.OFFLINE, id).putExtra(PlayerActivity.FROM_START, fromStart))
     }
 
     fun playUrl(url: String, title: String) {

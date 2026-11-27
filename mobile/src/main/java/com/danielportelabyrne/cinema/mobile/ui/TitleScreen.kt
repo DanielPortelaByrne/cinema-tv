@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Downloading
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material3.Icon
@@ -53,6 +54,7 @@ import com.danielportelabyrne.cinema.data.movies.Availability
 import com.danielportelabyrne.cinema.data.movies.Kind
 import com.danielportelabyrne.cinema.mobile.Model
 import com.danielportelabyrne.cinema.mobile.Screen
+import com.danielportelabyrne.cinema.mobile.offline.DownloadText
 import com.danielportelabyrne.cinema.mobile.data.clock
 import com.danielportelabyrne.cinema.mobile.data.runtimeLabel
 import com.danielportelabyrne.cinema.mobile.data.watchedFraction
@@ -99,7 +101,7 @@ fun TitleScreen(model: Model, page: Screen.TitlePage) {
                         Availability.PARTIAL -> Pill("Partly available")
                         else -> {}
                     }
-                    model.offline.find(lib?.id ?: "")?.let { Pill(if (it.complete) "On this phone" else "Downloading to phone", Palette.terracotta.copy(alpha = 0.5f)) }
+                    model.offline.find(lib?.id ?: "")?.let { Pill(if (it.complete) "On this phone" else if (it.failed) "Download failed" else "Downloading to phone", Palette.terracotta.copy(alpha = 0.5f)) }
                 }
                 Gap(16.dp)
                 Actions(model, page)
@@ -118,13 +120,16 @@ private fun Actions(model: Model, page: Screen.TitlePage) {
     val t = page.title
     FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (lib != null) {
-            val resuming = !lib.isSeries && lib.resumeMs > 0
-            CreamButton(if (lib.isSeries) "Play" else if (resuming) "Resume ${clock(lib.resumeMs)}" else "Play", Icons.Filled.PlayArrow) { model.playTitle(page) }
+            // A film on the phone plays from there, so the button gives that copy's place.
+            val resumeMs = model.offline.find(lib.id)?.takeIf { it.complete }?.resumeMs ?: lib.resumeMs
+            val resuming = !lib.isSeries && resumeMs > 0
+            CreamButton(if (lib.isSeries) "Play" else if (resuming) "Resume ${clock(resumeMs)}" else "Play", Icons.Filled.PlayArrow) { model.playTitle(page) }
             if (resuming) Secondary("From the start", Icons.Filled.Replay) { model.playTitle(page, fromStart = true) }
             if (!lib.isSeries) {
                 val copy = model.offline.find(lib.id)
-                if (copy == null) Secondary("Download", Icons.Filled.Download) { model.toast(model.offline.download(lib)) }
-                else Secondary(if (copy.complete) "On phone" else "Downloading", Icons.Filled.DownloadDone) { model.push(Screen.Offline) }
+                if (copy == null) Secondary("Download", Icons.Filled.Download) { model.download(lib) }
+                else if (copy.failed) Secondary("Try download again", Icons.Filled.Replay) { model.download(lib) }
+                else Secondary(if (copy.complete) "On phone" else DownloadText.percent(copy.progress), if (copy.complete) Icons.Filled.DownloadDone else Icons.Filled.Downloading) { model.push(Screen.Offline) }
             }
         } else {
             if (model.seerr.isSignedIn && page.availability in setOf(null, Availability.NONE)) TerraButton("Request", Icons.Filled.AddCircleOutline) { model.request(page) }
@@ -169,8 +174,10 @@ private fun EpisodeRow(model: Model, ep: JellyfinItem) {
             ep.overview?.takeIf { !ep.missing }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.dim, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp)) }
         }
         if (ep.played) Icon(Icons.Filled.CheckCircle, "Watched", tint = Palette.teal, modifier = Modifier.padding(horizontal = 4.dp))
-        if (!ep.missing) IconButton(onClick = { if (copy == null) model.toast(model.offline.download(ep)) else model.push(Screen.Offline) }) {
-            Icon(if (copy == null) Icons.Filled.Download else Icons.Filled.DownloadDone, "Download to phone", tint = if (copy == null) Palette.ivoryMuted else Palette.butter)
+        if (!ep.missing) IconButton(onClick = { if (copy == null || copy.failed) model.download(ep) else model.push(Screen.Offline) }) {
+            // Ticked and bright only once the whole episode is on the phone.
+            val icon = when { copy == null || copy.failed -> Icons.Filled.Download; copy.complete -> Icons.Filled.DownloadDone; else -> Icons.Filled.Downloading }
+            Icon(icon, "Download to phone", tint = when { copy?.complete == true -> Palette.butter; copy?.failed == true -> Palette.terracotta; else -> Palette.ivoryMuted })
         }
     }
 }
