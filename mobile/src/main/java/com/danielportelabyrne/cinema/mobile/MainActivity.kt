@@ -25,5 +25,6 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         val model = (application as MobileApp).model
         if (!model.needsSetup) model.refresh()
+        model.resumeDownloads()
     }
 }

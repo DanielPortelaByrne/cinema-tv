@@ -28,6 +28,7 @@ import com.danielportelabyrne.cinema.data.settings.CinemaSettings
 import com.danielportelabyrne.cinema.mobile.data.HomeShelves
 import com.danielportelabyrne.cinema.mobile.data.Shelves
 import com.danielportelabyrne.cinema.mobile.device.MobilePlatform
+import com.danielportelabyrne.cinema.mobile.offline.DownloadService
 import com.danielportelabyrne.cinema.mobile.offline.Offline
 import com.danielportelabyrne.cinema.mobile.player.PlayerActivity
 import com.danielportelabyrne.cinema.mobile.remote.TvRemote
@@ -232,8 +233,14 @@ class Model(val context: Context) {
 
     fun download(item: JellyfinItem) {
         toast(offline.download(item))
+        resumeDownloads()
         keepPosters()
     }
+
+    fun retryDownload(id: String) { offline.retry(id); resumeDownloads() }
+
+    /** Carries on with anything unfinished. Only works while Cinema is on screen. */
+    fun resumeDownloads() { if (offline.next() != null) DownloadService.start(context) }
 
     private fun keepPosters() = bg({ offline.savePosters() })
 
@@ -298,7 +305,6 @@ class Model(val context: Context) {
     // --- Playing -------------------------------------------------------------------------------
 
     fun play(item: JellyfinItem, fromStart: Boolean = false) {
-        offline.poll()   // it may have finished since anything last looked
         offline.find(item.id)?.let { copy -> if (copy.complete) { playOffline(copy.id, fromStart); return } }
         context.startActivity(Intent(context, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra(PlayerActivity.ITEM, item.id).putExtra(PlayerActivity.FROM_START, fromStart))

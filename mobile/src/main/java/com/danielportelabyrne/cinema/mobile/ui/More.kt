@@ -100,18 +100,22 @@ fun OfflineScreen(model: Model) {
         TabHeader("On this phone", listOf("Offline"), RibbonShape.LOOP)
         val copies = model.offline.copies
         if (copies.isEmpty()) { Empty("Nothing kept on this phone yet. Use Download on a film or an episode; it downloads over Wi-Fi."); return }
+        val current = model.offline.next()?.id
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
             items(copies, key = { it.id }) { c ->
-                Row(Modifier.fillMaxWidth().clickable(enabled = c.complete) { model.playOffline(c.id) }.padding(16.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().clickable(enabled = c.complete || c.failed) { if (c.failed) model.retryDownload(c.id) else model.playOffline(c.id) }.padding(16.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     RemoteImage(model, model.offline.posterOf(c), Modifier.width(56.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp)))
                     Column(Modifier.padding(start = 12.dp).weight(1f)) {
                         Text(c.name, style = MaterialTheme.typography.titleSmall, color = Palette.ivory)
                         c.subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted) }
                         when {
-                            c.failed -> Text(c.status ?: "Download failed. Delete it and try again.", style = MaterialTheme.typography.bodySmall, color = Palette.terracotta)
+                            c.failed -> Text("Download failed. ${c.status.orEmpty()} Tap to try again.", style = MaterialTheme.typography.bodySmall, color = Palette.terracotta)
                             !c.complete -> {
                                 WaveBar(c.progress, Modifier.padding(top = 6.dp))
-                                Text(c.status ?: DownloadText.line(c.progress, c.sizeBytes?.let { ByteSize.format(it) }), style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted, modifier = Modifier.padding(top = 4.dp))
+                                // How far it has got always shows; the line under it says how fast, or why it is not moving.
+                                Text(DownloadText.amount(c.doneBytes, c.sizeBytes), style = MaterialTheme.typography.titleSmall, color = Palette.ivory, modifier = Modifier.padding(top = 4.dp))
+                                val note = if (c.id != current) "Waiting its turn" else c.status ?: DownloadText.pace(c.speed, c.doneBytes, c.sizeBytes) ?: "Connecting…"
+                                Text(note, style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted)
                             }
                             else -> c.sizeBytes?.let { Text(ByteSize.format(it), style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted) }
                         }

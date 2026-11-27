@@ -15,32 +15,51 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** A film or episode kept on the phone to watch without the server. [status] says why an unfinished one is not moving. */
+/**
+ * A film or episode kept on the phone to watch without the server. [token] tells one request to download it from a
+ * later one. [status] says why an unfinished one is not moving. [legacyId] is the Android DownloadManager entry that an
+ * older build of Cinema made for it, or -1.
+ */
 data class OfflineCopy(
-    val id: String, val name: String, val subtitle: String?, val poster: String?, val file: String, val downloadId: Long,
-    val sizeBytes: Long?, val resumeMs: Long = 0L, val complete: Boolean = false, val failed: Boolean = false, val progress: Float = 0f,
-    val status: String? = null,
+    val id: String, val name: String, val subtitle: String?, val poster: String?, val file: String, val token: Long,
+    val sizeBytes: Long?, val resumeMs: Long = 0L, val complete: Boolean = false, val failed: Boolean = false,
+    val source: String? = null, val legacyId: Long = -1L,
+    val doneBytes: Long = 0L, val speed: Long = 0L, val status: String? = null,
 ) {
+    val progress: Float get() = if (complete) 1f else sizeBytes?.takeIf { it > 0 }?.let { (doneBytes.toFloat() / it).coerceIn(0f, 1f) } ?: 0f
+
+    /** The file while it is still arriving, and which version of it that is. */
+    val partFile: File get() = File("$file.part")
+    val tagFile: File get() = File("$file.tag")
+
     fun toJson(): JSONObject = JSONObject().put("id", id).put("name", name).put("subtitle", subtitle).put("poster", poster)
-        .put("file", file).put("downloadId", downloadId).put("size", sizeBytes ?: -1).put("resume", resumeMs).put("complete", complete)
+        .put("file", file).put("token", token).put("size", sizeBytes ?: -1).put("resume", resumeMs).put("complete", complete)
+        .put("failed", failed).put("error", status.takeIf { failed }).put("source", source).put("downloadId", legacyId)
 
     companion object {
-        fun of(o: JSONObject) = OfflineCopy(o.getString("id"), o.getString("name"), o.optString("subtitle").ifBlank { null }.takeIf { it != "null" },
-            o.optString("poster").ifBlank { null }.takeIf { it != "null" }, o.getString("file"), o.getLong("downloadId"),
-            o.optLong("size", -1).takeIf { it > 0 }, o.optLong("resume"), o.optBoolean("complete"))
+        private fun JSONObject.text(name: String): String? = if (isNull(name)) null else optString(name).ifBlank { null }.takeIf { it != "null" }
+
+        fun of(o: JSONObject): OfflineCopy {
+            val legacy = o.optLong("downloadId", -1)
+            return OfflineCopy(o.getString("id"), o.getString("name"), o.text("subtitle"), o.text("poster"), o.getString("file"),
+                o.optLong("token", legacy), o.optLong("size", -1).takeIf { it > 0 }, o.optLong("resume"), o.optBoolean("complete"),
+                o.optBoolean("failed"), o.text("source"), legacy, status = o.text("error"))
+        }
     }
 }
 
 /**
- * Offline copies: Jellyfin's original file, fetched by Android's DownloadManager (it survives the app closing, shows
- * its own notification and resumes after a dropped connection). The sign-in rides in a header, never in the address.
- * Files live in the app's own folder, so uninstalling Cinema removes them. Each copy's poster is kept beside it, so
- * the list looks right with no network.
+ * Offline copies: Jellyfin's original files, and what is known about each. [DownloadService] fetches the unfinished ones,
+ * one at a time in list order. Files live in the app's own folder, so uninstalling Cinema removes them. Each copy's
+ * poster is kept beside it, so the list looks right with no network. Change the list on the main thread only.
  */
 class Offline(private val context: Context, private val client: JellyfinClient) {
     private val prefs = context.getSharedPreferences("offline", Context.MODE_PRIVATE)
-    private val dm = context.getSystemService(DownloadManager::class.java)
-    val copies = mutableStateListOf<OfflineCopy>().apply { addAll(read()) }
+    val copies = mutableStateListOf<OfflineCopy>().apply {
+        addAll(read().map { if (it.complete) it else it.copy(doneBytes = it.partFile.length()) })
+    }
+
+    init { adoptOldDownloads() }
 
     private fun read(): List<OfflineCopy> = try {
         JSONArray(prefs.getString("copies", "[]")).let { a -> (0 until a.length()).map { OfflineCopy.of(a.getJSONObject(it)) } }
@@ -48,7 +67,35 @@ class Offline(private val context: Context, private val client: JellyfinClient) 
 
     private fun save() = prefs.edit().putString("copies", JSONArray(copies.map { it.toJson() }).toString()).apply()
 
+    /**
+     * Older builds gave downloads to Android's DownloadManager, which Android 17 keeps off the home network. One it
+     * finished is kept; one it had not is taken back, to be fetched by Cinema.
+     */
+    private fun adoptOldDownloads() {
+        val unfinished = copies.filter { !it.complete && it.legacyId >= 0 }
+        if (unfinished.isEmpty()) return
+        val dm = context.getSystemService(DownloadManager::class.java) ?: return
+        unfinished.forEach { c ->
+            val finished = runCatching {
+                dm.query(DownloadManager.Query().setFilterById(c.legacyId))?.use {
+                    it.moveToFirst() && it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) == DownloadManager.STATUS_SUCCESSFUL
+                }
+            }.getOrNull() == true
+            if (!finished) { runCatching { dm.remove(c.legacyId) }; File(c.file).delete() }
+            val i = copies.indexOf(c)
+            copies[i] = if (finished) c.copy(complete = true, failed = false, status = null)
+            else c.copy(legacyId = -1, failed = false, status = null, doneBytes = 0)
+        }
+        save()
+    }
+
     fun find(id: String): OfflineCopy? = copies.firstOrNull { it.id == id }
+
+    /** The one to fetch now, if any. */
+    fun next(): OfflineCopy? = copies.firstOrNull { !it.complete && !it.failed }
+
+    /** Whether this request to download is still wanted: not deleted, nor replaced by a newer one. */
+    fun wants(id: String, token: Long): Boolean = find(id)?.token == token
 
     fun dir(): File = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir, "offline").apply { mkdirs() }
 
@@ -57,11 +104,11 @@ class Offline(private val context: Context, private val client: JellyfinClient) 
     /** The poster kept on the phone, else the server's. */
     fun posterOf(copy: OfflineCopy): String? = posterFile(copy.id).takeIf { it.exists() }?.let { Uri.fromFile(it).toString() } ?: copy.poster
 
-    /** Starts keeping [item] on the phone. A download that failed is started again. */
+    /** Adds [item] to the downloads, and says what happened. A download that failed is tried again. */
     fun download(item: JellyfinItem): String {
         find(item.id)?.let {
-            if (it.failed) remove(it.id)
-            else return if (it.complete) "${item.name} is already on this phone" else "${item.name} is already downloading"
+            if (it.failed) { retry(it.id); return "Trying ${it.name} again" }
+            return if (it.complete) "${item.name} is already on this phone" else "${item.name} is already downloading"
         }
         val base = JellyfinApi.cleanBase(client.server)
         val file = File(dir(), item.id + ".media")
@@ -70,19 +117,45 @@ class Offline(private val context: Context, private val client: JellyfinClient) 
         val size = item.sizeBytes
         val free = dir().usableSpace
         if (size != null && size > free) return "Not enough space: $name is ${ByteSize.format(size)}, ${ByteSize.format(free)} free"
-        // Left over from an earlier attempt, it would make DownloadManager save under another name.
-        file.delete()
-        val req = DownloadManager.Request(Uri.parse(client.streamUrl(item)))
-            .setTitle(name).setDescription(subtitle ?: "Cinema")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationUri(Uri.fromFile(file))
-            .setAllowedOverMetered(false)
-        client.playbackHeaders().forEach { (k, v) -> req.addRequestHeader(k, v) }
-        val id = dm.enqueue(req)
         val poster = JellyfinApi.posterUrl(base, item.seriesId?.takeIf { item.isEpisode } ?: item.id)
-        copies += OfflineCopy(item.id, name, subtitle, poster, file.absolutePath, id, size, item.resumeMs)
+        val copy = OfflineCopy(item.id, name, subtitle, poster, file.absolutePath, System.currentTimeMillis(), size, item.resumeMs,
+            source = item.mediaSourceId)
+        // Left over from an earlier attempt.
+        file.delete(); copy.partFile.delete(); copy.tagFile.delete()
+        copies += copy
         save()
         return "Downloading $name over Wi-Fi" + (size?.let { " (${ByteSize.format(it)})" } ?: "")
+    }
+
+    /** Puts a failed download back in the queue. What had arrived is kept. */
+    fun retry(id: String) {
+        update(id, find(id)?.token ?: return) { it.copy(failed = false, status = null, speed = 0) }
+        save()
+    }
+
+    private fun update(id: String, token: Long, change: (OfflineCopy) -> OfflineCopy): Boolean {
+        val i = copies.indexOfFirst { it.id == id && it.token == token }
+        if (i < 0) return false
+        val next = change(copies[i])
+        if (next != copies[i]) copies[i] = next
+        return true
+    }
+
+    fun progress(id: String, token: Long, done: Long, total: Long, speed: Long) {
+        val sizeBefore = find(id)?.sizeBytes
+        update(id, token) { it.copy(doneBytes = done, sizeBytes = total.takeIf { t -> t > 0 } ?: it.sizeBytes, speed = speed, status = null) }
+        if (find(id)?.sizeBytes != sizeBefore) save()
+    }
+
+    /** Why it is not moving just now. */
+    fun waiting(id: String, token: Long, why: String) { update(id, token) { it.copy(status = why, speed = 0) } }
+
+    fun finished(id: String, token: Long, size: Long) {
+        if (update(id, token) { it.copy(complete = true, failed = false, sizeBytes = size, doneBytes = size, speed = 0, status = null) }) save()
+    }
+
+    fun failed(id: String, token: Long, why: String) {
+        if (update(id, token) { it.copy(failed = true, status = why, speed = 0) }) save()
     }
 
     /** Fetches any poster not yet kept on the phone. Blocking; one that can't be fetched is tried again next time. */
@@ -109,37 +182,10 @@ class Offline(private val context: Context, private val client: JellyfinClient) 
         }
     }
 
-    /** Reads each unfinished download's progress from DownloadManager. Works with no network. */
-    fun poll() {
-        var changed = false
-        copies.toList().forEachIndexed { i, c ->
-            if (c.complete) return@forEachIndexed
-            dm.query(DownloadManager.Query().setFilterById(c.downloadId))?.use { cur ->
-                val next = if (!cur.moveToFirst()) c.copy(failed = true, status = null) else {
-                    val status = cur.getInt(cur.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                    val reason = cur.getInt(cur.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                    val done = cur.getLong(cur.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                    val total = cur.getLong(cur.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                        changed = true
-                        c.copy(complete = true, failed = false, progress = 1f, status = null, sizeBytes = total.takeIf { it > 0 } ?: c.sizeBytes)
-                    } else c.copy(
-                        failed = status == DownloadManager.STATUS_FAILED,
-                        progress = if (total > 0) done.toFloat() / total else 0f,
-                        sizeBytes = total.takeIf { it > 0 } ?: c.sizeBytes,
-                        status = DownloadText.of(status, reason),
-                    )
-                }
-                if (next != c) copies[i] = next
-            }
-        }
-        if (changed) save()
-    }
-
     fun remove(id: String) {
         val c = find(id) ?: return
-        runCatching { dm.remove(c.downloadId) }
-        File(c.file).delete()
+        if (c.legacyId >= 0) runCatching { context.getSystemService(DownloadManager::class.java)?.remove(c.legacyId) }
+        File(c.file).delete(); c.partFile.delete(); c.tagFile.delete()
         posterFile(id).delete()
         copies.removeAll { it.id == id }
         save()

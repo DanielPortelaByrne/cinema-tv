@@ -1,36 +1,31 @@
 package com.danielportelabyrne.cinema.mobile.offline
 
-import android.app.DownloadManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class DownloadTextTest {
-    @Test fun runningSaysNothingExtra() = assertNull(DownloadText.of(DownloadManager.STATUS_RUNNING, 0))
-
-    @Test fun waitingForWifiIsSaid() {
-        assertEquals("Waiting for Wi-Fi", DownloadText.of(DownloadManager.STATUS_PAUSED, DownloadManager.PAUSED_QUEUED_FOR_WIFI))
-        assertEquals("Waiting for Wi-Fi", DownloadText.of(DownloadManager.STATUS_PAUSED, DownloadManager.PAUSED_WAITING_FOR_NETWORK))
-        assertEquals("Waiting to start. Needs Wi-Fi.", DownloadText.of(DownloadManager.STATUS_PENDING, 0))
-    }
-
-    @Test fun failuresGiveTheirReason() {
-        assertEquals("Download failed: not enough space on this phone.",
-            DownloadText.of(DownloadManager.STATUS_FAILED, DownloadManager.ERROR_INSUFFICIENT_SPACE))
-        assertEquals("Download failed: Jellyfin answered 401. Delete it and try again.", DownloadText.of(DownloadManager.STATUS_FAILED, 401))
-        assertEquals("Download failed. Delete it and try again.",
-            DownloadText.of(DownloadManager.STATUS_FAILED, DownloadManager.ERROR_UNKNOWN))
-    }
-
     @Test fun percentNeverClaimsToBeDone() {
         assertEquals("Downloading", DownloadText.percent(0f))
         assertEquals("45% downloaded", DownloadText.percent(0.456f))
         assertEquals("99% downloaded", DownloadText.percent(1f))
     }
 
-    @Test fun lineGivesTheSizeWhenKnown() {
-        assertEquals("Downloading · 4.2 GB", DownloadText.line(0f, "4.2 GB"))
-        assertEquals("45% downloaded · 4.2 GB", DownloadText.line(0.45f, "4.2 GB"))
-        assertEquals("45% downloaded", DownloadText.line(0.45f, null))
+    @Test fun amountSaysHowMuchOfHowMuch() {
+        assertEquals("44% · 1.2 GB of 2.7 GB", DownloadText.amount(1_200_000_000, 2_700_000_000))
+        assertEquals("0% · 0 MB of 2.7 GB", DownloadText.amount(0, 2_700_000_000))
+        assertEquals("350 MB so far", DownloadText.amount(350_000_000, null))
+    }
+
+    @Test fun paceGivesSpeedAndTimeLeft() {
+        assertNull(DownloadText.pace(0, 0, 2_700_000_000))
+        assertEquals("5.0 MB/s · 5 min left", DownloadText.pace(5_000_000, 1_200_000_000, 2_700_000_000))
+        assertEquals("5.0 MB/s", DownloadText.pace(5_000_000, 100, null))
+    }
+
+    @Test fun timeLeftRoundsUp() {
+        assertEquals("under a minute left", DownloadText.timeLeft(59))
+        assertEquals("2 min left", DownloadText.timeLeft(61))
+        assertEquals("1 h 5 min left", DownloadText.timeLeft(3_900))
     }
 }
