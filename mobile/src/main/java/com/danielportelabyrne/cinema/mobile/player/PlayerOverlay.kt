@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -59,6 +60,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -115,12 +117,17 @@ interface PlayerActions {
     fun skipIntro()
     /** Scrubbing is at [ms]; -1 when it has stopped. */
     fun preview(ms: Long)
+    /** The fingers have spread or closed by [factor]. Returns what to call the zoom now. */
+    fun zoomBy(factor: Float): String
+    /** The fingers have lifted. Returns what to call the zoom it settled on. */
+    fun zoomDone(): String
 }
 
 /**
  * The player's controls, drawn the TV's way: the wavy scrubber (three hard-stepped bands behind the cream playhead bulb,
  * dots for chapters) in place of a seek bar, a ribbon in the corner, Fraunces titles, and the wave loader while it buffers.
- * Tap shows or hides them; double-tap the left or right half to go back or forward ten seconds; drag the wave to scrub.
+ * Tap shows or hides them; double-tap the left or right half to go back or forward ten seconds; drag the wave to scrub;
+ * pinch to zoom the picture to fill the screen, or further.
  */
 @Composable
 fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.content.Context) -> MediaRouteButton) {
@@ -141,6 +148,22 @@ fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.conte
                 act.seekBy(if (back) -10_000 else 10_000); flash = if (back) "−10 s" else "+10 s"; visible = true; ui.touches++
             },
         )
+    }.pointerInput(Unit) {
+        // Two fingers: seen before the controls under them, so a pinch never presses anything.
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            var pinched = false
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.count { it.pressed } >= 2) pinched = true
+                if (pinched) {
+                    val factor = event.calculateZoom()
+                    if (factor != 1f) flash = act.zoomBy(factor)
+                    event.changes.forEach { it.consume() }
+                }
+            } while (event.changes.any { it.pressed })
+            if (pinched) flash = act.zoomDone()
+        }
     }) {
         flash?.let { Text(it, color = Palette.ivory, style = TextStyle(fontFamily = fraunces(500, 40f), fontSize = 30.sp), modifier = Modifier.align(Alignment.Center).background(Color(0x99000000), CircleShape).padding(horizontal = 24.dp, vertical = 12.dp)) }
         if (ui.buffering && !visible) Box(Modifier.align(Alignment.Center).width(180.dp)) { WaveLoader() }
@@ -185,6 +208,7 @@ fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.conte
                         progress = shown, chapters = ui.chapters, scrubbing = drag != null,
                         onScrub = { drag = it; ui.touches++; act.preview((it * ui.durationMs).toLong()) },
                         onDone = { f -> drag = null; act.preview(-1L); if (ui.durationMs > 0) act.seekTo((f * ui.durationMs).toLong()) },
+                        onCancel = { drag = null; act.preview(-1L) },
                     )
                 }
             }
@@ -214,7 +238,7 @@ fun PlayerOverlay(ui: PlayerUi, act: PlayerActions, onCastButton: (android.conte
  * the playhead is an off-white bulb with a soft glow that swells while it is held. Touch or drag anywhere on it.
  */
 @Composable
-fun WaveScrubber(progress: Float, chapters: List<Float>, scrubbing: Boolean, onScrub: (Float) -> Unit, onDone: (Float) -> Unit, modifier: Modifier = Modifier) {
+fun WaveScrubber(progress: Float, chapters: List<Float>, scrubbing: Boolean, onScrub: (Float) -> Unit, onDone: (Float) -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
     Canvas(modifier.fillMaxWidth().height(64.dp).pointerInput(Unit) {
         awaitEachGesture {
             val inset = 24.dp.toPx()
@@ -225,6 +249,8 @@ fun WaveScrubber(progress: Float, chapters: List<Float>, scrubbing: Boolean, onS
             do {
                 val e = awaitPointerEvent()
                 val c = e.changes.first()
+                // Taken for a pinch: leave the film where it was.
+                if (c.isConsumed) { onCancel(); return@awaitEachGesture }
                 f = frac(c.position.x)
                 c.consume()
                 onScrub(f)

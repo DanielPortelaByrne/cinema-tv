@@ -129,6 +129,20 @@ class PlayerActivity : AppCompatActivity() {
         override fun pip() { enterPip() }
         override fun skipIntro() { intro?.let { active.seekTo(it.endMs) } }
         override fun preview(ms: Long) = showPreview(ms)
+        override fun zoomBy(factor: Float): String { zoom = Zoom.clamp(zoom * factor, fillZoom()); applyZoom(); return Zoom.label(zoom, fillZoom()) }
+        override fun zoomDone(): String { zoom = Zoom.settle(zoom, fillZoom()); applyZoom(); return Zoom.label(zoom, fillZoom()) }
+    }
+
+    /** How far the picture is pinched in; kept for as long as this player is open, next episodes included. */
+    private var zoom = 1f
+
+    private fun fillZoom(): Float = view.videoSurfaceView?.let { Zoom.fill(view.width, view.height, it.width, it.height) } ?: 1f
+
+    /** Scales only the picture, so subtitles stay on the screen. The small picture-in-picture window shows it whole. */
+    private fun applyZoom() {
+        val surface = view.videoSurfaceView ?: return
+        val z = if (ui.pip) 1f else zoom.coerceAtMost(Zoom.limit(fillZoom()))
+        surface.scaleX = z; surface.scaleY = z
     }
 
     /** Trickplay for the item being played, when the server made it; null means no thumbnails and no requests. */
@@ -162,6 +176,13 @@ class PlayerActivity : AppCompatActivity() {
     private fun buildViews() {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         view = PlayerView(this).apply { useController = false; setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER) }
+        // A zoomed picture reaches past the frame fitted around it.
+        view.clipChildren = false
+        view.videoSurfaceView?.let { surface ->
+            (surface.parent as? ViewGroup)?.clipChildren = false
+            // A new video or a turned screen refits the picture; the zoom is laid over it again.
+            surface.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyZoom() }
+        }
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
         root.addView(ComposeView(this).apply {
             setContent { PlayerOverlay(ui, actions) { ctx -> MediaRouteButton(ctx).also { runCatching { CastButtonFactory.setUpMediaRouteButton(applicationContext, it) } } } }
@@ -399,6 +420,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onPictureInPictureModeChanged(inPip: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(inPip, newConfig)
         ui.pip = inPip
+        applyZoom()
     }
 
     override fun onStop() {
