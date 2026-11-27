@@ -1,8 +1,13 @@
 package com.danielportelabyrne.cinema.mobile.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -49,12 +54,16 @@ import com.danielportelabyrne.cinema.mobile.Model
 import com.danielportelabyrne.cinema.mobile.R
 import com.danielportelabyrne.cinema.mobile.Screen
 import com.danielportelabyrne.cinema.mobile.Tab
+import kotlinx.coroutines.delay
 
 @Composable
 fun CinemaApp(model: Model) {
     var splash by rememberSaveable { mutableStateOf(true) }
     val top = model.stack.lastOrNull()
-    AskToNotify(model)
+    AskPermissions(model)
+    // While Cinema is open it looks for requested titles every minute; ServerWatchJob takes over when it is not.
+    val waiting by remember { derivedStateOf { model.waiting.items.isNotEmpty() } }
+    LaunchedEffect(waiting) { while (waiting) { delay(60_000); model.checkWaiting() } }
     val ground = when {
         model.needsSetup -> Grounds.HOME
         top is Screen.TitlePage -> if (top.title.kind == Kind.SHOW) Grounds.SERIES else Grounds.FILMS
@@ -100,22 +109,35 @@ fun CinemaApp(model: Model) {
                 }
             }
         }
+        if (!model.needsSetup) RequestDialog(model)
         Toast(model, Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp))
         model.streaming?.let { Banner(it, Modifier.align(Alignment.Center)) }
         if (splash) Splash { splash = false }
     }
 }
 
-/** The first time something downloads, asks to show its progress as a notification. */
+/**
+ * Android's own questions, one after the other so neither hides the other: showing progress as a notification, the first
+ * time something is to be downloaded; then, when a request is to be saved later, running in the background.
+ */
+@SuppressLint("BatteryLife")
 @Composable
-private fun AskToNotify(model: Model) {
-    if (Build.VERSION.SDK_INT < 33) return
+private fun AskPermissions(model: Model) {
     val context = LocalContext.current
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    val downloading by remember { derivedStateOf { model.offline.next() != null } }
-    LaunchedEffect(downloading) {
-        if (downloading && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-            ask.launch(Manifest.permission.POST_NOTIFICATIONS)
+    val background = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
+    fun askBackground() {
+        if (!model.wantsBackground) return
+        model.wantsBackground = false
+        if (context.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(context.packageName) != false) return
+        runCatching { background.launch(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))) }
+    }
+    val notify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { askBackground() }
+    var asked by rememberSaveable { mutableStateOf(false) }
+    val downloading by remember { derivedStateOf { model.offline.next() != null || model.waiting.items.isNotEmpty() } }
+    LaunchedEffect(downloading, model.wantsBackground) {
+        val needed = Build.VERSION.SDK_INT >= 33 && downloading && !asked &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        if (needed) { asked = true; notify.launch(Manifest.permission.POST_NOTIFICATIONS) } else askBackground()
     }
 }
 

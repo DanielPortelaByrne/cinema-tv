@@ -26,5 +26,6 @@ class MainActivity : AppCompatActivity() {
         val model = (application as MobileApp).model
         if (!model.needsSetup) model.refresh()
         model.resumeDownloads()
+        model.checkWaitingNow()
     }
 }

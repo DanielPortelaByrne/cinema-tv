@@ -16,6 +16,8 @@ import com.danielportelabyrne.cinema.data.jellyfin.JellyfinItem
 import com.danielportelabyrne.cinema.data.movies.Availability
 import com.danielportelabyrne.cinema.data.movies.Catalog
 import com.danielportelabyrne.cinema.data.movies.CatalogRepository
+import com.danielportelabyrne.cinema.data.movies.EpisodeOutcome
+import com.danielportelabyrne.cinema.data.movies.SonarrClient
 import com.danielportelabyrne.cinema.data.movies.Kind
 import com.danielportelabyrne.cinema.data.movies.QueueClient
 import com.danielportelabyrne.cinema.data.movies.RequestOutcome
@@ -32,6 +34,14 @@ import com.danielportelabyrne.cinema.mobile.offline.DownloadService
 import com.danielportelabyrne.cinema.mobile.offline.Offline
 import com.danielportelabyrne.cinema.mobile.player.PlayerActivity
 import com.danielportelabyrne.cinema.mobile.remote.TvRemote
+import com.danielportelabyrne.cinema.mobile.request.EpisodeNumber
+import com.danielportelabyrne.cinema.mobile.request.Missing
+import com.danielportelabyrne.cinema.mobile.request.MissingSeason
+import com.danielportelabyrne.cinema.mobile.request.ServerWatch
+import com.danielportelabyrne.cinema.mobile.request.ServerWatchJob
+import com.danielportelabyrne.cinema.mobile.request.Waiting
+import com.danielportelabyrne.cinema.mobile.request.WaitingList
+import com.danielportelabyrne.cinema.ui.EpisodeCards
 import com.danielportelabyrne.cinema.mobile.update.MobileUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +49,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.text.Normalizer
 
@@ -52,6 +64,8 @@ sealed class Screen {
         var availability by mutableStateOf<Availability?>(null)
         var episodes by mutableStateOf<List<JellyfinItem>>(emptyList())
         var season by mutableStateOf<Int?>(null)
+        /** A series' aired episodes the server lacks, by season; null until known. */
+        var missing by mutableStateOf<List<MissingSeason>?>(null)
         var version by mutableIntStateOf(0)
     }
     class ServicePage(val service: Service) : Screen()
@@ -83,6 +97,8 @@ class Model(val context: Context) {
     val catalog = CatalogRepository(platform)
     val queue by lazy { QueueClient(seerr, platform) }
     val offline = Offline(context, client)
+    val waiting = WaitingList(context)
+    private val sonarr by lazy { SonarrClient(seerr) }
     val remote = TvRemote(platform)
     val updater = MobileUpdater(context)
     private val shelvesApi = Shelves(platform, client)
@@ -191,6 +207,7 @@ class Model(val context: Context) {
 
     /** Everything this phone knows about the owner's servers and settings, as the TV's Reset does. Offline copies stay. */
     fun resetEverything() {
+        waiting.clear(); ServerWatchJob.cancel(context); asking = null
         client.forget(); seerr.setServer(null); settings.reset()
         com.danielportelabyrne.cinema.data.movies.ArrSetup.forget()
         platform.preferences("profile_sync").edit().clear().apply()
@@ -300,6 +317,7 @@ class Model(val context: Context) {
         }
         val tmdb = page.title.tmdbId?.toLongOrNull()
         if (seerr.isSignedIn && tmdb != null) bg({ seerr.availability(page.title.kind, tmdb) }) { page.availability = it }
+        if (seerr.isSignedIn && tmdb != null && page.title.kind == Kind.SHOW) bg({ missingOf(page) }) { page.missing = it }
     }
 
     // --- Playing -------------------------------------------------------------------------------
@@ -346,17 +364,125 @@ class Model(val context: Context) {
 
     // --- Requests ------------------------------------------------------------------------------
 
-    fun request(page: Screen.TitlePage, seasons: List<Int>? = null) {
-        val tmdb = page.title.tmdbId?.toLongOrNull() ?: run { toast("Seerr doesn't know this title"); return }
-        if (!seerr.isSignedIn) { toast("Sign in to Seerr in More → Settings to request"); return }
-        bg({ seerr.request(page.title.kind, tmdb, seasons) }) { r ->
-            toast(when (r) {
-                RequestOutcome.QUEUED -> "Requested ${page.title.name}"
-                RequestOutcome.ALREADY -> "${page.title.name} is already requested"
-                RequestOutcome.NEEDS_SIGN_IN -> "Sign in to Seerr again"
-                else -> "Couldn't request ${page.title.name}"
-            })
+    /** The title being requested, while the owner is asked whether to save it to the phone too. */
+    var asking by mutableStateOf<Screen.TitlePage?>(null)
+
+    fun askToRequest(page: Screen.TitlePage) {
+        if (page.title.tmdbId?.toLongOrNull() == null) { toast("Seerr doesn't know this title"); return }
+        if (!seerr.isSignedIn) { toast("Sign in to Seerr in More \u2192 Settings to request"); return }
+        asking = page
+    }
+
+    /** Blocking. Null when it cannot be told what the series holds or lacks. */
+    private fun missingOf(page: Screen.TitlePage): List<MissingSeason>? {
+        val tmdb = page.title.tmdbId?.toLongOrNull() ?: return null
+        val seasons = seerr.seasons(tmdb).ifEmpty { return null }
+        val episodes = seasons.associate { it.number to seerr.episodes(tmdb, it.number) }
+        val library = page.library
+        val owned = library?.let { client.episodes(it.id) }.orEmpty()
+        // A series in the library with no answer about its episodes would look as if it lacked them all.
+        if (library != null && owned.isEmpty()) return null
+        return Missing.of(seasons, episodes, owned, if (library != null) sonarr.episodeStates(tmdb) else emptyMap(), EpisodeCards.today())
+    }
+
+    private class Asked(val message: String, val want: Waiting? = null)
+
+    /**
+     * Asks the server for [page]'s title: a film or a new series from Seerr; for a series already in the library, the
+     * missing episodes of [seasons]. With [toPhone], what is asked for is saved to the phone as it arrives.
+     */
+    fun request(page: Screen.TitlePage, seasons: Set<Int>, toPhone: Boolean) {
+        asking = null
+        val t = page.title
+        val tmdb = t.tmdbId?.toLongOrNull() ?: return
+        val inLibrary = page.library != null
+        val known = page.missing
+        bg({
+            fun wanting(episodes: Set<EpisodeNumber> = emptySet()) = Waiting(t.kind, tmdb.toString(), t.imdbId ?: seerr.imdbId(t.kind, tmdb), t.name, t.posterUrl, episodes)
+            fun numbers(list: List<MissingSeason>) = list.flatMap { s -> s.episodes.map { EpisodeNumber(s.number, it) } }.toSet()
+            if (t.kind == Kind.SHOW && inLibrary) {
+                val chosen = (known ?: missingOf(page)).orEmpty().filter { it.number in seasons }
+                val taken = chosen.filter { s ->
+                    if (s.whole) seerr.request(Kind.SHOW, tmdb, listOf(s.number)).let { it == RequestOutcome.QUEUED || it == RequestOutcome.ALREADY }
+                    else sonarr.requestEpisodes(tmdb, s.number, s.episodes).let { it == EpisodeOutcome.QUEUED || it == EpisodeOutcome.ALREADY || s.asked }
+                }
+                val failed = (chosen - taken.toSet()).joinToString(", ") { it.name }
+                Asked(
+                    when {
+                        taken.isEmpty() -> "Couldn't request ${t.name}. Single episodes need a Seerr admin sign-in."
+                        failed.isNotEmpty() -> "Requested ${t.name}, but not $failed"
+                        else -> "Requested ${t.name}"
+                    },
+                    if (toPhone && taken.isNotEmpty()) wanting(numbers(taken)) else null,
+                )
+            } else {
+                // Listed before asking, while everything is still plainly missing.
+                val episodes = if (toPhone && t.kind == Kind.SHOW) numbers((known ?: missingOf(page)).orEmpty()) else emptySet()
+                when (val outcome = seerr.request(t.kind, tmdb)) {
+                    RequestOutcome.QUEUED, RequestOutcome.ALREADY -> {
+                        val said = if (outcome == RequestOutcome.QUEUED) "Requested ${t.name}" else "${t.name} is already requested"
+                        if (!toPhone) Asked(said)
+                        else if (t.kind == Kind.SHOW && episodes.isEmpty()) Asked("$said. No aired episodes to save to the phone.")
+                        else Asked(said, wanting(episodes))
+                    }
+                    RequestOutcome.NEEDS_SIGN_IN -> Asked("Sign in to Seerr again")
+                    else -> Asked("Couldn't request ${t.name}")
+                }
+            }
+        }) { asked ->
+            val want = asked?.want
+            if (want != null) {
+                waiting.add(want)
+                toast("${asked.message}. It will save to this phone when it's ready.")
+                ServerWatchJob.schedule(context)
+                wantsBackground = true
+                checkWaitingNow()
+            } else toast(asked?.message ?: "Couldn't request ${t.name}")
             loadTitle(page)
+        }
+    }
+
+    // --- Saving requests to the phone ------------------------------------------------------------
+
+    /**
+     * Set when something is to be saved later: without the owner's leave to run in the background, Android does not let
+     * a download start while Cinema is closed. The app asks for it, after any other question.
+     */
+    var wantsBackground by mutableStateOf(false)
+
+    /** Looks for what is waited for, and again later from the background while anything is. */
+    fun checkWaitingNow() {
+        if (waiting.items.isEmpty()) return
+        ServerWatchJob.schedule(context)
+        scope.launch { checkWaiting() }
+    }
+
+    private val looking = Mutex()
+
+    /** Queues whatever has arrived on the server and starts saving it. Call on the main thread. */
+    suspend fun checkWaiting() {
+        if (looking.isLocked) return
+        looking.withLock {
+            val wants = waiting.items.toList()
+            if (wants.isNotEmpty() && client.isConnected) {
+                val found = withContext(Dispatchers.IO) { runCatching { ServerWatch.look(client, wants) }.getOrDefault(emptyList()) }
+                val queued = ArrayList<String>()
+                found.forEach { (want, items) ->
+                    // Dropped by the owner while the server was being asked.
+                    if (waiting.find(want.key) == null) return@forEach
+                    val taken = items.filter { item ->
+                        val said = offline.download(item)
+                        (offline.find(item.id) != null).also { ok -> if (!ok) toast(said) }
+                    }
+                    if (taken.isNotEmpty()) { queued += want.name; waiting.arrived(want.key, taken) }
+                }
+                if (queued.isNotEmpty()) {
+                    keepPosters()
+                    if (!DownloadService.start(context)) ServerWatchJob.announce(context, queued)
+                }
+            }
+            if (waiting.items.isEmpty()) ServerWatchJob.cancel(context)
+            resumeDownloads()
         }
     }
 

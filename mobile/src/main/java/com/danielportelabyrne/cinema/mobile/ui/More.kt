@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -44,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.danielportelabyrne.cinema.data.movies.ByteSize
+import com.danielportelabyrne.cinema.data.movies.Kind
 import com.danielportelabyrne.cinema.data.movies.QueueItem
 import com.danielportelabyrne.cinema.data.movies.SeerrRequest
 import com.danielportelabyrne.cinema.data.movies.Stage
@@ -99,9 +101,22 @@ fun OfflineScreen(model: Model) {
     Column(Modifier.fillMaxSize()) {
         TabHeader("On this phone", listOf("Offline"), RibbonShape.LOOP)
         val copies = model.offline.copies
-        if (copies.isEmpty()) { Empty("Nothing kept on this phone yet. Use Download on a film or an episode; it downloads over Wi-Fi."); return }
+        val waiting = model.waiting.items
+        if (copies.isEmpty() && waiting.isEmpty()) { Empty("Nothing kept on this phone yet. Use Download on a film or an episode; it downloads over Wi-Fi."); return }
         val current = model.offline.next()?.id
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+            if (waiting.isNotEmpty()) item { RowTitle("Waiting for your server") }
+            items(waiting, key = { "waiting:" + it.key }) { w ->
+                Row(Modifier.fillMaxWidth().padding(16.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    RemoteImage(model, w.poster, Modifier.width(56.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp)))
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                        Text(w.name, style = MaterialTheme.typography.titleSmall, color = Palette.ivory)
+                        Text(if (w.kind == Kind.MOVIE) "Film" else "${w.episodes.size} ${if (w.episodes.size == 1) "episode" else "episodes"} to come", style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted)
+                        Text("Saves to this phone once your server has it.", style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted)
+                    }
+                    IconButton(onClick = { model.waiting.remove(w.key) }) { Icon(Icons.Filled.Close, "Don't save to phone", tint = Palette.ivoryMuted) }
+                }
+            }
             items(copies, key = { it.id }) { c ->
                 Row(Modifier.fillMaxWidth().clickable(enabled = c.complete || c.failed) { if (c.failed) model.retryDownload(c.id) else model.playOffline(c.id) }.padding(16.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     RemoteImage(model, model.offline.posterOf(c), Modifier.width(56.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp)))

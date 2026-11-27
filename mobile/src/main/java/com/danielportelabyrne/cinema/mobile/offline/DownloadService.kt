@@ -214,10 +214,13 @@ class DownloadService : Service() {
         private const val WAKE_LIMIT_MS = 60 * 60_000L
         private const val SPARE_BYTES = 50_000_000L
 
-        /** Starts fetching, if it is not already. Only works while Cinema is on screen. */
-        fun start(context: Context) {
+        /**
+         * Starts fetching, if it is not already. False when Android will not allow it just now: with Cinema closed it
+         * only does when the owner has let Cinema run in the background.
+         */
+        fun start(context: Context): Boolean =
             runCatching { ContextCompat.startForegroundService(context, Intent(context, DownloadService::class.java)) }
                 .onFailure { Log.w(TAG, "downloads not started: ${it.javaClass.simpleName}") }
-        }
+                .isSuccess
     }
 }
