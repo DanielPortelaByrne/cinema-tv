@@ -221,8 +221,10 @@ object JellyfinApi {
         items.firstOrNull { it.isMovie && it.imdbId.equals(imdbId, ignoreCase = true) }
 
     /** The raw bytes of the film as stored. The token rides in a header, never in the address. */
-    fun directStreamUrl(base: String, item: JellyfinItem): String =
-        "$base/Videos/${item.id}/stream?static=true&mediaSourceId=${enc(item.sourceId)}"
+    fun directStreamUrl(base: String, item: JellyfinItem): String = directStreamUrl(base, item.id, item.sourceId)
+
+    fun directStreamUrl(base: String, itemId: String, sourceId: String): String =
+        "$base/Videos/$itemId/stream?static=true&mediaSourceId=${enc(sourceId)}"
 
     /** A copy Jellyfin re-encodes for this TV, used when the original file will not play as stored. */
     fun transcodeUrl(base: String, item: JellyfinItem, deviceId: String): String =

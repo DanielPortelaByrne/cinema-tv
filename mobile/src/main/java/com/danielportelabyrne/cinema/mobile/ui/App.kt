@@ -1,5 +1,10 @@
 package com.danielportelabyrne.cinema.mobile.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -22,6 +27,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,14 +49,12 @@ import com.danielportelabyrne.cinema.mobile.Model
 import com.danielportelabyrne.cinema.mobile.R
 import com.danielportelabyrne.cinema.mobile.Screen
 import com.danielportelabyrne.cinema.mobile.Tab
-import kotlinx.coroutines.delay
 
 @Composable
 fun CinemaApp(model: Model) {
     var splash by rememberSaveable { mutableStateOf(true) }
     val top = model.stack.lastOrNull()
-    // Every page shows whether a title is on the phone, so downloads are followed from here, not from one page.
-    LaunchedEffect(Unit) { while (true) { model.offline.poll(); delay(2000) } }
+    AskToNotify(model)
     val ground = when {
         model.needsSetup -> Grounds.HOME
         top is Screen.TitlePage -> if (top.title.kind == Kind.SHOW) Grounds.SERIES else Grounds.FILMS
@@ -98,6 +103,19 @@ fun CinemaApp(model: Model) {
         Toast(model, Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp))
         model.streaming?.let { Banner(it, Modifier.align(Alignment.Center)) }
         if (splash) Splash { splash = false }
+    }
+}
+
+/** The first time something downloads, asks to show its progress as a notification. */
+@Composable
+private fun AskToNotify(model: Model) {
+    if (Build.VERSION.SDK_INT < 33) return
+    val context = LocalContext.current
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val downloading by remember { derivedStateOf { model.offline.next() != null } }
+    LaunchedEffect(downloading) {
+        if (downloading && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            ask.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
 

@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Offline copies are fetched by Cinema's own foreground service, with the screen on or off. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
@@ -49,5 +53,7 @@
             android:value="com.danielportelabyrne.cinema.mobile.player.CastOptions" />
 
         <receiver android:name=".update.MobileUpdater$InstallResult" android:exported="false" />
+
+        <service android:name=".offline.DownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
