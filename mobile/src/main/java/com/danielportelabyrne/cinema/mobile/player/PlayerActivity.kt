@@ -107,7 +107,7 @@ class PlayerActivity : AppCompatActivity() {
 
         val i = intent
         when {
-            i.getStringExtra(OFFLINE) != null -> playOffline(i.getStringExtra(OFFLINE)!!)
+            i.getStringExtra(OFFLINE) != null -> playOffline(i.getStringExtra(OFFLINE)!!, i.getBooleanExtra(FROM_START, false))
             i.getStringExtra(URL) != null -> playUrl(i.getStringExtra(URL)!!, i.getStringExtra(TITLE) ?: "Cinema")
             i.getStringExtra(ITEM) != null -> loadItem(i.getStringExtra(ITEM)!!, i.getBooleanExtra(FROM_START, false))
             else -> finish()
@@ -216,11 +216,11 @@ class PlayerActivity : AppCompatActivity() {
         report("Playing")
     }
 
-    private fun playOffline(id: String) {
+    private fun playOffline(id: String, fromStart: Boolean) {
         val copy = model.offline.find(id) ?: run { finish(); return }
         offlineId = id
         ui.title = copy.name; ui.eyebrow = listOfNotNull("On this phone", copy.subtitle); ui.hasNext = false; chapterMs = emptyList(); intro = null; trickplay = null
-        playLocal(Uri.fromFile(java.io.File(copy.file)).toString(), copy.name, copy.resumeMs, null)
+        playLocal(Uri.fromFile(java.io.File(copy.file)).toString(), copy.name, if (fromStart) 0L else copy.resumeMs, null)
     }
 
     private fun playUrl(url: String, title: String) { ui.title = title; ui.eyebrow = listOf("Streaming"); ui.hasNext = false; chapterMs = emptyList(); intro = null; trickplay = null; playLocal(url, title, 0L, null) }
@@ -410,7 +410,8 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
-        offlineId?.let { model.offline.saveResume(it, local.currentPosition) }
+        // A copy watched to the end starts over next time, rather than resuming on its last frame.
+        offlineId?.let { model.offline.saveResume(it, if (local.playbackState == Player.STATE_ENDED) 0L else local.currentPosition) }
         report("Stopped")
         session?.release()
         cast?.setSessionAvailabilityListener(null); cast?.release()

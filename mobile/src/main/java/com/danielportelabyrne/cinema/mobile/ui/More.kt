@@ -50,6 +50,7 @@ import com.danielportelabyrne.cinema.data.movies.Stage
 import com.danielportelabyrne.cinema.data.update.AvailableUpdate
 import com.danielportelabyrne.cinema.mobile.Model
 import com.danielportelabyrne.cinema.mobile.Screen
+import com.danielportelabyrne.cinema.mobile.offline.DownloadText
 import kotlinx.coroutines.delay
 
 @Composable
@@ -95,7 +96,6 @@ private fun Entry(icon: ImageVector, title: String, sub: String, onClick: () -> 
 
 @Composable
 fun OfflineScreen(model: Model) {
-    LaunchedEffect(Unit) { while (true) { model.offline.poll(); delay(2000) } }
     Column(Modifier.fillMaxSize()) {
         TabHeader("On this phone", listOf("Offline"), RibbonShape.LOOP)
         val copies = model.offline.copies
@@ -103,13 +103,16 @@ fun OfflineScreen(model: Model) {
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
             items(copies, key = { it.id }) { c ->
                 Row(Modifier.fillMaxWidth().clickable(enabled = c.complete) { model.playOffline(c.id) }.padding(16.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    RemoteImage(model, c.poster, Modifier.width(56.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp)))
+                    RemoteImage(model, model.offline.posterOf(c), Modifier.width(56.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp)))
                     Column(Modifier.padding(start = 12.dp).weight(1f)) {
                         Text(c.name, style = MaterialTheme.typography.titleSmall, color = Palette.ivory)
                         c.subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted) }
                         when {
-                            c.failed -> Text("Download failed. Delete it and try again.", style = MaterialTheme.typography.bodySmall, color = Palette.terracotta)
-                            !c.complete -> WaveBar(c.progress, Modifier.padding(top = 6.dp))
+                            c.failed -> Text(c.status ?: "Download failed. Delete it and try again.", style = MaterialTheme.typography.bodySmall, color = Palette.terracotta)
+                            !c.complete -> {
+                                WaveBar(c.progress, Modifier.padding(top = 6.dp))
+                                Text(c.status ?: DownloadText.line(c.progress, c.sizeBytes?.let { ByteSize.format(it) }), style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted, modifier = Modifier.padding(top = 4.dp))
+                            }
                             else -> c.sizeBytes?.let { Text(ByteSize.format(it), style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted) }
                         }
                     }
