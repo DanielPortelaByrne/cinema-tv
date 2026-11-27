@@ -55,6 +55,7 @@ import com.danielportelabyrne.cinema.data.movies.Kind
 import com.danielportelabyrne.cinema.mobile.Model
 import com.danielportelabyrne.cinema.mobile.Screen
 import com.danielportelabyrne.cinema.mobile.offline.DownloadText
+import com.danielportelabyrne.cinema.mobile.request.EpisodeNumber
 import com.danielportelabyrne.cinema.mobile.data.clock
 import com.danielportelabyrne.cinema.mobile.data.runtimeLabel
 import com.danielportelabyrne.cinema.mobile.data.watchedFraction
@@ -102,6 +103,7 @@ fun TitleScreen(model: Model, page: Screen.TitlePage) {
                         else -> {}
                     }
                     model.offline.find(lib?.id ?: "")?.let { Pill(if (it.complete) "On this phone" else if (it.failed) "Download failed" else "Downloading to phone", Palette.terracotta.copy(alpha = 0.5f)) }
+                    if (model.waiting.find("${t.kind.name}:${t.tmdbId}") != null) Pill("Will save to phone", Palette.terracotta.copy(alpha = 0.5f))
                 }
                 Gap(16.dp)
                 Actions(model, page)
@@ -125,6 +127,12 @@ private fun Actions(model: Model, page: Screen.TitlePage) {
             val resuming = !lib.isSeries && resumeMs > 0
             CreamButton(if (lib.isSeries) "Play" else if (resuming) "Resume ${clock(resumeMs)}" else "Play", Icons.Filled.PlayArrow) { model.playTitle(page) }
             if (resuming) Secondary("From the start", Icons.Filled.Replay) { model.playTitle(page, fromStart = true) }
+            if (lib.isSeries && model.seerr.isSignedIn) {
+                // Hidden once everything the series lacks is already on its way to the phone.
+                val coming = model.waiting.find("${t.kind.name}:${t.tmdbId}")?.episodes.orEmpty()
+                val lacks = page.missing.orEmpty().any { s -> s.episodes.any { EpisodeNumber(s.number, it) !in coming } }
+                if (lacks) TerraButton("Request missing", Icons.Filled.AddCircleOutline) { model.askToRequest(page) }
+            }
             if (!lib.isSeries) {
                 val copy = model.offline.find(lib.id)
                 if (copy == null) Secondary("Download", Icons.Filled.Download) { model.download(lib) }
@@ -132,7 +140,7 @@ private fun Actions(model: Model, page: Screen.TitlePage) {
                 else Secondary(if (copy.complete) "On phone" else DownloadText.percent(copy.progress), if (copy.complete) Icons.Filled.DownloadDone else Icons.Filled.Downloading) { model.push(Screen.Offline) }
             }
         } else {
-            if (model.seerr.isSignedIn && page.availability in setOf(null, Availability.NONE)) TerraButton("Request", Icons.Filled.AddCircleOutline) { model.request(page) }
+            if (model.seerr.isSignedIn && page.availability in setOf(null, Availability.NONE)) TerraButton("Request", Icons.Filled.AddCircleOutline) { model.askToRequest(page) }
             if (model.seerr.hasStreamService && t.kind == Kind.MOVIE) Secondary("Stream now", Icons.Filled.Bolt) { model.streamNow(t) }
             if (!model.seerr.isSignedIn) Text("Sign in to Seerr in More → Settings to request this.", style = MaterialTheme.typography.bodySmall, color = Palette.ivoryMuted)
         }

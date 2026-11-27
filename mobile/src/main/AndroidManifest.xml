@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- A request to be saved to the phone is looked for, and its download started, with Cinema closed. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
@@ -55,5 +58,6 @@
         <receiver android:name=".update.MobileUpdater$InstallResult" android:exported="false" />
 
         <service android:name=".offline.DownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".request.ServerWatchJob" android:exported="false" android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 </manifest>
