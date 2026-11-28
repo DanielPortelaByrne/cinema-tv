@@ -10,8 +10,11 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import com.danielportelabyrne.cinema.data.account.AccountStore
+import com.danielportelabyrne.cinema.data.movies.LifeOsHistoryExport
 import com.danielportelabyrne.cinema.data.remote.RemoteProtocol
 import com.danielportelabyrne.cinema.data.remote.RemoteProtocol.Key
+import com.danielportelabyrne.cinema.device.AndroidPlatform
 import com.danielportelabyrne.cinema.platform.Log
 import java.io.BufferedInputStream
 import java.io.InputStream
@@ -89,7 +92,7 @@ object RemoteServer {
         } catch (e: Exception) { Log.w(TAG, "remote server stopped: ${e.javaClass.simpleName}") }
     }
 
-    private class Req(val method: String, val path: String, val headers: Map<String, String>, val body: String)
+    private class Req(val method: String, val path: String, val query: Map<String, String>, val headers: Map<String, String>, val body: String)
 
     private fun read(input: InputStream): Req? {
         val ins = BufferedInputStream(input)
@@ -108,7 +111,10 @@ object RemoteServer {
         val len = headers["content-length"]?.toIntOrNull()?.coerceIn(0, 16_384) ?: 0
         val body = ByteArray(len); var got = 0
         while (got < len) { val n = ins.read(body, got, len - got); if (n < 0) break; got += n }
-        return Req(first[0], first[1].substringBefore('?'), headers, String(body, 0, got, Charsets.UTF_8))
+        val rawTarget = first[1]
+        val path = rawTarget.substringBefore('?')
+        val query = if ('?' in rawTarget) RemoteProtocol.form(rawTarget.substringAfter('?')) else emptyMap()
+        return Req(first[0], path, query, headers, String(body, 0, got, Charsets.UTF_8))
     }
 
     private fun handle(socket: Socket) = socket.use { s ->
@@ -117,8 +123,9 @@ object RemoteServer {
         val (status, body) = route(req)
         val bytes = body.toByteArray()
         val reason = when (status) { 200 -> "OK"; 401 -> "Unauthorized"; 403 -> "Forbidden"; 404 -> "Not Found"; 409 -> "Conflict"; else -> "Bad Request" }
+        val contentType = if (req.path.startsWith("/lifeos/") && status == 200) "application/json; charset=utf-8" else "text/plain; charset=utf-8"
         s.getOutputStream().apply {
-            write("HTTP/1.1 $status $reason\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+            write("HTTP/1.1 $status $reason\r\nContent-Type: $contentType\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
             write(bytes); flush()
         }
     }
@@ -129,6 +136,32 @@ object RemoteServer {
             "POST" to "/pair" -> showCode()
             "POST" to "/pair/confirm" -> confirm(form["code"])
             "GET" to "/ping" -> if (known(r.headers[RemoteProtocol.TOKEN_HEADER.lowercase()])) 200 to "ok" else 401 to ""
+            "GET" to "/lifeos/profiles" -> if (!known(r.headers[RemoteProtocol.TOKEN_HEADER.lowercase()])) 401 to "" else {
+                val p = AndroidPlatform(app)
+                200 to LifeOsHistoryExport.profilesJson(p.preferences("accounts"))
+            }
+            "GET" to "/lifeos/history" -> if (!known(r.headers[RemoteProtocol.TOKEN_HEADER.lowercase()])) 401 to "" else {
+                val base = AndroidPlatform(app)
+                val accountsPrefs = base.preferences("accounts")
+                val accounts = AccountStore(base)
+                val profile = LifeOsHistoryExport.resolveAuthorizedProfile(accountsPrefs, r.query["profileId"])
+                    ?: return 403 to "Unknown or unauthorised profile"
+                val sinceMs = r.query["since"]?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+                val isOriginal = accounts.all().isEmpty() || profile.userId == accounts.originalUserId
+                val scoped = if (profile.userId == "default" && accounts.all().isEmpty()) base
+                    else base.forPerson(profile.userId, profile.userId == accounts.originalUserId)
+                val json = LifeOsHistoryExport.historyJson(
+                    scoped.preferences("play_history"),
+                    scoped.preferences("cinema_personal"),
+                    scoped.preferences("favourites"),
+                    scoped.preferences("continue_watching"),
+                    profile.userId,
+                    profile.name,
+                    sinceMs,
+                    legacySettingsPrefs = if (isOriginal) base.preferences("cinema_settings") else null,
+                )
+                200 to json
+            }
             "POST" to "/key" -> if (!known(r.headers[RemoteProtocol.TOKEN_HEADER.lowercase()])) 401 to "" else {
                 val key = RemoteProtocol.key(form["key"]) ?: return 400 to "unknown key"
                 if (resumed == null) return 409 to "Cinema is not on screen"
